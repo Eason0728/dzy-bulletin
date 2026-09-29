@@ -1,0 +1,636 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>鼎兆元｜電子佈告欄</title>
+<style>
+:root{
+  --bg:#f4f1ec; --card:#fff; --ink:#1f2328; --sub:#6b6f76; --line:#e4dfd6;
+  --brand:#8a1f1f; --brand-ink:#fff; --soft:#f8f5f0;
+  --mzt:#2f6b4f; --mala:#c0392b; --cf:#b7791f;
+  --ok:#2f7d4f; --warn:#b7791f; --dot:#d93025;
+  --radius:14px; --shadow:0 1px 2px rgba(0,0,0,.06),0 4px 14px rgba(0,0,0,.05);
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.6 -apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif;-webkit-font-smoothing:antialiased}
+button{font:inherit;cursor:pointer}
+input,textarea,select{font:inherit;color:inherit}
+.wrap{max-width:600px;margin:0 auto;padding:0 16px 96px}
+.demo{background:#fff4d6;color:#6b4e00;font-size:12.5px;padding:6px 16px;display:flex;gap:8px;align-items:center;justify-content:center;flex-wrap:wrap}
+.demo button{border:1px solid #d9b95a;background:#fff;border-radius:999px;padding:1px 10px;font-size:12px}
+header.top{position:sticky;top:0;z-index:20;background:var(--brand);color:var(--brand-ink)}
+header.top .in{max-width:600px;margin:0 auto;padding:12px 16px 10px;display:flex;align-items:center;gap:10px}
+header.top h1{font-size:18px;margin:0;letter-spacing:.5px;flex:1;white-space:nowrap}
+header.top h1 small{font-weight:400;opacity:.8}
+.iconbtn{background:rgba(255,255,255,.14);border:0;color:#fff;border-radius:10px;padding:6px 10px;font-size:14px}
+.me{max-width:600px;margin:0 auto;padding:0 16px 10px;font-size:13px;opacity:.92;display:flex;gap:8px;align-items:center}
+.me button{background:none;border:1px solid rgba(255,255,255,.5);color:#fff;border-radius:999px;padding:0 9px;font-size:12px}
+.tabs{display:flex;gap:6px;margin:14px 0 10px}
+.tabs button{flex:1;border:0;background:transparent;padding:9px 0;border-radius:10px;color:var(--sub);font-weight:600}
+.tabs button.on{background:var(--card);color:var(--ink);box-shadow:var(--shadow)}
+.seg{display:flex;background:#e9e4db;border-radius:12px;padding:3px;gap:3px;margin-bottom:12px}
+.seg button{flex:1;border:0;background:transparent;border-radius:9px;padding:7px 0;font-weight:600;color:var(--sub);position:relative}
+.seg button.on{background:#fff;color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.seg .n{display:inline-block;min-width:18px;height:18px;line-height:18px;border-radius:9px;background:var(--dot);color:#fff;font-size:11px;margin-left:4px;padding:0 5px}
+.card{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px 16px;margin-bottom:10px;display:block;width:100%;text-align:left;border:0;color:inherit;position:relative}
+.card.pin{border-left:4px solid var(--brand)}
+.card h3{margin:0 0 4px;font-size:16px;line-height:1.4;padding-right:18px}
+.meta{font-size:12.5px;color:var(--sub);display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center}
+.unread{position:absolute;top:16px;right:14px;width:9px;height:9px;border-radius:50%;background:var(--dot)}
+.tag{display:inline-block;font-size:11.5px;font-weight:600;border-radius:6px;padding:0 6px;line-height:19px;color:#fff}
+.tag.mzt{background:var(--mzt)} .tag.mala{background:var(--mala)} .tag.cf{background:var(--cf)}
+.tag.all{background:#555}
+.pinmark{color:var(--brand);font-weight:700;font-size:12px}
+.readok{color:var(--ok);font-weight:600}
+.empty{text-align:center;color:var(--sub);padding:40px 0}
+.months{display:flex;gap:6px;overflow-x:auto;padding-bottom:6px;margin-bottom:8px}
+.months button{flex:none;border:1px solid var(--line);background:#fff;border-radius:999px;padding:4px 12px;font-size:13px;color:var(--sub)}
+.months button.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+.hint{font-size:12.5px;color:var(--sub);margin:-4px 2px 10px}
+
+/* sheet */
+.mask{position:fixed;inset:0;background:rgba(20,20,20,.45);z-index:50;display:none;align-items:flex-end;justify-content:center}
+.mask.show{display:flex}
+.sheet{background:var(--bg);width:100%;max-width:600px;max-height:92vh;overflow:auto;border-radius:18px 18px 0 0;padding:0 0 24px}
+.sheet .bar{position:sticky;top:0;background:var(--bg);padding:12px 16px 8px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--line);z-index:2}
+.sheet .bar b{flex:1;font-size:15px}
+.sheet .bar button{border:0;background:#e9e4db;border-radius:10px;padding:5px 12px}
+.sheet .body{padding:14px 16px}
+.sheet h2{font-size:19px;margin:4px 0 8px;line-height:1.4}
+.content{background:#fff;border-radius:12px;padding:14px;white-space:pre-wrap;word-break:break-word;margin:12px 0}
+.files{display:grid;gap:8px;margin:10px 0 16px}
+.file{display:flex;align-items:center;gap:10px;background:#fff;border-radius:12px;padding:10px 12px;border:1px solid var(--line);width:100%;text-align:left}
+.ficon{width:36px;height:36px;border-radius:8px;display:grid;place-items:center;color:#fff;font-size:11px;font-weight:700;flex:none}
+.ficon.pdf{background:#d93025}.ficon.docx{background:#2b579a}.ficon.xlsx{background:#217346}
+.file .fn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
+.file .fs{font-size:12px;color:var(--sub)}
+.btn{border:0;border-radius:12px;padding:12px 16px;font-weight:700;width:100%}
+.btn.primary{background:var(--brand);color:#fff}
+.btn.ghost{background:#fff;border:1px solid var(--line);color:var(--ink)}
+.btn.small{width:auto;padding:6px 12px;font-size:13px;border-radius:9px;font-weight:600}
+.done{background:#e6f3ea;color:var(--ok);border-radius:12px;padding:12px;text-align:center;font-weight:600}
+
+/* viewer */
+.viewer{position:fixed;inset:0;background:#2a2a2a;z-index:80;display:none;flex-direction:column}
+.viewer.show{display:flex}
+.viewer .vbar{display:flex;align-items:center;gap:10px;padding:10px 14px;color:#fff;background:#1c1c1c}
+.viewer .vbar b{flex:1;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.viewer .vbar button{border:0;background:#444;color:#fff;border-radius:9px;padding:5px 12px}
+.viewer .vnote{font-size:11.5px;color:#bbb;text-align:center;padding:4px 10px;background:#1c1c1c}
+.viewer .vbody{flex:1;overflow:auto;padding:14px;-webkit-user-select:none;user-select:none}
+.viewer iframe{width:100%;height:100%;border:0;background:#fff;border-radius:4px}
+.page{background:#fff;max-width:520px;margin:0 auto 14px;padding:28px 24px;border-radius:3px;min-height:60vh;font-size:13px;color:#333}
+.page h4{margin:0 0 12px;font-size:16px}
+.page .ln{height:9px;background:#e7e7e7;border-radius:4px;margin:9px 0}
+.grid{background:#fff;max-width:620px;margin:0 auto;border-radius:3px;overflow:auto}
+.grid table{border-collapse:collapse;font-size:12.5px;min-width:100%}
+.grid td,.grid th{border:1px solid #ddd;padding:5px 8px;white-space:nowrap}
+.grid th{background:#f1f3f4;font-weight:600;color:#555}
+
+/* admin */
+.panel{background:#fff;border-radius:var(--radius);box-shadow:var(--shadow);padding:14px 16px;margin-bottom:12px}
+.panel h4{margin:0 0 10px;font-size:15px}
+label.f{display:block;font-size:13px;color:var(--sub);margin:10px 0 4px;font-weight:600}
+.inp{width:100%;border:1px solid var(--line);border-radius:10px;padding:9px 11px;background:#fff}
+textarea.inp{min-height:120px;resize:vertical}
+.chk{display:flex;flex-wrap:wrap;gap:8px}
+.chk label{display:flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:10px;padding:6px 10px;background:#fff;font-size:14px}
+.row{display:flex;gap:10px}.row>*{flex:1}
+.arow{border-top:1px solid var(--line);padding:11px 0}
+.arow:first-child{border-top:0}
+.arow .t{font-weight:600;line-height:1.4}
+.acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.prog{height:6px;background:#eee;border-radius:3px;overflow:hidden;margin-top:6px}
+.prog i{display:block;height:100%;background:var(--ok)}
+.status{font-size:11.5px;font-weight:700;border-radius:6px;padding:0 6px;line-height:19px}
+.st-on{background:#e6f3ea;color:var(--ok)} .st-plan{background:#fff4d6;color:#8a6200} .st-off{background:#eee;color:#666}
+.names{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.names span{font-size:12.5px;background:var(--soft);border:1px solid var(--line);border-radius:999px;padding:1px 9px}
+.names span.no{background:#fdecea;border-color:#f5c2bd;color:#a52714}
+.err{color:#c62828;font-size:13px;margin-top:6px}
+.picklist{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px;margin-top:8px}
+.picklist button{border:1px solid var(--line);background:#fff;border-radius:12px;padding:12px 6px;font-weight:600}
+.toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:#222;color:#fff;padding:9px 16px;border-radius:999px;font-size:14px;z-index:99;opacity:0;transition:.2s;pointer-events:none}
+.toast.show{opacity:1}
+</style>
+</head>
+<body>
+
+<div class="demo">🧪 本機預覽｜假資料，存在這台瀏覽器｜管理通行碼 <b>1234</b>｜假同仁密碼 <b>0000</b> <button id="testMe">🖊 用未讀測試員登入</button> <button id="resetDemo">重置假資料</button></div>
+
+<header class="top">
+  <div class="in">
+    <h1>鼎兆元<small>｜</small>電子佈告欄</h1>
+    <button class="iconbtn" id="openAdmin">⚙ 設定</button>
+  </div>
+  <div class="me" id="meBar"></div>
+</header>
+
+<main class="wrap" id="app"></main>
+
+<div class="mask" id="mask"><div class="sheet" id="sheet"></div></div>
+
+<div class="viewer" id="viewer">
+  <div class="vbar"><b id="vname"></b><button id="vclose">關閉</button></div>
+  <div class="vnote">僅供線上檢視・不提供下載（正式版以 Google Drive 預覽器開啟，已關閉下載／列印／複製）</div>
+  <div class="vbody" id="vbody"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+/* ========== 常數 ========== */
+const UNITS = [
+  {id:'mzt', name:'墨竹亭'},
+  {id:'mala', name:'小辛辣'},
+  {id:'cf', name:'央廚'},
+];
+const UNIT_NAME = Object.fromEntries(UNITS.map(u=>[u.id,u.name]));
+const MAX_FILES = 5, MAX_MB = 20;
+const ACCEPT = {pdf:['pdf'], docx:['doc','docx'], xlsx:['xls','xlsx']};
+const KEY = 'dzyb_demo_v4', MEKEY = 'dzyb_me_v4';
+
+/* ========== 日期（台北） ========== */
+function today(){ return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei'}).format(new Date()); }
+function md(d){ if(!d) return ''; const [,m,dd]=d.split('-'); return (+m)+'/'+(+dd); }
+function ym(d){ const [y,m]=d.split('-'); return y+' 年 '+(+m)+' 月'; }
+function addDays(d,n){ const t=new Date(d+'T00:00:00Z'); t.setUTCDate(t.getUTCDate()+n); return t.toISOString().slice(0,10); }
+function nowStamp(){ return new Date().toLocaleString('zh-TW',{timeZone:'Asia/Taipei',month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}); }
+
+/* ========== 假資料 ========== */
+function seed(){
+  const T = today();
+  const staff = [
+    ['s1','陳O安','mala'],['s2','林O婷','mala'],['s3','黃O宇','mala'],['s4','張O涵','mala'],
+    ['s5','李O豪','mzt'],['s6','王O芳','mzt'],['s7','吳O翔','mzt'],['s8','劉O君','mzt'],
+    ['s9','蔡O明','cf'],['s10','楊O琪','cf'],['s11','許O傑','cf'],['s12','鄭O萱','cf'],
+    ['t1','測試員A','mala'],['t2','測試員B','mzt'],['t3','測試員C','cf'],
+  ].map(([id,name,unit])=>({id,name,unit,pin:id.startsWith('t')?null:'0000',pinVer:1,fail:0,lockUntil:0}));
+  const F = (name,type,mb)=>({name,type,size:Math.round(mb*1024*1024)});
+  const P = (o)=>Object.assign({published:true,pinned:false,offOn:null,expiresOn:null,files:[],body:''},o);
+  const posts = [
+    P({id:'p1',title:'10 月份排班提醒與請假流程調整',units:['mzt','mala','cf'],pinned:true,publishOn:addDays(T,-4),expiresOn:addDays(T,32),
+      body:'各位同仁好：\n\n1. 10 月班表已上傳，請於本週五前確認。\n2. 自 10/1 起，請假需提前 3 天於打卡系統申請，臨時請假請直接電話告知店長。\n3. 附件為新版請假流程與 10 月假日對照表。\n\n如有疑問請洽各單位主管。',
+      files:[F('請假流程說明_v2.pdf','pdf',1.2),F('2026年10月假日對照表.xlsx','xlsx',0.3)]}),
+    P({id:'p2',title:'【新品】藤椒雞上市作業 SOP',units:['mala'],publishOn:addDays(T,-9),expiresOn:addDays(T,21),
+      body:'藤椒雞 10/1 三店同步上市。\n請全員於上市前詳讀附件 SOP，重點：\n・醃料比例與靜置時間\n・出餐份量 180g\n・過敏原標示（含花椒）',
+      files:[F('藤椒雞_SOP.docx','docx',2.4),F('藤椒雞_出餐照片.pdf','pdf',6.8)]}),
+    P({id:'p3',title:'燃麵醬料配方更新（第 3 版）',units:['mzt'],publishOn:addDays(T,-14),expiresOn:null,
+      body:'即日起燃麵醬料改用第 3 版配方，舊版請勿再使用。\n配方表如附件，請店長負責教育訓練並簽名回報。',
+      files:[F('燃麵醬料配方_v3.pdf','pdf',0.8)]}),
+    P({id:'p4',title:'冷凍庫盤點時間調整為每週二',units:['cf'],publishOn:addDays(T,-2),expiresOn:addDays(T,11),
+      body:'自下週起冷凍庫盤點由每週一改為每週二 14:00，請當班同仁配合。'}),
+    P({id:'p5',title:'颱風季應變通報流程',units:['mzt','mala','cf'],pinned:true,publishOn:addDays(T,-19),expiresOn:addDays(T,1),
+      body:'颱風警報發布時：\n1. 店長於 LINE 群組回報營業狀態\n2. 停止營業須經品牌主管同意\n3. 同仁安全優先，交通受阻請立即通報',
+      files:[F('颱風應變流程圖.pdf','pdf',0.5)]}),
+    P({id:'p6',title:'中秋節金發放說明',units:['mzt','mala','cf'],publishOn:addDays(T,2),expiresOn:addDays(T,16),
+      body:'（排定上架，到上架日才會出現在同仁的佈告欄）\n中秋節金將隨 10 月薪資發放。'}),
+    // 已封存
+    P({id:'p7',title:'8 月起勞健保費率調整說明',units:['mzt','mala','cf'],publishOn:'2026-08-01',expiresOn:'2026-08-31',
+      body:'8 月起勞健保費率調整，薪資單將同步更新。',files:[F('勞健保費率對照.xlsx','xlsx',0.2)]}),
+    P({id:'p8',title:'暑期限定活動結束通知',units:['mala'],publishOn:'2026-07-20',expiresOn:'2026-08-15',body:'暑期限定套餐於 8/15 結束販售，POS 按鍵將同步移除。'}),
+    P({id:'p9',title:'七月消防演練時間表',units:['mzt'],publishOn:'2026-07-01',expiresOn:'2026-07-20',body:'各店消防演練時間如附件。',files:[F('消防演練時間表.docx','docx',0.4)]}),
+    P({id:'p10',title:'舊版配送時刻表（已停用）',units:['cf'],publishOn:'2026-08-20',expiresOn:null,published:false,offOn:'2026-09-05',body:'此版時刻表已由新版取代。'}),
+  ];
+  const reads = {
+    p1:{s1:'9/26 10:12',s2:'9/26 11:40',s5:'9/25 18:02',s9:'9/27 09:30',s10:'9/27 09:31',s6:'9/26 14:20'},
+    p2:{s1:'9/21 10:00',s3:'9/22 16:45'},
+    p3:{s5:'9/16 12:00',s6:'9/16 12:30',s7:'9/17 09:10',s8:'9/18 20:05'},
+    p5:{s1:'9/11 10:00',s2:'9/11 10:05',s3:'9/12 11:00',s4:'9/12 11:30',s5:'9/11 18:00',s9:'9/12 08:00'},
+    p7:{s1:'8/2 10:00',s5:'8/3 10:00',s9:'8/2 09:00'},
+  };
+  return {staff,posts,reads,passcode:'1234',seq:100};
+}
+let DB;
+function load(){ try{ DB = JSON.parse(localStorage.getItem(KEY)); }catch(e){} if(!DB) { DB = seed(); save(); } }
+function save(){ try{ localStorage.setItem(KEY, JSON.stringify(DB)); }catch(e){} }
+let ME = null; try{ ME = JSON.parse(localStorage.getItem(MEKEY)); }catch(e){}
+const BLOBS = {}; // 本機預覽：上傳檔案的 blob url（重新整理後消失）
+
+/* ========== 狀態判斷 ========== */
+// 回傳 {state:'on'|'plan'|'off', month:'YYYY-MM'|null}
+function status(p){
+  const T = today();
+  if(!p.published) return {state:'off', month:(p.offOn||T).slice(0,7), offDate:p.offOn};
+  if(p.expiresOn && p.expiresOn < T) return {state:'off', month:p.expiresOn.slice(0,7), offDate:p.expiresOn};
+  if(p.publishOn > T) return {state:'plan', month:null};
+  return {state:'on', month:null};
+}
+function targetStaff(p){ return DB.staff.filter(s=>p.units.includes(s.unit)); }
+function isAll(p){ return UNITS.every(u=>p.units.includes(u.id)); }
+function tagsHTML(p){ return isAll(p) ? '<span class="tag all">全部</span>' : p.units.map(u=>`<span class="tag ${u}">${UNIT_NAME[u]}</span>`).join(' '); }
+function sortPosts(a,b){ return (b.pinned-a.pinned) || (b.publishOn.localeCompare(a.publishOn)); }
+function esc(s){ return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function fsize(b){ return b>=1048576 ? (b/1048576).toFixed(1)+' MB' : Math.max(1,Math.round(b/1024))+' KB'; }
+function ftype(name){ const ext=name.split('.').pop().toLowerCase(); return Object.keys(ACCEPT).find(k=>ACCEPT[k].includes(ext)); }
+function toast(t){ const el=document.getElementById('toast'); el.textContent=t; el.classList.add('show'); clearTimeout(toast._t); toast._t=setTimeout(()=>el.classList.remove('show'),1800); }
+function iRead(p){ return ME && DB.reads[p.id] && DB.reads[p.id][ME.id]; }
+function readAt(r){ return typeof r==='string' ? r : r.at; }
+function readSig(r){ return typeof r==='string' ? null : r.sig; }
+function meValid(){ if(!ME) return false; const s=DB.staff.find(x=>x.id===ME.id); return !!(s && s.pin && s.pinVer===ME.pinVer); }
+function iTarget(p){ return meValid() && p.units.includes(ME.unit); }
+
+/* ========== 同仁端 ========== */
+const view = {tab:'board', unit: ME?ME.unit:'mala', month:null};
+
+function renderMe(){
+  const bar = document.getElementById('meBar');
+  if(meValid()){
+    bar.innerHTML = `👤 ${esc(ME.name)}（${UNIT_NAME[ME.unit]}） <button id="chgMe">不是我</button>`;
+    document.getElementById('chgMe').onclick = pickMe;
+  } else bar.innerHTML = '';
+}
+
+function render(){
+  renderMe();
+  const app = document.getElementById('app');
+  if(!meValid()){ ME=null; app.innerHTML=''; return pickMe(true); }
+  const T = today();
+  const onPosts = DB.posts.filter(p=>status(p).state==='on');
+  const unreadCount = u => onPosts.filter(p=>p.units.includes(u) && iTarget(p) && !iRead(p)).length;
+
+  let h = `<div class="tabs">
+    <button data-tab="board" class="${view.tab==='board'?'on':''}">📌 公告</button>
+    <button data-tab="hist" class="${view.tab==='hist'?'on':''}">🗂 歷史區</button></div>
+  <div class="seg">${UNITS.map(u=>{ const n=(view.tab==='board'&&u.id===ME.unit)?unreadCount(u.id):0;
+      return `<button data-unit="${u.id}" class="${view.unit===u.id?'on':''}">${u.name}${n?`<span class="n">${n}</span>`:''}</button>`}).join('')}</div>`;
+
+  if(view.tab==='board'){
+    const list = onPosts.filter(p=>p.units.includes(view.unit)).sort(sortPosts);
+    h += list.length ? list.map(cardHTML).join('') : `<div class="empty">目前沒有公告</div>`;
+  } else {
+    const arch = DB.posts.filter(p=>status(p).state==='off' && p.units.includes(view.unit));
+    const months = [...new Set(arch.map(p=>status(p).month))].sort().reverse();
+    if(!months.includes(view.month)) view.month = months[0]||null;
+    h += `<div class="hint">依下架日期的月份封存</div>`;
+    if(!months.length) h += `<div class="empty">還沒有封存的公告</div>`;
+    else {
+      h += `<div class="months">${months.map(m=>`<button data-month="${m}" class="${m===view.month?'on':''}">${ym(m+'-01')}</button>`).join('')}</div>`;
+      const list = arch.filter(p=>status(p).month===view.month).sort((a,b)=>status(b).offDate.localeCompare(status(a).offDate));
+      h += list.map(cardHTML).join('');
+    }
+  }
+  app.innerHTML = h;
+  app.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{view.tab=b.dataset.tab; render();});
+  app.querySelectorAll('[data-unit]').forEach(b=>b.onclick=()=>{view.unit=b.dataset.unit; render();});
+  app.querySelectorAll('[data-month]').forEach(b=>b.onclick=()=>{view.month=b.dataset.month; render();});
+  app.querySelectorAll('[data-post]').forEach(b=>b.onclick=()=>openPost(b.dataset.post));
+}
+
+function cardHTML(p){
+  const st = status(p);
+  const unread = st.state==='on' && iTarget(p) && !iRead(p);
+  const exp = st.state==='off' ? `下架 ${md(st.offDate)}` : (p.expiresOn ? `到期 ${md(p.expiresOn)}` : '不自動下架');
+  return `<button class="card ${p.pinned&&st.state==='on'?'pin':''}" data-post="${p.id}">
+    ${unread?'<span class="unread"></span>':''}
+    <h3>${esc(p.title)}</h3>
+    <div class="meta">${p.pinned&&st.state==='on'?'<span class="pinmark">📌 置頂</span>':''}${tagsHTML(p)}
+      <span>上架 ${md(p.publishOn)}</span><span>${exp}</span>
+      ${p.files.length?`<span>📎 ${p.files.length}</span>`:''}
+      ${iRead(p)?'<span class="readok">✓ 已讀</span>':''}</div>
+  </button>`;
+}
+
+function openPost(id){
+  const p = DB.posts.find(x=>x.id===id); const st = status(p);
+  const read = iRead(p);
+  let foot = '';
+  if(st.state==='on' && iTarget(p)){
+    foot = read ? `<div class="done">✓ 已於 ${readAt(read)} 簽名確認閱讀${readSig(read)?`<div><img src="${readSig(read)}" style="max-width:220px;height:70px;object-fit:contain;background:#fff;border-radius:8px;margin-top:8px"></div>`:''}</div>`
+                : `<button class="btn primary" id="ackBtn">我已閱讀</button>`;
+  } else if(st.state==='off'){
+    foot = `<div class="hint" style="text-align:center">此公告已於 ${md(st.offDate)} 下架，僅供查閱</div>`;
+  }
+  openSheet(`<div class="bar"><b>公告內容</b><button data-close>關閉</button></div>
+    <div class="body">
+      <div class="meta">${p.pinned&&st.state==='on'?'<span class="pinmark">📌 置頂</span>':''}${tagsHTML(p)}</div>
+      <h2>${esc(p.title)}</h2>
+      <div class="meta"><span>上架 ${p.publishOn}</span><span>${st.state==='off'?'下架 '+st.offDate:(p.expiresOn?'到期 '+p.expiresOn:'不自動下架')}</span></div>
+      ${p.body?`<div class="content">${esc(p.body)}</div>`:''}
+      ${p.files.length?`<div class="meta" style="margin-top:8px">附件（點開線上檢視）</div><div class="files">${p.files.map((f,i)=>fileHTML(f,`data-view="${p.id}:${i}"`)).join('')}</div>`:''}
+      ${foot}
+    </div>`);
+  const ack = document.getElementById('ackBtn');
+  if(ack) ack.onclick = ()=>openSign(p);
+  document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>{ const [pid,i]=b.dataset.view.split(':'); openViewer(DB.posts.find(x=>x.id===pid).files[+i]); });
+}
+function openSign(p){
+  openSheet(`<div class="bar"><b>電子簽名</b><button id="sgBack">返回</button></div>
+    <div class="body">
+      <div class="hint" style="margin:0 0 8px">我，<b>${esc(ME.name)}</b>，已閱讀並了解「${esc(p.title)}」的內容。請在下方框內簽名：</div>
+      <canvas id="sgPad" style="width:100%;height:200px;background:#fff;border:2px dashed #cfc7ba;border-radius:12px;touch-action:none;display:block"></canvas>
+      <div class="err" id="sgErr"></div>
+      <div class="row" style="margin-top:12px"><button class="btn ghost" id="sgClear">清除重簽</button><button class="btn primary" id="sgOk">確認簽名</button></div>
+    </div>`, true);
+  document.getElementById('sgBack').onclick=()=>openPost(p.id);
+  const c=document.getElementById('sgPad'), r=c.getBoundingClientRect(), dpr=window.devicePixelRatio||1;
+  c.width=r.width*dpr; c.height=r.height*dpr;
+  const x=c.getContext('2d'); x.scale(dpr,dpr); x.lineWidth=2.6; x.lineCap='round'; x.lineJoin='round'; x.strokeStyle='#1a1a1a';
+  let drawing=false, len=0, last=null;
+  const pt=e=>{ const b=c.getBoundingClientRect(); return {x:e.clientX-b.left,y:e.clientY-b.top}; };
+  c.onpointerdown=e=>{ drawing=true; last=pt(e); c.setPointerCapture(e.pointerId); };
+  c.onpointermove=e=>{ if(!drawing) return; const q=pt(e); x.beginPath(); x.moveTo(last.x,last.y); x.lineTo(q.x,q.y); x.stroke(); len+=Math.hypot(q.x-last.x,q.y-last.y); last=q; };
+  c.onpointerup=c.onpointercancel=()=>{ drawing=false; };
+  document.getElementById('sgClear').onclick=()=>{ x.clearRect(0,0,c.width,c.height); len=0; };
+  document.getElementById('sgOk').onclick=()=>{
+    if(len<40) return document.getElementById('sgErr').textContent='請先簽名';
+    // 縮小存檔（正式版存到 Drive／試算表）
+    const o=document.createElement('canvas'); o.width=360; o.height=Math.round(360*c.height/c.width);
+    const ox=o.getContext('2d'); ox.fillStyle='#fff'; ox.fillRect(0,0,o.width,o.height); ox.drawImage(c,0,0,o.width,o.height);
+    (DB.reads[p.id] ||= {})[ME.id] = {at:nowStamp(), sig:o.toDataURL('image/jpeg',0.7)};
+    save(); toast('已簽名確認'); openPost(p.id); render();
+  };
+}
+function fileHTML(f,attr){ return `<button class="file" ${attr||''}><span class="ficon ${f.type}">${f.type==='docx'?'DOC':f.type==='xlsx'?'XLS':'PDF'}</span><span class="fn">${esc(f.name)}</span><span class="fs">${fsize(f.size)}</span></button>`; }
+
+function pickMe(force){
+  let unit = (ME&&ME.unit) || view.unit;
+  const draw = ()=>{
+    const people = DB.staff.filter(s=>s.unit===unit);
+    openSheet(`<div class="bar"><b>請選擇你是誰</b>${force===true?'':'<button data-close>取消</button>'}</div>
+      <div class="body">
+        <div class="hint" style="margin:0 0 10px">選自己的名字並輸入 4 位數密碼（第一次使用會請你設定）。這支手機會記住你，按「我已閱讀」時會請你手寫簽名。</div>
+        <div class="seg">${UNITS.map(u=>`<button data-pu="${u.id}" class="${u.id===unit?'on':''}">${u.name}</button>`).join('')}</div>
+        <div class="picklist">${people.map(s=>`<button data-pick="${s.id}">${esc(s.name)}</button>`).join('') || '<div class="hint">這個單位還沒有同仁名單</div>'}</div>
+        <div class="hint" style="margin-top:14px">找不到自己的名字？請洽主管在「設定 → 同仁名單」新增。</div>
+      </div>`, force===true);
+    document.querySelectorAll('[data-pu]').forEach(b=>b.onclick=()=>{unit=b.dataset.pu; draw();});
+    document.querySelectorAll('[data-pick]').forEach(b=>b.onclick=()=>{
+      openPin(DB.staff.find(x=>x.id===b.dataset.pick), force);
+    });
+  };
+  draw();
+}
+
+/* ========== 個人密碼 ========== */
+const PIN_MAX_FAIL = 5, PIN_LOCK_MIN = 5;
+function pinInput(id,ph){ return `<input class="inp" id="${id}" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" placeholder="${ph}" style="font-size:22px;letter-spacing:10px;text-align:center">`; }
+function loginAs(s){
+  s.fail=0; s.lockUntil=0; save();
+  ME={id:s.id,name:s.name,unit:s.unit,pinVer:s.pinVer}; try{localStorage.setItem(MEKEY,JSON.stringify(ME));}catch(e){}
+  view.unit=s.unit; view.tab='board'; closeSheet(); render(); toast('你好，'+s.name);
+}
+function openPin(s, force){
+  const back = `<button id="pinBack">返回</button>`;
+  if(!s.pin){
+    // 第一次：設定密碼
+    openSheet(`<div class="bar"><b>設定個人密碼</b>${back}</div><div class="body">
+      <div class="hint" style="margin:0 0 10px"><b>${esc(s.name)}</b>（${UNIT_NAME[s.unit]}）你好，第一次使用請設定 4 位數密碼，之後換手機或換人使用時要輸入。</div>
+      <label class="f">輸入 4 位數密碼</label>${pinInput('p1','••••')}
+      <label class="f">再輸入一次</label>${pinInput('p2','••••')}
+      <div class="err" id="pinErr"></div><div style="height:12px"></div>
+      <button class="btn primary" id="pinGo">設定並進入</button></div>`, true);
+    document.getElementById('pinBack').onclick=()=>pickMe(force);
+    document.getElementById('pinGo').onclick=()=>{
+      const a=document.getElementById('p1').value, b=document.getElementById('p2').value, e=document.getElementById('pinErr');
+      if(!/^\d{4}$/.test(a)) return e.textContent='請輸入 4 位數字';
+      if(/^(\d)\1{3}$/.test(a) || '0123456789'.includes(a) || '9876543210'.includes(a)) return e.textContent='太好猜了（如 1111、1234），請換一組';
+      if(a!==b) return e.textContent='兩次輸入不一樣';
+      s.pin=a; s.pinVer=(s.pinVer||0)+1; save(); loginAs(s);
+    };
+    setTimeout(()=>document.getElementById('p1')?.focus(),50);
+    return;
+  }
+  // 已設定：驗證
+  openSheet(`<div class="bar"><b>輸入密碼</b>${back}</div><div class="body">
+    <div class="hint" style="margin:0 0 10px">${esc(s.name)}（${UNIT_NAME[s.unit]}）</div>
+    ${pinInput('pv','請輸入 4 位數密碼')}
+    <div class="err" id="pinErr"></div><div style="height:12px"></div>
+    <button class="btn primary" id="pinGo">進入</button>
+    <div style="height:10px"></div><button class="btn ghost" id="pinForgot">忘記密碼？</button></div>`, true);
+  document.getElementById('pinBack').onclick=()=>pickMe(force);
+  document.getElementById('pinForgot').onclick=()=>openForgot(s, force);
+  const go=()=>{
+    const e=document.getElementById('pinErr'), now=Date.now();
+    if(s.lockUntil>now) return e.textContent=`錯誤太多次，請 ${Math.ceil((s.lockUntil-now)/60000)} 分鐘後再試，或按「忘記密碼」`;
+    if(document.getElementById('pv').value===s.pin) return loginAs(s);
+    s.fail=(s.fail||0)+1;
+    if(s.fail>=PIN_MAX_FAIL){ s.lockUntil=now+PIN_LOCK_MIN*60000; s.fail=0; e.textContent=`錯誤 ${PIN_MAX_FAIL} 次，鎖定 ${PIN_LOCK_MIN} 分鐘`; }
+    else e.textContent=`密碼錯誤（還可以試 ${PIN_MAX_FAIL-s.fail} 次）`;
+    save(); document.getElementById('pv').value='';
+  };
+  document.getElementById('pinGo').onclick=go;
+  document.getElementById('pv').onkeydown=ev=>{ if(ev.key==='Enter') go(); };
+  setTimeout(()=>document.getElementById('pv')?.focus(),50);
+}
+function openForgot(s, force){
+  openSheet(`<div class="bar"><b>忘記密碼</b><button id="fgBack">返回</button></div><div class="body">
+    <div class="content" style="margin-top:0">請主管到「設定 → 同仁名單」按「重設密碼」，你下次選名字時就能設定新密碼。</div>
+    <button class="btn ghost" id="fgOk">我知道了</button></div>`, true);
+  document.getElementById('fgBack').onclick=()=>openPin(s, force);
+  document.getElementById('fgOk').onclick=()=>pickMe(force);
+}
+
+/* ========== sheet / viewer ========== */
+let sheetLocked=false;
+function openSheet(html, locked){ sheetLocked=!!locked; const s=document.getElementById('sheet'); s.innerHTML=html; s.scrollTop=0; document.getElementById('mask').classList.add('show');
+  s.querySelectorAll('[data-close]').forEach(b=>b.onclick=closeSheet); }
+function closeSheet(){ document.getElementById('mask').classList.remove('show'); if(!meValid()){ ME=null; renderMe(); document.getElementById('app').innerHTML=''; setTimeout(()=>pickMe(true),0); } }
+document.getElementById('mask').onclick = e=>{ if(e.target.id==='mask' && !sheetLocked) closeSheet(); };
+
+function openViewer(f){
+  document.getElementById('vname').textContent = f.name;
+  const body = document.getElementById('vbody');
+  if(f.blob && f.type==='pdf'){
+    body.innerHTML = `<iframe src="${f.blob}#toolbar=0&navpanes=0"></iframe>`;
+  } else if(f.type==='xlsx'){
+    const cols='ABCDEF'.split('');
+    body.innerHTML = `<div class="grid"><table><tr><th></th>${cols.map(c=>`<th>${c}</th>`).join('')}</tr>${
+      Array.from({length:18},(_,r)=>`<tr><th>${r+1}</th>${cols.map((c,i)=>`<td>${r===0?['日期','星期','類別','說明','負責','備註'][i]:(i===0?'10/'+(r):i===1?'一二三四五六日'[(r+2)%7]:'　')}</td>`).join('')}</tr>`).join('')}</table></div>
+      <div class="hint" style="color:#aaa;text-align:center;margin-top:10px">（預覽用示意畫面，正式版顯示真實內容）</div>`;
+  } else {
+    body.innerHTML = [1,2].map(n=>`<div class="page"><h4>${esc(f.name.replace(/\.\w+$/,''))}${n>1?'（續）':''}</h4>${Array.from({length:14},(_,i)=>`<div class="ln" style="width:${60+((i*37+n*13)%40)}%"></div>`).join('')}</div>`).join('')
+      + `<div class="hint" style="color:#aaa;text-align:center">（預覽用示意畫面，正式版顯示真實內容）</div>`;
+  }
+  document.getElementById('viewer').classList.add('show');
+}
+document.getElementById('vclose').onclick = ()=>{ document.getElementById('viewer').classList.remove('show'); document.getElementById('vbody').innerHTML=''; };
+document.getElementById('viewer').addEventListener('contextmenu', e=>e.preventDefault());
+
+/* ========== 設定（通行碼） ========== */
+let adminOK = false;
+const admin = {tab:'posts', filter:'on', expand:null, edit:null, draftFiles:[]};
+
+document.getElementById('openAdmin').onclick = ()=>{
+  if(adminOK) return renderAdmin();
+  openSheet(`<div class="bar"><b>設定</b><button data-close>取消</button></div>
+    <div class="body"><label class="f">請輸入通行碼</label>
+      <input class="inp" id="pc" type="password" inputmode="numeric" autocomplete="off">
+      <div class="err" id="pcErr"></div>
+      <div style="height:12px"></div><button class="btn primary" id="pcGo">進入設定</button></div>`);
+  const go = ()=>{ if(document.getElementById('pc').value===DB.passcode){ adminOK=true; renderAdmin(); } else document.getElementById('pcErr').textContent='通行碼錯誤'; };
+  document.getElementById('pcGo').onclick = go;
+  document.getElementById('pc').onkeydown = e=>{ if(e.key==='Enter') go(); };
+  setTimeout(()=>document.getElementById('pc')?.focus(),50);
+};
+
+function renderAdmin(){
+  const tabs = [['posts','公告管理'],['new',admin.edit?'編輯公告':'新增公告'],['staff','同仁名單'],['pass','通行碼']];
+  let h = `<div class="bar"><b>設定</b><button id="lock">登出</button><button data-close>關閉</button></div><div class="body">
+    <div class="seg">${tabs.map(([k,n])=>`<button data-at="${k}" class="${admin.tab===k?'on':''}">${n}</button>`).join('')}</div>`;
+  if(admin.tab==='posts') h += adminPosts();
+  if(admin.tab==='new') h += adminForm();
+  if(admin.tab==='staff') h += adminStaff();
+  if(admin.tab==='pass') h += `<div class="panel"><h4>變更通行碼</h4>
+      <label class="f">新通行碼（至少 4 碼）</label><input class="inp" id="np" type="password">
+      <div class="err" id="npErr"></div><div style="height:10px"></div><button class="btn primary" id="npGo">儲存</button>
+      <div class="hint" style="margin-top:10px">有通行碼的人都可以上架、下架公告與管理同仁名單。變更後請通知所有管理者。</div></div>`;
+  h += '</div>';
+  const keepScroll = document.getElementById('sheet').scrollTop;
+  openSheet(h);
+  document.getElementById('sheet').scrollTop = keepScroll;
+  document.getElementById('lock').onclick = ()=>{ adminOK=false; closeSheet(); toast('已登出設定'); };
+  document.querySelectorAll('[data-at]').forEach(b=>b.onclick=()=>{ if(b.dataset.at!=='new'){admin.edit=null;admin.draftFiles=[];} admin.tab=b.dataset.at; renderAdmin(); document.getElementById('sheet').scrollTop=0; });
+  bindAdmin();
+}
+
+function adminPosts(){
+  const groups = {on:'上架中',plan:'排定上架',off:'已下架'};
+  const cnt = k=>DB.posts.filter(p=>status(p).state===k).length;
+  const list = DB.posts.filter(p=>status(p).state===admin.filter)
+    .sort(admin.filter==='off' ? (a,b)=>status(b).offDate.localeCompare(status(a).offDate) : sortPosts);
+  let h = `<div class="months">${Object.entries(groups).map(([k,n])=>`<button data-af="${k}" class="${admin.filter===k?'on':''}">${n} ${cnt(k)}</button>`).join('')}</div><div class="panel">`;
+  if(!list.length) h += `<div class="empty" style="padding:20px 0">沒有資料</div>`;
+  h += list.map(p=>{
+    const st=status(p), tg=targetStaff(p), rd=DB.reads[p.id]||{};
+    const readN = tg.filter(s=>rd[s.id]).length;
+    const pct = tg.length? Math.round(readN/tg.length*100):0;
+    const stTag = {on:'<span class="status st-on">上架中</span>',plan:'<span class="status st-plan">排定</span>',off:'<span class="status st-off">已下架</span>'}[st.state];
+    const exp = admin.expand===p.id;
+    return `<div class="arow">
+      <div class="t">${p.pinned?'📌 ':''}${esc(p.title)}</div>
+      <div class="meta" style="margin-top:3px">${stTag}${tagsHTML(p)}<span>上架 ${md(p.publishOn)}</span>
+        <span>${st.state==='off'?'下架 '+md(st.offDate)+'（封存於 '+ym(st.offDate)+'）':(p.expiresOn?'到期 '+md(p.expiresOn):'不自動下架')}</span>${p.files.length?`<span>📎${p.files.length}</span>`:''}</div>
+      ${st.state!=='plan'?`<div class="meta" style="margin-top:6px">已讀 <b style="color:var(--ink)">${readN}/${tg.length}</b> 人</div><div class="prog"><i style="width:${pct}%"></i></div>`:''}
+      ${exp?`<div class="names">${tg.map(s=>`<span class="${rd[s.id]?'':'no'}">${rd[s.id]?'✓':'✗'} ${esc(s.name)}<small style="opacity:.6"> ${UNIT_NAME[s.unit]}${rd[s.id]?' '+readAt(rd[s.id]):''}</small>${rd[s.id]&&readSig(rd[s.id])?`<br><img src="${readSig(rd[s.id])}" style="height:40px;background:#fff;border-radius:4px;margin-top:3px">`:''}</span>`).join('')||'<span>此單位沒有同仁</span>'}</div>`:''}
+      <div class="acts">
+        ${st.state!=='plan'?`<button class="btn ghost small" data-rx="${p.id}">${exp?'收起回條':'已讀回條／簽名'}</button>`:''}
+        ${st.state==='off'
+          ? `<button class="btn ghost small" data-re="${p.id}">重新上架</button>`
+          : `<button class="btn ghost small" data-off="${p.id}">下架</button><button class="btn ghost small" data-pin="${p.id}">${p.pinned?'取消置頂':'置頂'}</button>`}
+        <button class="btn ghost small" data-ed="${p.id}">編輯</button>
+      </div></div>`;
+  }).join('');
+  return h + `</div><div class="hint">公告不提供刪除，下架後依下架月份封存於歷史區，永久留存。</div>`;
+}
+
+function adminForm(){
+  const p = admin.edit ? DB.posts.find(x=>x.id===admin.edit) : null;
+  const T = today();
+  const units = p ? p.units : [];
+  const all = units.length===3;
+  const files = admin.draftFiles;
+  return `<div class="panel">
+    <label class="f">標題 *</label><input class="inp" id="fTitle" maxlength="60" value="${p?esc(p.title):''}">
+    <label class="f">內容</label><textarea class="inp" id="fBody">${p?esc(p.body):''}</textarea>
+    <label class="f">顯示單位 *</label>
+    <div class="chk">
+      <label><input type="checkbox" id="uAll" ${all?'checked':''}> 全部</label>
+      ${UNITS.map(u=>`<label><input type="checkbox" class="uOne" value="${u.id}" ${units.includes(u.id)?'checked':''}> ${u.name}</label>`).join('')}
+    </div>
+    <div class="row">
+      <div><label class="f">上架日 *</label><input class="inp" type="date" id="fPub" value="${p?p.publishOn:T}"></div>
+      <div><label class="f">到期日（到期自動下架）</label><input class="inp" type="date" id="fExp" value="${p&&p.expiresOn?p.expiresOn:''}"></div>
+    </div>
+    <div class="hint" style="margin:4px 0 0">到期日留空＝不自動下架，需手動下架。</div>
+    <label class="f">置頂</label>
+    <div class="chk"><label><input type="checkbox" id="fPin" ${p&&p.pinned?'checked':''}> 置頂顯示在最上方</label></div>
+    <label class="f">附件（Word／PDF／Excel，最多 ${MAX_FILES} 個，單檔 ${MAX_MB}MB 以內）</label>
+    <div class="files" style="margin:4px 0">${files.map((f,i)=>`<div class="file"><span class="ficon ${f.type}">${f.type==='docx'?'DOC':f.type==='xlsx'?'XLS':'PDF'}</span><span class="fn">${esc(f.name)}</span><span class="fs">${fsize(f.size)}</span><button class="btn ghost small" data-rmf="${i}">移除</button></div>`).join('')}</div>
+    ${files.length<MAX_FILES?`<input type="file" id="fFile" multiple accept=".pdf,.doc,.docx,.xls,.xlsx">`:''}
+    <div class="err" id="fErr"></div>
+    <div style="height:14px"></div>
+    <button class="btn primary" id="fSave">${p?'儲存修改':'上架公告'}</button>
+    ${p?'<div style="height:8px"></div><button class="btn ghost" id="fCancel">取消編輯</button>':''}
+  </div>`;
+}
+
+function adminStaff(){
+  return `<div class="panel"><h4>新增同仁</h4>
+      <div class="row"><input class="inp" id="sName" placeholder="姓名"><select class="inp" id="sUnit">${UNITS.map(u=>`<option value="${u.id}">${u.name}</option>`).join('')}</select></div>
+      <div class="err" id="sErr"></div><div style="height:10px"></div><button class="btn primary" id="sAdd">新增</button></div>
+    ${UNITS.map(u=>{ const ppl=DB.staff.filter(s=>s.unit===u.id);
+      return `<div class="panel"><h4><span class="tag ${u.id}">${u.name}</span> ${ppl.length} 人</h4>
+      ${ppl.map(s=>`<div class="arow" style="display:flex;align-items:center;gap:8px;padding:8px 0"><span style="flex:1">${esc(s.name)} <small style="color:var(--sub)">${s.pin?'🔒 已設密碼':'未設密碼'}</small></span>${s.pin?`<button class="btn ghost small" data-rp="${s.id}">重設密碼</button>`:''}<button class="btn ghost small" data-del="${s.id}">刪除</button></div>`).join('')||'<div class="hint">尚無同仁</div>'}</div>`}).join('')}
+    <div class="hint">已讀回條的應讀人數＝公告單位內目前名單上的同仁。刪除同仁後，他的閱讀紀錄仍保留，但不再計入人數。</div>`;
+}
+
+function bindAdmin(){
+  const $ = id=>document.getElementById(id);
+  document.querySelectorAll('[data-af]').forEach(b=>b.onclick=()=>{admin.filter=b.dataset.af; admin.expand=null; renderAdmin();});
+  document.querySelectorAll('[data-rx]').forEach(b=>b.onclick=()=>{admin.expand = admin.expand===b.dataset.rx?null:b.dataset.rx; renderAdmin();});
+  document.querySelectorAll('[data-off]').forEach(b=>b.onclick=()=>{ const p=DB.posts.find(x=>x.id===b.dataset.off);
+    if(!confirm(`確定下架「${p.title}」？\n下架後會封存到 ${ym(today())} 的歷史區。`)) return;
+    p.published=false; p.offOn=today(); save(); render(); renderAdmin(); toast('已下架並封存'); });
+  document.querySelectorAll('[data-re]').forEach(b=>b.onclick=()=>{ const p=DB.posts.find(x=>x.id===b.dataset.re);
+    if(p.expiresOn && p.expiresOn<today()){ toast('已過到期日，請先編輯延後到期日'); admin.edit=p.id; admin.draftFiles=p.files.slice(); admin.tab='new'; return renderAdmin(); }
+    p.published=true; p.offOn=null; save(); render(); renderAdmin(); toast('已重新上架'); });
+  document.querySelectorAll('[data-pin]').forEach(b=>b.onclick=()=>{ const p=DB.posts.find(x=>x.id===b.dataset.pin); p.pinned=!p.pinned; save(); render(); renderAdmin(); });
+  document.querySelectorAll('[data-ed]').forEach(b=>b.onclick=()=>{ const p=DB.posts.find(x=>x.id===b.dataset.ed); admin.edit=p.id; admin.draftFiles=p.files.slice(); admin.tab='new'; renderAdmin(); document.getElementById('sheet').scrollTop=0; });
+
+  // 表單
+  if($('fSave')){
+    const all=$('uAll'), ones=[...document.querySelectorAll('.uOne')];
+    all.onchange=()=>ones.forEach(c=>c.checked=all.checked);
+    ones.forEach(c=>c.onchange=()=>all.checked=ones.every(x=>x.checked));
+    const keep=()=>({t:$('fTitle').value,b:$('fBody').value,u:ones.filter(c=>c.checked).map(c=>c.value),pub:$('fPub').value,exp:$('fExp').value,pin:$('fPin').checked});
+    const restore=(v)=>{ $('fTitle').value=v.t; $('fBody').value=v.b; ones.forEach(c=>c.checked=v.u.includes(c.value)); document.getElementById('uAll').checked=v.u.length===3; $('fPub').value=v.pub; $('fExp').value=v.exp; $('fPin').checked=v.pin; };
+    if($('fFile')) $('fFile').onchange = e=>{
+      const v=keep(); const errs=[];
+      for(const f of e.target.files){
+        const t=ftype(f.name);
+        if(!t){ errs.push(`${f.name}：只接受 Word／PDF／Excel`); continue; }
+        if(f.size>MAX_MB*1048576){ errs.push(`${f.name}：超過 ${MAX_MB}MB（${fsize(f.size)}）`); continue; }
+        if(admin.draftFiles.length>=MAX_FILES){ errs.push(`最多 ${MAX_FILES} 個附件，${f.name} 未加入`); continue; }
+        const blob = URL.createObjectURL(f);
+        admin.draftFiles.push({name:f.name,type:t,size:f.size,blob});
+      }
+      renderAdmin(); restore(v); if(errs.length) $('fErr').innerHTML=errs.map(esc).join('<br>');
+    };
+    document.querySelectorAll('[data-rmf]').forEach(b=>b.onclick=()=>{ const v=keep(); admin.draftFiles.splice(+b.dataset.rmf,1); renderAdmin(); restore(v); });
+    if($('fCancel')) $('fCancel').onclick=()=>{ admin.edit=null; admin.draftFiles=[]; admin.tab='posts'; renderAdmin(); };
+    $('fSave').onclick=()=>{
+      const v=keep(); const err=$('fErr');
+      if(!v.t.trim()) return err.textContent='請填標題';
+      if(!v.u.length) return err.textContent='請選擇顯示單位';
+      if(!v.pub) return err.textContent='請填上架日';
+      if(v.exp && v.exp<v.pub) return err.textContent='到期日不能早於上架日';
+      const data={title:v.t.trim(),body:v.b,units:UNITS.map(u=>u.id).filter(id=>v.u.includes(id)),publishOn:v.pub,expiresOn:v.exp||null,pinned:v.pin,files:admin.draftFiles.slice()};
+      if(admin.edit){ Object.assign(DB.posts.find(x=>x.id===admin.edit),data); toast('已儲存'); }
+      else { DB.posts.push(Object.assign({id:'p'+(++DB.seq),published:true,offOn:null},data)); toast(v.pub>today()?'已排定，'+md(v.pub)+' 上架':'已上架'); }
+      save(); admin.edit=null; admin.draftFiles=[]; admin.tab='posts'; admin.filter = v.pub>today()?'plan':'on'; render(); renderAdmin();
+    };
+  }
+  // 同仁
+  if($('sAdd')) $('sAdd').onclick=()=>{ const n=$('sName').value.trim(), u=$('sUnit').value;
+    if(!n) return $('sErr').textContent='請填姓名';
+    if(DB.staff.some(s=>s.name===n && s.unit===u)) return $('sErr').textContent='此單位已有同名同仁';
+    DB.staff.push({id:'s'+(++DB.seq),name:n,unit:u,pin:null,pinVer:0,fail:0,lockUntil:0}); save(); renderAdmin(); toast('已新增 '+n); };
+  document.querySelectorAll('[data-rp]').forEach(b=>b.onclick=()=>{ const s=DB.staff.find(x=>x.id===b.dataset.rp);
+    if(!confirm(`重設「${s.name}」的密碼？\n舊密碼立即失效，他已登入的手機也會被登出，下次選名字時設定新密碼。`)) return;
+    s.pin=null; s.fail=0; s.lockUntil=0; save(); render(); renderAdmin(); toast('已重設，請通知 '+s.name); });
+  document.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{ const s=DB.staff.find(x=>x.id===b.dataset.del);
+    if(!confirm(`確定從名單刪除「${s.name}」？`)) return;
+    DB.staff=DB.staff.filter(x=>x.id!==s.id); save(); render(); renderAdmin(); toast('已刪除'); });
+  // 通行碼
+  if($('npGo')) $('npGo').onclick=()=>{ const v=$('np').value; if(v.length<4) return $('npErr').textContent='至少 4 碼'; DB.passcode=v; save(); toast('通行碼已更新'); $('np').value=''; };
+}
+
+document.getElementById('testMe').onclick=()=>{
+  // 每次都清掉測試員的閱讀紀錄，確保全部未讀、可以重簽
+  const unit = (ME && ME.unit) || 'mala';
+  const t = DB.staff.find(s=>s.id.startsWith('t') && s.unit===unit) || DB.staff.find(s=>s.id.startsWith('t'));
+  if(!t) return toast('測試員已被刪除，請先重置假資料');
+  DB.staff.filter(s=>s.id.startsWith('t')).forEach(s=>{ Object.values(DB.reads).forEach(r=>delete r[s.id]); s.pin=null; s.fail=0; s.lockUntil=0; }); save();
+  ME=null; try{localStorage.removeItem(MEKEY);}catch(e){}
+  view.tab='board'; view.unit=t.unit; document.getElementById('app').innerHTML=''; renderMe(); openPin(t, true); toast(t.name+'：公告全部未讀，請先設定密碼');
+};
+document.getElementById('resetDemo').onclick=()=>{ if(!confirm('重置所有假資料？')) return; localStorage.removeItem(KEY); localStorage.removeItem(MEKEY); location.reload(); };
+
+load(); render();
+</script>
+</body>
+</html>

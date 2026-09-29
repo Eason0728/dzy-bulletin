@@ -1,0 +1,9 @@
+.DS_Store
+gas/.clasp.json
+spike/gas/.clasp.json
+spike/sample/*.pdf
+spike/sample/*.docx
+spike/sample/*.xlsx
+node_modules/
+test-results/
+playwright-report/

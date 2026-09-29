@@ -225,5 +225,25 @@ M.setAdminInit('newpass88');
 for (let i = 0; i < 5; i++) C('adminLogin', { pass: 'wrong' + i });
 eq('pending init locked after 5 wrong', C('adminLogin', { pass: 'newpass88' }).code, 'ADMIN_LOCKED');
 
+// 簽名檔名不可路徑穿越（Mac mini 的 SQLite store：postId／staffId 帶 ../ 也只會存在 sigs/ 內、檔名只剩安全字元）
+{ const fs = require('fs'), os = require('os'), path = require('path'), crypto = require('crypto');
+  const { makeSqliteStore } = require('../server/store-sqlite.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dzyb-sig-')), data = path.join(dir, 'data');
+  const st = makeSqliteStore(data);
+  st.load({ posts: [{ id: '../x', title: '穿越', body: '', units: ['mala'], publishOn: DZYB.today(), expiresOn: '', pinned: false, published: true, offOn: '', files: [],
+    createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }],
+    staff: [{ id: 'S-900', name: '穿越員', unit: 'mala', salt: '', pinHash: '', pinVer: 0, fail: 0, active: true, createdAt: '', deletedAt: '', src: '', store: '' }], reads: [], log: [] });
+  const nc = { sha256Hex: (x) => crypto.createHash('sha256').update(x, 'utf8').digest('hex'),
+    hmacB64url: (k, m) => crypto.createHmac('sha256', Buffer.from(k, 'utf8')).update(m, 'utf8').digest('base64url'), randomHex: (n) => crypto.randomBytes(n).toString('hex') };
+  const sv = makeService_(DZYB, st, {}, makeAuth_(nc, DZYB), { nowMs: () => Date.now(), today: () => DZYB.today() });
+  const tk = sv.call('setPin', { staffId: 'S-900', pin: '2580' }).data.token;
+  const ackR = sv.call('ack', { token: tk, postId: '../x', sig: 'data:image/png;base64,iVBORw0K' }); eq('sig traversal ack ok', ackR.ok ? true : ackR, true);
+  st.addRead({ postId: '../x', staffId: '../../y', name: 'y', unit: 'mala', at: '', sig: 'data:image/jpeg;base64,/9j/' });   // staffId 也帶 ../（直接打 store）
+  const files = fs.readdirSync(path.join(data, 'sigs'));
+  eq('sig traversal stays in sigs/ with safe name', [files.length, files.every((f) => /^[A-Za-z0-9_-]+\.(png|jpg)$/.test(f))], [2, true]);
+  eq('sig traversal nothing outside', fs.readdirSync(dir).concat(fs.readdirSync(data)).filter((f) => /\.(png|jpg)$/.test(f)), []);
+  eq('sig traversal readable', [typeof st.getSigs('../x')['S-900'], typeof st.getSigs('../x')['../../y']], ['string', 'string']);
+  st.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+
 console.log(`service${process.env.DRIVER === 'server' ? '（伺服器）' : ''}: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -449,6 +449,14 @@ def moved_check(b):
     pg.evaluate("sessionStorage.setItem('dzyb_movedReloadAt', String(Date.now() - 5 * 60 * 1000 - 1000))")   # 上次重載是 5 分鐘前
     pg.fill('#pv', '2580'); pg.click('#pfGo')
     check('M 超過 5 分鐘後再收到 MOVED 可以再自動重載一次', wait_loads(3) == 3, f'載入 {loads[0]} 次')
+    # 管理端走同一個 call()：主管登入收到 MOVED 也自動重載；5 分鐘內再一次就停在提示
+    pg.evaluate("sessionStorage.setItem('dzyb_movedReloadAt', String(Date.now() - 5 * 60 * 1000 - 1000))")
+    pg.wait_for_selector('#toAdmin', timeout=8000); pg.wait_for_timeout(300)
+    pg.click('#toAdmin'); pg.fill('#pc', 'x' * 8); pg.click('#pcGo')
+    check('M 主管登入收到 MOVED 自動重載', wait_loads(4) == 4 and 'adminLogin' in calls, f'載入 {loads[0]} 次')
+    pg.wait_for_selector('#toAdmin', timeout=8000); pg.wait_for_timeout(300)
+    pg.click('#toAdmin'); pg.fill('#pc', 'x' * 8); pg.click('#pcGo'); pg.wait_for_selector('#pcErr:not(:empty)', timeout=8000); pg.wait_for_timeout(800)
+    check('M 主管登入 5 分鐘內再 MOVED：停在提示', loads[0] == 4 and pg.inner_text('#pcErr') == '系統搬家中，約 10 分鐘後請重新整理', f'載入 {loads[0]} 次、「{pg.inner_text("#pcErr")}」')
     check('M 全程沒有頁面錯誤（pageerror）', not errs, errs)
     ctx.close()
 

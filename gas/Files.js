@@ -4,6 +4,7 @@
 
 var FOLDER_NAME_ = '鼎兆元｜電子佈告欄附件';
 var SIG_FOLDER_NAME_ = '簽名';
+var SIG_MIME_ = ['image/png', 'image/jpeg'];   // 簽名圖實際用的型別（saveSig 只收這兩種）
 
 function folderByProp_(key, name, parent) {
   var pr = PropertiesService.getScriptProperties(), id = pr.getProperty(key);
@@ -56,6 +57,30 @@ function makeFiles_() {
       if (!m) throw err('BAD_REQ', '簽名格式錯誤');
       var ext = m[1] === 'image/png' ? '.png' : '.jpg';
       return sigFolder_().createFile(Utilities.newBlob(Utilities.base64Decode(m[2]), m[1], name + ext)).getId();
+    },
+    // 橋接專用（sig／sigs.get）：只讀「簽名資料夾」裡的 PNG／JPEG，其他一律回 null、不丟錯（不洩漏檔名）。
+    // 金鑰外洩時，影響範圍也只到簽名圖，不會變成「用 id 讀整個雲端硬碟」（#13 第 1 輪 B1）。
+    readSigSafe: function (id, folderId) {
+      try {
+        var f = DriveApp.getFileById(String(id || '')), fid = folderId || sigFolder_().getId(), ps = f.getParents(), inSig = false;
+        if (SIG_MIME_.indexOf(f.getMimeType()) < 0) return null;
+        while (ps.hasNext()) if (ps.next().getId() === fid) { inSig = true; break; }
+        if (!inSig) return null;
+        var b = f.getBlob();
+        return 'data:' + b.getContentType() + ';base64,' + Utilities.base64Encode(b.getBytes());
+      } catch (e) { return null; }
+    },
+    // 批次上傳簽名（橋接 sigs.put）：資料夾只找一次；逐張處理，失敗的那張回 null，不讓前面已建的檔變孤兒、下一輪也不整批重傳
+    saveSigs: function (items) {
+      var fo = sigFolder_();
+      return items.map(function (x) {
+        try {
+          var m = /^data:(image\/(?:png|jpeg));base64,(.+)$/.exec(String(x && x.data || ''));
+          if (!m) return null;
+          var name = String(x && x.name || 'sig').replace(/[^\w.-]/g, '_') + (m[1] === 'image/png' ? '.png' : '.jpg');
+          return fo.createFile(Utilities.newBlob(Utilities.base64Decode(m[2]), m[1], name)).getId();
+        } catch (e) { console.error('saveSigs: ' + e); return null; }
+      });
     },
     readSig: function (id) {
       var b = DriveApp.getFileById(id).getBlob();

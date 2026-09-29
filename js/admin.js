@@ -304,5 +304,6 @@ var Admin = (function () {
     };
   }
 
-  return { open: open, needLogin: needLogin, takeDirty: takeDirty };
+  function hasDraft() { return !!a.draft; }                          // api.js：收到 MOVED 時有草稿就不自動重載
+  return { open: open, needLogin: needLogin, takeDirty: takeDirty, hasDraft: hasDraft };
 })();

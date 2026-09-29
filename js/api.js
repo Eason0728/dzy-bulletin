@@ -11,7 +11,7 @@ var API = (function () {
       return r;
     }).then(function (r) {
       if (!r.ok && r.code === 'BAD_RESP') r.code = 'SERVER';   // 對外仍是 C12 的 SERVER
-      if (!r.ok && r.code === 'MOVED') return moved(r);
+      if (!r.ok && r.code === 'MOVED') return moved(r, action);
       return r;
     });
   }
@@ -19,8 +19,14 @@ var API = (function () {
   // 防重載迴圈：GitHub Pages 快取約 10 分鐘，重載後可能仍是舊網址 → 又 MOVED；所以 5 分鐘內最多自動重載一次，
   // 之後只回提示文字（sessionStorage 記時間；讀寫失敗就當作剛重載過，寧可不重載也不要無限重載）。
   var MOVED_KEY = 'dzyb_movedReloadAt', MOVED_GAP = 5 * 60 * 1000;
-  function moved(r) {
+  // 管理端正在編輯公告（草稿只在記憶體）或這次就是存公告：不自動重載，免得寫到一半的長公告消失；只顯示提示讓主管自己先複製內容（#13 建議 7）
+  function editing(action) {
+    if (action === 'savePost') return true;
+    try { return typeof Admin !== 'undefined' && !!Admin.hasDraft && Admin.hasDraft(); } catch (e) { return false; }
+  }
+  function moved(r, action) {
     UI.store.del('lastBad');
+    if (editing(action)) return { ok: false, code: 'MOVED', message: '系統搬家中，請先複製你寫的內容，約 10 分鐘後重新整理再貼上' };
     var last = Date.now();
     try { last = Number(sessionStorage.getItem(MOVED_KEY)) || 0; } catch (e) {}
     if (Date.now() - last >= MOVED_GAP) {

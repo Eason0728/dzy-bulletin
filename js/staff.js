@@ -11,6 +11,8 @@ var Staff = (function () {
   function start() {
     $('foot').textContent = '鼎兆元｜電子佈告欄 v' + CFG.VERSION + (CFG.MODE === 'local' ? '（本機假資料）' : '');
     if (CFG.MODE === 'local') {
+      // 本機假資料提示條由程式產生，不寫在 HTML 原始碼（避免 LINE 等連結預覽抓到）
+      $('demoBar').innerHTML = '🧪 本機假資料｜管理通行碼 <b>1234</b>｜假同仁密碼 <b>0000</b> <button id="testMe">🖊 用未讀測試員登入</button> <button id="resetDemo">重置假資料</button>';
       $('demoBar').hidden = false;
       $('resetDemo').onclick = function () { if (confirm('重置所有假資料？')) { DZYB_MOCK.reset(); clearMe(); location.reload(); } };
       $('testMe').onclick = function () { DZYB_MOCK.testerReset(); clearMe(); v.board = v.hist = null; UI.toast('測試員的密碼與簽名已清除'); picker(true, 'mala'); };

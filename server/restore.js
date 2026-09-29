@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /* 鼎兆元｜電子佈告欄 — 還原腳本（還原演練與真正災難復原共用）
  * 用法：node server/restore.js <快照檔 bulletin-YYYY-MM-DD_HHmm.db.gz 或 .db> [--launchd]
- *   停伺服器 → 驗快照 → 換 DB（舊庫改名留著，不刪）→ 起伺服器 → 印筆數（與 logs/daily.log 那天的快照行同一個格式，直接比對）。
- *   --launchd：由本腳本 bootout／bootstrap 三個 job（com.dzy.bulletin、.mirror、.daily，~/Library/LaunchAgents/*.plist）；
+ *   停伺服器 → 驗快照 → 換 DB（舊庫改名留著，不刪）→ 起伺服器與 daily（mirror 不自動載回，見下方步驟 3）→ 印筆數（與 logs/daily.log 那天的快照行同一個格式，直接比對）。
+ *   --launchd：由本腳本 bootout 三個 job（com.dzy.bulletin、.mirror、.daily，~/Library/LaunchAgents/*.plist），事後只 bootstrap 伺服器與 daily；
  *              沒加就要自己先 bootout 三個 job、事後自己 bootstrap。
  *   不論哪種，換檔前一律確認：PORT 上沒有伺服器回應、lsof 查不到任何程序開著 bulletin.db／-wal／-shm、拿得到 mirror 與 daily 工作鎖；
  *   改名前再查一次沒有殘留的 -wal／-shm。任一條不成立就拒絕並說明原因（#14 S3）。
@@ -18,6 +18,7 @@ const { DatabaseSync } = require('node:sqlite');
 const J = require('./job-common.js');
 
 const JOBS = ['com.dzy.bulletin', 'com.dzy.bulletin.mirror', 'com.dzy.bulletin.daily'];
+const MIRROR_JOB = 'com.dzy.bulletin.mirror';
 
 // 開著資料庫檔的 PID（lsof）；找不到 lsof 回 null。只查存在的檔（bulletin.db 本身與 -wal／-shm）。
 // lsof 沒找到任何程序時 exit 1，那是正常情況。
@@ -25,7 +26,7 @@ function holders(base) {
   const files = ['', '-wal', '-shm'].map((s) => base + s).filter((f) => fs.existsSync(f));
   if (!files.length) return [];
   try { return execFileSync('lsof', ['-t', '--'].concat(files), { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').filter(Boolean).map(Number); }
-  catch (e) { if (e.code === 'ENOENT') return null; return e.status === 1 ? [] : String(e.stdout || '').split('\n').filter(Boolean).map(Number); }
+  catch (e) { return e.status === 1 && !e.signal && !String(e.stdout || '').trim() ? [] : null; }   // 1＝沒人開著；找不到 lsof、被 signal 殺掉、其他結束碼一律「無法確認」
 }
 const TABLES = ['posts', 'staff', 'reads', 'log', 'kv'];
 
@@ -73,7 +74,7 @@ async function restore(o) {
   }
   if (await serverUp(port)) refuse(`127.0.0.1:${port} 上的伺服器還開著，請先停止（${bootoutHint}）或加 --launchd`);
   const h1 = holders(dbFile);
-  if (h1 === null) refuse('找不到 lsof，無法確認資料庫沒有被開著，拒絕還原');
+  if (h1 === null) refuse('lsof 無法執行或異常結束，無法確認資料庫沒有被開著，拒絕還原');
   if (h1.length) refuse(`還有程序開著資料庫（PID ${h1.join(', ')}）：伺服器或 mirror／daily 還在跑，請先停止（${bootoutHint}）或加 --launchd`);
   for (const name of ['mirror', 'daily']) {
     const r = J.takeLock(dir, name);
@@ -88,20 +89,25 @@ async function restore(o) {
     // 改名前再檢查一次：這段空檔若有人（例如被 KeepAlive 拉起的伺服器）建了新庫或 -wal／-shm，套到還原的庫上會壞掉 → 拒絕
     const stray = ['', '-wal', '-shm'].filter((sfx) => fs.existsSync(dbFile + sfx));
     const h2 = holders(keep);
-    if (stray.length || (h2 && h2.length)) {
-      refuse(`換檔途中有程序重新開了資料庫（${stray.map((s) => 'bulletin.db' + s).join('、') || 'PID ' + h2.join(', ')}），拒絕還原；` +
+    if (stray.length || h2 === null || h2.length) {
+      refuse(`換檔途中有程序重新開了資料庫（${stray.map((s) => 'bulletin.db' + s).join('、') || (h2 ? 'PID ' + h2.join(', ') : 'lsof 無法確認')}），拒絕還原；` +
         `舊庫保留在 ${path.basename(keep)}，請先停止所有 job 再處理`);
     }
     fs.renameSync(tmp, dbFile);
     if (fs.existsSync(keep)) say('舊資料庫已改名保留：' + path.basename(keep));
   } finally { locks.forEach((r) => r()); locks.length = 0; }
-  // 3. 起伺服器與兩個背景工作
+  // 3. 起伺服器與 daily；**不自動載回 mirror**（#14 S5）：試算表是每小時鏡像、快照是每天一次，
+  //    災難還原時試算表很可能比快照新（快照之後到出事之前的已讀與 Drive id 只剩那一份），自動鏡像會用舊資料蓋掉它。
+  //    mirror.js 自己也會擋（本機筆數比上次鏡像少就拒絕），確認後手動 `node server/mirror.js --force` 或 bootstrap mirror。
+  const restart = JOBS.filter((l) => l !== MIRROR_JOB);
   if (o.launchd) {
-    JOBS.forEach((l) => launchctl(['bootstrap', `gui/${uid}`, plistOf(l)]));
+    restart.forEach((l) => launchctl(['bootstrap', `gui/${uid}`, plistOf(l)]));
     let up = false;
     for (let i = 0; i < 60 && !(up = await serverUp(port)); i++) await new Promise((ok) => setTimeout(ok, 500));
-    say(up ? '伺服器與 mirror／daily 已重新載入' : '✗ 伺服器 30 秒內沒有起來，請看 launchd 紀錄');
-  } else say('請重新載入三個 job：' + JOBS.map((l) => `launchctl bootstrap gui/${uid} ${plistOf(l)}`).join('；'));
+    say(up ? '伺服器與 daily 已重新載入（mirror 沒有載回）' : '✗ 伺服器 30 秒內沒有起來，請看 launchd 紀錄');
+  } else say('請重新載入伺服器與 daily：' + restart.map((l) => `launchctl bootstrap gui/${uid} ${plistOf(l)}`).join('；'));
+  say(`⚠ mirror 沒有載回：試算表可能比這份快照新。確認試算表狀態（需要的話先把差額補回來，或確認可以放棄）後，` +
+    `再手動執行 node server/mirror.js --force，或 launchctl bootstrap gui/${uid} ${plistOf(MIRROR_JOB)}`);
   // 4. 印筆數＋簽名圖可見度
   const db = new DatabaseSync(dbFile, { readOnly: true });
   let sig;

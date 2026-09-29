@@ -26,7 +26,7 @@ function openDb(dir, opts) {
   const file = path.join(dir, 'bulletin.db');
   if (!fs.existsSync(file)) throw new Error('找不到資料庫 ' + file);
   const db = new DatabaseSync(file, opts && opts.readOnly ? { readOnly: true } : {});
-  db.exec('PRAGMA busy_timeout = ' + BUSY_MS);
+  db.exec('PRAGMA busy_timeout = ' + (opts && opts.busyMs >= 0 ? Math.floor(opts.busyMs) : BUSY_MS));   // busyMs 只給測試縮短等待
   return db;
 }
 const rows = (db, sql, ...a) => db.prepare(sql).all(...a).map((r) => Object.assign({}, r));
@@ -51,6 +51,12 @@ function logLine(dir, file, s) {
   if (process.stdout.isTTY) console.log(line);
   fs.appendFileSync(path.join(logsDir(dir), file), line + '\n');
 }
+// 讀狀態檔：不存在回 { v:null }；存在但壞掉回 { corrupt:true }（呼叫端決定怎麼處理，不默默當成空的）
+function readState(dir, file) {
+  let raw;
+  try { raw = fs.readFileSync(path.join(dir, 'logs', file), 'utf8'); } catch (e) { return e.code === 'ENOENT' ? { v: null } : { corrupt: true }; }
+  try { const v = JSON.parse(raw); return v && typeof v === 'object' ? { v } : { corrupt: true }; } catch (e) { return { corrupt: true }; }
+}
 function readLast(dir, file) { try { return JSON.parse(fs.readFileSync(path.join(dir, 'logs', file), 'utf8')); } catch (e) { return null; } }
 // 結果檔先寫暫存再改名：/health 或守門不會讀到寫一半的 JSON
 function writeLast(dir, file, obj) {
@@ -58,6 +64,8 @@ function writeLast(dir, file, obj) {
   fs.writeFileSync(tmp, JSON.stringify(obj));
   fs.renameSync(tmp, p);
 }
+// 註：兩個程序同時判定同一把殘留鎖時仍有極小的競態（後者可能刪掉前者剛拿的新鎖）；只在「殘留＋同一秒兩個搶」時發生，
+//     launchd 同一 job 不重疊、回退時手動 --all 也會先看到「另一輪正在跑」，接受。
 // 工作鎖（logs/<name>.lock，內容＝PID）：同一個 DATA_DIR 同時只有一個持有者。
 // PID 已不在、或鎖檔超過 maxAgeMs（預設 6 小時；防 PID 被別的程序重用後永遠跳過）就當作殘留、清掉重拿。
 // 拿到回傳釋放函式，拿不到回傳 null。mirror.js／daily.js 各拿自己的鎖；restore.js 兩把都拿，換檔期間背景工作不會開庫。
@@ -65,7 +73,12 @@ function takeLock(dir, name, maxAgeMs) {
   const f = path.join(dir, 'logs', name + '.lock');
   fs.mkdirSync(path.dirname(f), { recursive: true });
   for (let i = 0; i < 2; i++) {
-    try { fs.writeFileSync(f, String(process.pid), { flag: 'wx' }); return () => { try { if (fs.readFileSync(f, 'utf8') === String(process.pid)) fs.unlinkSync(f); } catch (e) {} }; }
+    try {
+      fs.writeFileSync(f, String(process.pid), { flag: 'wx' });
+      const release = () => { try { if (fs.readFileSync(f, 'utf8') === String(process.pid)) fs.unlinkSync(f); } catch (e) {} };
+      release.touch = () => { try { const t = new Date(); fs.utimesSync(f, t, t); } catch (e) {} };   // 長時間執行（--all）定期更新 mtime，不被當成殘留
+      return release;
+    }
     catch (e) {
       if (e.code !== 'EEXIST') throw e;
       let pid = 0, age = 0;
@@ -81,4 +94,4 @@ function diskFreeMB(dir) { try { const s = fs.statfsSync(dir); return Math.floor
 // 錯誤只留代碼與短句（結果檔是本機檔，/health 不會帶出，但也不要把整個 stack 寫進去）
 const errText = (e) => String((e && (e.code ? e.code + ' ' : '') + (e.detail || e.message)) || e).slice(0, 300);
 
-module.exports = { BUSY_MS, loadEnv, dataDir, openDb, rows, counts, countText, taipeiStamp, logLine, readLast, writeLast, takeLock, diskFreeMB, errText };
+module.exports = { BUSY_MS, loadEnv, dataDir, openDb, rows, counts, countText, taipeiStamp, logLine, readState, readLast, writeLast, takeLock, diskFreeMB, errText };

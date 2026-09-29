@@ -1,5 +1,5 @@
 // 測試共用：假的 Google 服務（試算表／Drive／屬性／鎖／快取）＋把 gas/*.js 原封不動載進 vm＋本機 HTTP 假「Web App」包住 doPost。
-// 做法沿用 test/bridge.test.js（M2），抽成工廠給 test/jobs.test.js（M3）端到端驗 mirror.js／daily.js 打過去的 op 格式。不連任何 Google。
+// 做法沿用 test/bridge.test.js（M2，同步到 316ef4e：failDelete、bumpGen），抽成工廠給 test/jobs.test.js（M3）端到端驗 mirror.js／daily.js 打過去的 op 格式。不連任何 Google。
 'use strict';
 const fs = require('fs'), vm = require('vm'), path = require('path'), http = require('http'), crypto = require('crypto');
 
@@ -7,7 +7,8 @@ function makeFakeGas() {
   const props = {}, cache = {};
   // failNext：下一次呼叫此 op 時 Web App 回 500 HTML（模擬 Google 當掉）；
   // failCreate(name, k)：Drive createFile 丟錯（k＝這次呼叫第幾張，從 0 起算）→ 驗 saveSigs 逐張 null 契約（#14 S4）
-  const st = { lockFree: true, throwOnWrite: null, hits: {}, failNext: null, failCreate: null, createSeq: 0 };
+  // failDelete：{ name, n } 刪這個名稱的分頁時丟錯 n 次（同 M2 bridge.test.js）
+  const st = { lockFree: true, throwOnWrite: null, hits: {}, failNext: null, failCreate: null, createSeq: 0, failDelete: null };
   function makeSheet(name, maxRows) {
     const sh = { name, data: [], max: maxRows || 1000, frozen: 0 };
     const cell = (r, c) => ((sh.data[r - 1] || [])[c - 1] ?? '');
@@ -39,7 +40,7 @@ function makeFakeGas() {
     getSheetByName: (n) => sheets.find((s) => s.name === n) || null,
     getSheets: () => sheets.slice(),
     insertSheet: (n, idx) => { if (sheets.some((s) => s.name === n)) throw new Error('分頁已存在'); const s = makeSheet(n); sheets.splice(idx === undefined ? sheets.length : idx, 0, s); return s; },
-    deleteSheet: (s) => { const i = sheets.indexOf(s); if (i >= 0) sheets.splice(i, 1); }
+    deleteSheet: (s) => { if (st.failDelete && st.failDelete.n > 0 && s.name === st.failDelete.name) { st.failDelete.n--; throw new Error('模擬刪除中斷：' + s.name); } const i = sheets.indexOf(s); if (i >= 0) sheets.splice(i, 1); }
   };
   const drive = { folders: { ROOT: { name: '我的雲端硬碟', parent: null, sharing: 'PRIVATE' } }, files: {}, seq: 0 };
   const iter = (arr) => { let i = 0; return { hasNext: () => i < arr.length, next: () => arr[i++] }; };
@@ -118,6 +119,7 @@ function makeFakeGas() {
   return {
     G, props, book, drive, st,
     store: () => vm.runInContext('makeStore_(makeFiles_())', G),
+    bumpGen: () => vm.runInContext('bumpGen_()', G),           // 測試直接改試算表後讓快取失效
     sheetRows: (name) => book.getSheetByName(name).data.slice(1),
     listen: () => new Promise((ok) => srv.listen(0, '127.0.0.1', () => ok('http://127.0.0.1:' + srv.address().port + '/exec'))),
     close: () => new Promise((ok) => srv.close(() => ok()))

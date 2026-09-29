@@ -156,14 +156,15 @@ async function main() {
   // ---- #14 B1：saveSigs 逐張 null → 成功的照回填、null 的只重傳它、連續 3 次成壞圖後不再挑（不會每輪卡同一批） ----
   { const dir = tmp(); seedDb(dir, 25);
     const B = fakeBridge(); B.nullIf = (n) => n === 'P-1_S-000';     // 排在最前面的那張永遠失敗
-    const r1 = await runMirror({ dir, bridge: B, batch: 10, maxPerRun: 10 });
+    let T = Date.now(); const clk = () => T, hour = () => { T += 3600e3; };   // 每小時一輪（失敗計數要隔 30 分鐘）
+    const r1 = await runMirror({ dir, bridge: B, batch: 10, maxPerRun: 10, nowMs: clk });
     eq('B1：一批 10 張裡 1 張 null → 其餘 9 張照回填、ok 仍是 true、failed 1', [r1.uploaded, r1.failed, r1.ok, r1.pending, r1.bad], [9, 1, true, 16, 0]);
     eq('B1：null 那張在庫裡仍空白', q(dir, "SELECT driveSigId FROM reads WHERE staffId = 'S-000' AND postId = 'P-1'")[0].driveSigId, '');
-    const r2 = await runMirror({ dir, bridge: B, batch: 10, maxPerRun: 10 });
-    const r3 = await runMirror({ dir, bridge: B, batch: 10, maxPerRun: 10 });
+    hour(); const r2 = await runMirror({ dir, bridge: B, batch: 10, maxPerRun: 10, nowMs: clk });
+    hour(); const r3 = await runMirror({ dir, bridge: B, batch: 10, maxPerRun: 10, nowMs: clk });
     eq('B1：後面的簽名照樣前進（不卡在同一批）；第 3 次失敗後成壞圖、pending 0', [r2.uploaded, r3.uploaded, r3.pending, r3.bad, r3.badIds], [9, 6, 0, 1, ['P-1/S-000']]);
     eq('B1：成功的每張只送一次（沒有重傳＝沒有孤兒檔），失敗的那張送了 3 次', [B.names.filter((n) => n === 'P-1_S-000').length, new Set(B.names).size, B.names.length], [3, 25, 27]);
-    const r4 = await runMirror({ dir, bridge: B, batch: 10, maxPerRun: 10 });
+    hour(); const r4 = await runMirror({ dir, bridge: B, batch: 10, maxPerRun: 10, nowMs: clk });
     eq('B1：壞圖之後不再挑（沒有 sigs 呼叫）、仍計入 bad、結果檔帶 bad', [B.n('sigs'), r4.bad, last(dir, 'mirror-last.json').bad], [3, 1, 1]);
     eq('B1：壞圖 → /health 規則亮黃', judgeHealth({ mirror: { at: r4.at, ok: true, sigPending: 0, bad: r4.bad, fails: 0 }, backup: { at: r4.at, ok: true }, disk: { freeMB: 99999 } }).why, ['有壞簽名圖']);
     const st = JSON.parse(fs.readFileSync(path.join(dir, 'logs/sig-state.json'), 'utf8'));
@@ -177,12 +178,16 @@ async function main() {
     const FG = makeFakeGas(); const files = require('vm').runInContext('makeFiles_()', FG.G);
     const bridge = { call: async (op, p) => (op === 'sigs' ? { ids: files.saveSigs(p.put) } : {}) };
     FG.st.failCreate = (name, k) => k === 0;                   // 第 1 輪：這批第 0 張 Drive 寫入失敗
-    const r1 = await runMirror({ dir, bridge, batch: 10 });
+    let T = Date.now(); const clk = () => T;
+    const r1 = await runMirror({ dir, bridge, batch: 10, nowMs: clk });
     FG.st.failCreate = null;
     eq('真 saveSigs：第 0 張 Drive 失敗＋0 位元組 → 其餘 3 張照回填', [r1.ok, r1.uploaded, r1.failed, r1.pending], [true, 3, 2, 2]);
-    const r2 = await runMirror({ dir, bridge }); const r3 = await runMirror({ dir, bridge, all: true });
+    T += 3600e3; const r2 = await runMirror({ dir, bridge, nowMs: clk });
+    T += 3600e3; const r3 = await runMirror({ dir, bridge, all: true, nowMs: clk });
     const sigFiles = Object.values(FG.drive.files).filter((f) => f.parent === FG.props.SIG_FOLDER_ID).length;
-    eq('真 saveSigs：第 2 輪補上 Drive 失敗那張；0 位元組 3 次後成壞圖；--all 結束 pending 0', [r2.uploaded, r3.pending, r3.bad, r3.badIds], [1, 0, 1, ['P-1/S-002']]);
+    eq('真 saveSigs：第 2 輪補上 Drive 失敗那張（與 0 位元組同批→後者計數）', [r2.ok, r2.uploaded, r2.failed], [true, 1, 1]);
+    eq('真 saveSigs：只剩 0 位元組單獨成批＝整批 null → 不計數、ok:false 附原因、仍 pending（已知限制，由人處理）',
+      [r3.ok, r3.pending, r3.bad, /全部失敗/.test(r3.error), JSON.parse(fs.readFileSync(path.join(dir, 'logs/sig-state.json'), 'utf8')).fails['P-1\tS-002\tP-1_S-002.png'].n], [false, 1, 0, true, 2]);
     eq('真 saveSigs：Drive 簽名資料夾只有 4 個檔（沒有重複的孤兒檔）', [sigFiles, q(dir, "SELECT COUNT(*) AS n FROM reads WHERE driveSigId LIKE 'G%'")[0].n], [4, 4]); }
   // UPDATE 的保護：上傳這幾分鐘裡別人已填 driveSigId（搬遷）→ 不覆蓋；sigId 被重建成別張圖 → 不套用舊圖的 id
   { const dir = tmp(); seedDb(dir, 3);
@@ -208,13 +213,95 @@ async function main() {
   // #14 S2：--all 的完成條件是 pending=0；缺圖與壞圖另外計、列出清單、不卡住
   { const dir = tmp(); seedDb(dir, 6);
     fs.unlinkSync(path.join(dir, 'sigs', q(dir, "SELECT sigId FROM reads WHERE staffId = 'S-001' AND postId = 'P-1'")[0].sigId));
-    const B = fakeBridge(); B.nullIf = (n) => n === 'P-1_S-004';
+    fs.mkdirSync(path.join(dir, 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'logs/sig-state.json'), JSON.stringify({ fails: { 'P-1\tS-004\tP-1_S-004.png': { n: 3, at: 0 } }, unsaved: {} }));   // 已是壞圖
+    const B = fakeBridge();
     const r = await runMirror({ dir, bridge: B, all: true });
     eq('S2：--all 一次跑到 pending 0（缺圖 1、壞圖 1 另計），ok', [r.ok, r.pending, r.missing, r.bad, r.uploaded, r.missingIds, r.badIds], [true, 0, 1, 1, 4, ['P-1/S-001'], ['P-1/S-004']]);
     const log = fs.readFileSync(path.join(dir, 'logs/mirror.log'), 'utf8');
     eq('S2：mirror.log 印出缺圖與壞圖警告並列出是哪幾筆', [/⚠ 本機缺簽名圖 1 筆.*P-1\/S-001/.test(log), /⚠ 壞簽名圖 1 筆.*P-1\/S-004/.test(log)], [true, true]);
     const c = await runJob('mirror.js', ['--all'], { DATA_DIR: dir, BRIDGE_URL: 'http://127.0.0.1:9/exec', BRIDGE_KEY: 'x'.repeat(40) });
     eq('S2：mirror.js --all 在終端印出 pending／missing／bad 與清單', [/pending=0｜本機缺圖 missing=1｜壞圖 bad=1/.test(c.out), /⚠ 本機缺圖：P-1\/S-001/.test(c.out)], [true, true]); }
+
+  // ---- #14 B2：Drive 暫時故障（整批 null）不能算壞圖 ----
+  { const dir = tmp(); seedDb(dir, 30);
+    const B = fakeBridge(); B.nullIf = () => true;           // Drive 配額用完／5xx：每一張都回 null
+    let T = Date.now(); const clk = () => T;
+    const ra = await runMirror({ dir, bridge: B, all: true, nowMs: clk });
+    eq('B2：30 張整批 null，--all → bad 0、ok:false 附原因、只打 1 次 sigs 就停', [ra.bad, ra.ok, /全部失敗/.test(ra.error), B.n('sigs'), ra.pending], [0, false, true, 1, 30]);
+    const hourly = [];
+    for (let i = 0; i < 5; i++) { T += 3600e3; const r = await runMirror({ dir, bridge: B, nowMs: clk }); hourly.push(r.bad); }
+    eq('B2：接著 5 個每小時輪都整批 null → bad 始終 0', hourly, [0, 0, 0, 0, 0]);
+    eq('B2：整批 null 不留任何失敗計數', Object.keys(JSON.parse(fs.readFileSync(path.join(dir, 'logs/sig-state.json'), 'utf8')).fails).length, 0);
+    B.nullIf = null; T += 3600e3;
+    const rb = await runMirror({ dir, bridge: B, all: true, nowMs: clk });
+    eq('B2：Drive 恢復後 --all 全部上傳、pending 0', [rb.ok, rb.uploaded, rb.pending, rb.bad], [true, 30, 0, 0]); }
+  { const dir = tmp(); seedDb(dir, 3);                       // 同一批有成功有失敗才計數；--all 重掃同一張、30 分鐘內再跑都不重複計
+    const B = fakeBridge(); B.nullIf = (n) => n === 'P-1_S-000';
+    let T = Date.now(); const clk = () => T;
+    const n = () => JSON.parse(fs.readFileSync(path.join(dir, 'logs/sig-state.json'), 'utf8')).fails['P-1\tS-000\tP-1_S-000.png'].n;
+    await runMirror({ dir, bridge: B, all: true, nowMs: clk });
+    eq('B2：--all 重掃同一張（送了 2 次）只計 1 次', [B.names.filter((x) => x === 'P-1_S-000').length, n()], [2, 1]);
+    B.nullIf = (x) => x === 'P-1_S-000' || x === 'P-2_S-000x';
+    const st = makeSqliteStore(dir); st.addRead({ postId: 'P-2', staffId: 'S-001', name: 'n', unit: 'mala', at: 'x', sig: PNG('new') }); st.close();   // 讓下一批仍是混合批
+    T += 10 * 60e3; await runMirror({ dir, bridge: B, nowMs: clk });
+    const n10 = n();
+    const st2 = makeSqliteStore(dir); st2.addRead({ postId: 'P-2', staffId: 'S-002', name: 'n', unit: 'mala', at: 'x', sig: PNG('new2') }); st2.close();
+    T += 25 * 60e3; await runMirror({ dir, bridge: B, nowMs: clk });
+    eq('B2：距上次計數不到 30 分鐘不加、超過才加', [n10, n()], [1, 2]); }
+
+  // ---- #14 S5：還原後不讓鏡像用舊資料蓋掉試算表 ----
+  { const dir = tmp(); seedDb(dir, 5);
+    const B = fakeBridge();
+    const r0 = await runMirror({ dir, bridge: B });
+    eq('S5：成功鏡像記下送出的筆數（lastSent）', [r0.ok, last(dir, 'mirror-last.json').lastSent.reads], [true, 7]);
+    { const w = new DatabaseSync(path.join(dir, 'bulletin.db')); w.exec("DELETE FROM reads WHERE staffId IN ('S-003', 'S-004') AND postId = 'P-1'"); w.close(); }   // 模擬從較舊的快照還原
+    const B2 = fakeBridge();
+    const r1 = await runMirror({ dir, bridge: B2 });
+    eq('S5：本機 reads 比上次鏡像少 → 不送、ok:false、原因寫明', [r1.ok, B2.n('mirror'), /本機筆數比上次鏡像少（可能剛還原）/.test(r1.error), /reads 5＜7/.test(r1.error)], [false, 0, true, true]);
+    const r2 = await runMirror({ dir, bridge: B2 });
+    eq('S5：失敗那輪不改 lastSent，下一輪照樣擋', [r2.ok, B2.n('mirror'), last(dir, 'mirror-last.json').lastSent.reads], [false, 0, 7]);
+    let sent = null; const B3 = fakeBridge(); const call0 = B3.call; B3.call = (op, p) => { if (op === 'mirror') sent = p; return call0(op, p); };
+    const r3 = await runMirror({ dir, bridge: B3, force: true });
+    eq('S5：--force → 送出、帶 force:true 給 Apps Script、lastSent 更新', [r3.ok, sent && sent.force, r3.forced, last(dir, 'mirror-last.json').lastSent.reads], [true, true, true, 5]);
+    const B4 = fakeBridge(); let sent4 = null; const c4 = B4.call; B4.call = (op, p) => { if (op === 'mirror') sent4 = p; return c4(op, p); };
+    const r4 = await runMirror({ dir, bridge: B4 });
+    eq('S5：之後一般輪照常、不帶 force', [r4.ok, sent4 && 'force' in sent4], [true, false]);
+    const c = await runJob('mirror.js', ['--force'], { DATA_DIR: dir, BRIDGE_URL: 'http://127.0.0.1:9/exec', BRIDGE_KEY: 'x'.repeat(40) });
+    eq('S5：mirror.js 接受 --force 參數（橋接連不上 → exit 1、印結論）', [c.code, /鏡像失敗｜/.test(c.out)], [1, true]); }
+
+  // ---- #14 S7：已上傳未寫庫的 carry；鎖檔 6 小時上限 ----
+  { const dir = tmp(); seedDb(dir, 4);
+    const B = fakeBridge(); let w = null;
+    B.onSigs = () => { w = new DatabaseSync(path.join(dir, 'bulletin.db')); w.exec('BEGIN IMMEDIATE'); };   // 上傳期間伺服器拿著寫鎖 → 回填寫不進去
+    const r1 = await runMirror({ dir, bridge: B, busyMs: 50 });
+    w.exec('ROLLBACK'); w.close(); B.onSigs = null;
+    const un = JSON.parse(fs.readFileSync(path.join(dir, 'logs/sig-state.json'), 'utf8')).unsaved;
+    eq('S7：寫庫失敗 → ok:false、已上傳的 id 記在 unsaved', [r1.ok, /回填寫入/.test(r1.error), Object.keys(un).length, r1.uploaded], [false, true, 4, 0]);
+    const r2 = await runMirror({ dir, bridge: B });
+    eq('S7：下一輪直接寫入上一輪的 id、不重傳（sigs 總共 1 次）、pending 0', [r2.ok, r2.carried, r2.uploaded, B.n('sigs'), r2.pending, q(dir, "SELECT COUNT(*) AS n FROM reads WHERE driveSigId LIKE 'DRV-P-1%'")[0].n], [true, 4, 0, 1, 0, 4]); }
+  { const dir = tmp(); seedDb(dir, 1);
+    const sleeper = spawn(process.execPath, ['-e', 'setInterval(()=>{},1e5)'], { stdio: 'ignore' }); procs.push(sleeper);
+    const lf = path.join(dir, 'logs/mirror.lock'); fs.mkdirSync(path.dirname(lf), { recursive: true });
+    fs.writeFileSync(lf, String(sleeper.pid));
+    eq('S7：鎖由活著的程序持有、未過期 → 跳過', (await runMirror({ dir, bridge: fakeBridge() })).skipped, true);
+    const c = await runJob('mirror.js', ['--all'], { DATA_DIR: dir, BRIDGE_URL: 'http://127.0.0.1:9/exec', BRIDGE_KEY: 'x'.repeat(40) });
+    eq('建議 1：--all 撞到鎖 → exit 1、印「已跳過」', [c.code, /另一輪鏡像正在跑.*已跳過/.test(c.out)], [1, true]);
+    const old = (Date.now() - 7 * 3600e3) / 1000; fs.utimesSync(lf, old, old);   // PID 被重用的情形：程序活著，但鎖檔已 7 小時沒更新
+    const r = await runMirror({ dir, bridge: fakeBridge() });
+    eq('S7：鎖檔超過 6 小時 → 視為殘留、照常跑', [r.skipped, r.ok], [undefined, true]);
+    sleeper.kill(); }
+  // ---- 建議 2／3：sig-state.json 損毀改名保留並 ok:false；存狀態失敗只記警告、鏡像照做 ----
+  { const dir = tmp(); seedDb(dir, 1);
+    fs.mkdirSync(path.join(dir, 'logs'), { recursive: true }); fs.writeFileSync(path.join(dir, 'logs/sig-state.json'), '{"fails":{');
+    const B = fakeBridge();
+    const r = await runMirror({ dir, bridge: B });
+    eq('建議 2：sig-state.json 損毀 → 改名 .corrupt-* 保留、ok:false 說明、這一輪不上傳（免得重傳成孤兒）、鏡像照做', [r.ok, /損毀/.test(r.error), fs.readdirSync(path.join(dir, 'logs')).some((f) => /^sig-state\.json\.corrupt-/.test(f)), B.n('mirror')], [false, true, true, 1]);
+    fs.mkdirSync(path.join(dir, 'logs/sig-state.json.tmp'));   // 暫存檔路徑被佔（模擬寫不進去）
+    const st = makeSqliteStore(dir); st.addRead({ postId: 'P-2', staffId: 'S-005', name: 'n', unit: 'mala', at: 'x', sig: PNG('w') }); st.close();
+    const B2 = fakeBridge();
+    const r2 = await runMirror({ dir, bridge: B2 });
+    eq('建議 3：存狀態失敗 → 只記 warning、回填與鏡像照做、ok', [r2.ok, !!(r2.warnings && /sig-state/.test(r2.warnings[0])), r2.uploaded, B2.n('mirror')], [true, true, 2, 1]); }
 
   // ================= B. 背景工作不經 makeSqliteStore：不寫 secret、不改表 =================
   { const dir = tmp(); seedDb(dir, 2);
@@ -308,12 +395,26 @@ async function main() {
     eq('S3：mirror 正在跑（mirror.lock）→ 拒絕', [/mirror 工作正在跑/.test(rc), staffN()], [true, n0]);
     eq('鎖由活著的程序持有時 mirror／daily 自己跳過（不寫結果檔、不開庫）', [(await runMirror({ dir: target, bridge: fakeBridge() })).skipped], [true]);
     sleeper.kill(); await new Promise((ok) => sleeper.on('exit', ok));
+    // 建議 5：lsof 被 signal 殺掉或異常結束 → 一律「無法確認」、拒絕
+    const fakeBin = tmp('dzyb-bin-');
+    fs.writeFileSync(path.join(fakeBin, 'lsof'), '#!/bin/sh\nkill -9 $$\n', { mode: 0o755 });
+    const rk = await runJob('restore.js', [snapFile], { DATA_DIR: target, PORT: String(await freePort()), PATH: fakeBin + ':' + process.env.PATH });
+    fs.writeFileSync(path.join(fakeBin, 'lsof'), '#!/bin/sh\nexit 2\n', { mode: 0o755 });
+    const r2x = await runJob('restore.js', [snapFile], { DATA_DIR: target, PORT: String(await freePort()), PATH: fakeBin + ':' + process.env.PATH });
+    eq('建議 5：lsof 被 signal 殺掉／exit 2 → 拒絕（無法確認）、資料庫不動', [rk.code, /lsof 無法執行或異常結束/.test(rk.err), r2x.code, /lsof 無法執行或異常結束/.test(r2x.err), staffN()], [1, true, 1, true, n0]);
+    // S5：同一個 DATA_DIR 還原前鏡像過（lastSent 較大）→ 還原後 mirror 自己擋；restore 印出「mirror 沒有載回」
+    await runMirror({ dir: target, bridge: fakeBridge() });
     // (d) 舊庫改名後、新庫就位前被重新建了 -wal（例如 KeepAlive 把伺服器拉起來）→ 改名前檢查到、拒絕，舊庫保留
     const rd = await tryRestore({ _afterMove: () => fs.writeFileSync(path.join(target, 'bulletin.db-wal'), 'x') });
     eq('S3：換檔途中出現 -wal → 拒絕、說明舊庫保留在哪、新庫沒有被放上去', [/換檔途中有程序重新開了資料庫（bulletin\.db-wal）/.test(rd), fs.existsSync(path.join(target, 'bulletin.db')), fs.readdirSync(target).some((f) => /^bulletin\.db\.before-restore-.*\d$/.test(f))], [true, false, true]);
     eq('拒絕後鎖都有放掉', [fs.existsSync(path.join(target, 'logs/mirror.lock')), fs.existsSync(path.join(target, 'logs/daily.lock'))], [false, false]);
     fs.unlinkSync(path.join(target, 'bulletin.db-wal'));
-    eq('條件都滿足時照常還原', [await tryRestore(), q(target, 'SELECT COUNT(*) AS n FROM reads')[0].n], ['ok', 4]); }
+    const lines = [];
+    const ro = await freePort().then((port) => restore({ dir: target, file: snapFile, port, say: (s) => lines.push(s) }).then(() => 'ok', (e) => e.message));
+    eq('條件都滿足時照常還原', [ro, q(target, 'SELECT COUNT(*) AS n FROM reads')[0].n], ['ok', 4]);
+    eq('S5：restore 不載回 mirror、印出確認後手動 --force 的提示', [lines.some((l) => /mirror 沒有載回/.test(l) && /mirror\.js --force/.test(l)), lines.some((l) => /bootstrap[^；]*com\.dzy\.bulletin\.mirror\.plist；/.test(l))], [true, false]);
+    const rm = await runMirror({ dir: target, bridge: fakeBridge() });
+    eq('S5：還原後第一輪鏡像被擋（本機筆數比上次鏡像少）', [rm.ok, /可能剛還原/.test(rm.error)], [false, true]); }
   { const dir = tmp(); seedDb(dir, 1);
     const bk = path.join(dir, 'backups'); fs.mkdirSync(bk);
     fs.writeFileSync(path.join(bk, 'bulletin-2026-09-29_0330.db.gz.tmp'), 'half');
@@ -436,6 +537,19 @@ async function main() {
     FG.props.PRIMARY = 'mini';
     r = await runJob('mirror.js', [], JOB);
     eq('恢復後鏡像成功、新簽名進試算表', [r.code, FG.sheetRows('已讀').length], [0, q(dir, 'SELECT COUNT(*) AS n FROM reads')[0].n]);
+
+    // #14 S6（配合 M2 316ef4e）：分頁有重複列＋空白列（搬遷自 GAS 的 append 殘留），鏡像仍被接受
+    const sh = FG.book.getSheetByName('已讀'); sh.data.push(sh.data[1].slice(), sh.data[2].slice(), ['', '', '', '', '', '']); FG.bumpGen();
+    r = await runJob('mirror.js', [], JOB);
+    eq('S6：分頁已讀有 2 列重複＋1 列空白 → mirror.js 鏡像仍被接受、分頁換成去重後的資料', [r.code, last(dir, 'mirror-last.json').ok, FG.sheetRows('已讀').length], [0, true, q(dir, 'SELECT COUNT(*) AS n FROM reads')[0].n]);
+    // S5 端到端：本機已讀變少（模擬還原）→ mirror.js 自己擋；--force → 帶 force:true，Apps Script 放行、試算表跟著本機
+    { const w = new DatabaseSync(path.join(dir, 'bulletin.db')); w.exec('PRAGMA busy_timeout = 5000'); w.exec('DELETE FROM reads WHERE rowid = (SELECT MAX(rowid) FROM reads)'); w.close(); }
+    const nLocal = q(dir, 'SELECT COUNT(*) AS n FROM reads')[0].n, sheetBefore = FG.sheetRows('已讀').length;
+    FG.st.hits = {};
+    r = await runJob('mirror.js', [], JOB);
+    eq('S5：本機已讀少 1 → mirror.js 不送（沒有 mirror 呼叫）、exit 1、試算表不動', [r.code, FG.st.hits.mirror || 0, FG.sheetRows('已讀').length], [1, 0, sheetBefore]);
+    r = await runJob('mirror.js', ['--force'], JOB);
+    eq('S5：--force → Apps Script 放行（M2 已讀不減防呆靠 force:true 越過）、試算表＝本機', [r.code, FG.sheetRows('已讀').length, /鏡像完成/.test(r.out)], [0, nLocal, true]);
     await S.stop(); await FG.close(); }
 }
 

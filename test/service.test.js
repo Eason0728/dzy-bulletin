@@ -86,6 +86,11 @@ eq('upload bad type', call('uploadFile', { atoken: at, name: 'a.png', data: 'AAA
 r = C('uploadFile', { atoken: at, name: 'a.pdf', data: 'JVBERi0x' });
 eq('upload ok', [r.ok, r.data.type], [true, 'pdf']);
 const f1 = r.data;
+// 公告改單位後，仍在職的簽名者標 inTarget:false、active:true
+{ const rr = C('adminLogin', { pass: '1234' }).data.atoken; const p0 = C('adminData', { atoken: rr }).data.posts.find(p => p.id === 'P-20260925-001');
+  C('savePost', { atoken: rr, post: Object.assign({}, p0, { units: ['cf'] }) });
+  const row = C('receipts', { atoken: rr, postId: 'P-20260925-001' }).data.rows.find(x => x.staffId === 'S-001');
+  eq('out of scope reader', [row.active, row.inTarget, row.read], [true, false, true]); }
 eq('savePost bad file type', C('savePost', { atoken: at, post: { title: 't', units: ['mala'], publishOn: DZYB.today(), files: [{ id: 'x', name: 'evil.exe', type: 'pdf', size: 1 }] } }).code, 'BAD_TYPE');
 eq('savePost invalid', call('savePost', { atoken: at, post: { title: '', units: ['mala'], publishOn: '2026-09-29' } }).code, 'BAD_REQ');
 r = C('savePost', { atoken: at, post: { title: '測試公告', body: 'x', units: ['cf', 'mzt', 'mala'], publishOn: DZYB.today(), expiresOn: '', pinned: true, files: [f1] } });
@@ -111,7 +116,8 @@ eq('staffAdd dup', C('staffAdd', { atoken: at, name: '新同仁', unit: 'cf' }).
 eq('staffDelete', call('staffDelete', { atoken: at, staffId: 'S-001' }).ok, true);
 eq('deleted not in roster', C('roster').data.some(s => s.id === 'S-001'), false);
 r = C('receipts', { atoken: at, postId: 'P-20260920-001' });
-eq('deleted reader kept, inactive', r.data.rows.find(x => x.staffId === 'S-001').active, false);
+eq('deleted reader kept, inactive', [r.data.rows.find(x => x.staffId === 'S-001').active, r.data.rows.find(x => x.staffId === 'S-001').inTarget], [false, false]);
+eq('no debug field on server error', Object.keys(M.callSync('receipts', { atoken: at, postId: null })).includes('debug'), false);
 eq('deleted not counted', C('adminData', { atoken: at }).data.posts.find(p => p.id === 'P-20260920-001').targetCount, 4);
 
 // 變更通行碼 → 舊管理憑證失效

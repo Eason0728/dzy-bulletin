@@ -137,10 +137,12 @@ function makeService_(L, store, files, auth, clock) {
       var byId = {}; reads.forEach(function (r) { if (sigs) r.sig = sigs[r.staffId] || null; byId[r.staffId] = r; });
       var rows = targets(p).map(function (s) {
         var r = byId[s.id]; delete byId[s.id];
-        return { staffId: s.id, name: s.name, unit: s.unit, active: true, read: !!r, at: r ? r.at : null, sig: r ? r.sig : null };
+        return { staffId: s.id, name: s.name, unit: s.unit, active: true, inTarget: true, read: !!r, at: r ? r.at : null, sig: r ? r.sig : null };
       });
-      Object.keys(byId).forEach(function (k) {           // 已刪除或已換單位但簽過的人：紀錄保留、不計入人數
-        var r = byId[k]; rows.push({ staffId: r.staffId, name: r.name, unit: r.unit, active: false, read: true, at: r.at, sig: r.sig });
+      var allStaff = store.getStaff();
+      Object.keys(byId).forEach(function (k) {           // 已刪除、或公告改單位後不在對象內但簽過的人：紀錄保留、不計入人數
+        var r = byId[k], st = allStaff.filter(function (x) { return x.id === r.staffId; })[0];
+        rows.push({ staffId: r.staffId, name: r.name, unit: r.unit, active: !!(st && st.active), inTarget: false, read: true, at: r.at, sig: r.sig });
       });
       return { rows: rows };
     },
@@ -238,7 +240,8 @@ function makeService_(L, store, files, auth, clock) {
         if (e.until) o.until = e.until;
         return o;
       }
-      return { ok: false, code: 'SERVER', message: '系統忙碌，請稍後再試', debug: String(e && e.message || e) };
+      if (typeof console !== 'undefined') console.error(action + ': ' + (e && e.stack || e));   // 內部錯誤只進紀錄，不回給前端（C12）
+      return { ok: false, code: 'SERVER', message: '系統忙碌，請稍後再試' };
     }
   }
   return { call: call, WRITE_ACTIONS: ['setPin', 'login', 'ack', 'adminLogin', 'uploadFile', 'savePost', 'setPublished', 'setPinned', 'staffAdd', 'staffDelete', 'staffResetPin', 'changePass'] };

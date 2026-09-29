@@ -28,7 +28,6 @@ function doPost(e) {
 }
 
 function json_(o) {
-  if (o && o.debug) { console.error(o.debug); delete o.debug; }   // 內部錯誤只進紀錄，不回給前端
   return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON);
 }
 

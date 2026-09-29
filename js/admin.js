@@ -81,7 +81,7 @@ var Admin = (function () {
     if (!rows) return '<div class="loading" style="padding:10px 0">載入回條中</div>';
     return '<div class="names">' + (rows.map(function (r) {
       return '<span class="' + (r.read ? '' : 'no') + '">' + (r.read ? '✓' : '✗') + ' ' + esc(r.name) + '<small style="opacity:.6"> ' + L.UNIT_NAME[r.unit] +
-        (r.active ? '' : '（已刪除）') + (r.read ? ' ' + esc(UI.fmtTime(r.at)) : '') + '</small>' +
+        (!r.active ? '（已刪除）' : r.inTarget === false ? '（已不在公告單位）' : '') + (r.read ? ' ' + esc(UI.fmtTime(r.at)) : '') + '</small>' +
         (r.sig ? '<br><img src="' + esc(r.sig) + '" style="height:40px;background:#fff;border-radius:4px;margin-top:3px">' : '') + '</span>';
     }).join('') || '<span>此單位沒有同仁</span>') + '</div>';
   }

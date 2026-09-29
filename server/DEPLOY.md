@@ -36,6 +36,8 @@ REPO="$HOME/dzy-bulletin"; DATA="$HOME/dzy-bulletin-data"; NODE="$HOME/.local/no
 - Eason 要親手做的事只有**兩批**，都集中成一張清單：**第 3 步（部署前）**、**第 8 步（現場驗證）**。Claude 做到那裡就**停下來**，把那一批整段貼給 Eason，等他說「做完了」再跑驗證。其他步驟都是 Claude 自己做，不需要 sudo。
 - 背景程序一律寫成「單一指令加 `&`、下一行 `echo $! > pid 檔`」，**不要**寫成 `cd … && 指令 &`（bash 會把整串丟進子 shell，`$!` 變成子 shell 的 PID，kill 之後 node 還活著）。只關自己記下的那個 PID。
 - 等伺服器起來一律用 `curl --retry … --retry-connrefused`，不用 `sleep`。
+- **驗收要用的數據一律落檔，不靠對話記憶**：寫進 `$HOME/dzy-bulletin-data/logs/deploy-evidence.txt`（環境、第 5 步重起秒數、第 6 步 `/health`、第 7 步 tailnet 外驗證結果）。這個檔**不可含金鑰、網址、tailnet 名稱**；回報時從這個檔讀。
+- **中途要關掉 Claude 或重開機時**（第 3 步 A10、第 8 步 V5／V6），請 Eason 回來後在**同一個資料夾**打 `claude --continue` 接回原本的對話（或進去後打 `/resume` 選它），再說「繼續照 server/DEPLOY.md 第 N 步」。接回後 Claude 先 `cat "$HOME/dzy-bulletin-data/logs/deploy-evidence.txt"` 確認做到哪裡。
 
 ---
 
@@ -120,6 +122,7 @@ BRANCH="mini/m4"                                            # M1～M4 已合併�
 if [ -d "$REPO/.git" ]; then git -C "$REPO" fetch -q origin && git -C "$REPO" checkout -q "$BRANCH" && git -C "$REPO" pull -q --ff-only; else git clone -q -b "$BRANCH" "<repo 網址>" "$REPO"; fi
 git -C "$REPO" log --oneline -1
 mkdir -p "$DATA/logs" && chmod 700 "$DATA"                  # logs 一定要先建：launchd 開不了 log 檔就不會啟動
+{ echo "== M4 部署證據（不含金鑰、網址）"; echo "環境：macOS $(sw_vers -productVersion)／$(uname -m)／Node $("$NODE" -v 2>/dev/null)／repo $(git -C "$REPO" branch --show-current) $(git -C "$REPO" rev-parse --short HEAD)／建立 $(date '+%F %T %Z')"; } >> "$DATA/logs/deploy-evidence.txt"
 git -C "$REPO" check-ignore -q server/.env && echo "server/.env 已被 git 忽略" || echo "✗ .gitignore 沒有 server/.env，停下來回報"
 ```
 
@@ -196,21 +199,24 @@ p = os.path.expanduser('~/.claude/settings.json'); os.makedirs(os.path.dirname(p
 d = json.load(open(p)) if os.path.exists(p) else {}
 deny = d.setdefault('permissions', {}).setdefault('deny', [])
 for r in ["Read(~/dzy-bulletin/server/.env)", "Read(~/dzy-bulletin/server/.env*)",
-          "Edit(~/dzy-bulletin/server/.env)", "Read(~/dzy-bulletin-data/ADMIN_INIT.txt)"]:
+          "Edit(~/dzy-bulletin/server/.env)", "Read(~/dzy-bulletin-data/ADMIN_INIT.txt)",
+          "Read(~/dzy-bulletin-export-*)"]:
     if r not in deny: deny.append(r)
 json.dump(d, open(p, 'w'), ensure_ascii=False, indent=2); print('OK')
 EOF
 ```
+（M5 搬遷時會用到的匯出檔 `~/dzy-bulletin-export-*.json` 也含全部密碼雜湊，一併擋。）
 加進去的 JSON 長這樣（供對照）：
 ```json
 { "permissions": { "deny": [
   "Read(~/dzy-bulletin/server/.env)",
   "Read(~/dzy-bulletin/server/.env*)",
   "Edit(~/dzy-bulletin/server/.env)",
-  "Read(~/dzy-bulletin-data/ADMIN_INIT.txt)"
+  "Read(~/dzy-bulletin-data/ADMIN_INIT.txt)",
+  "Read(~/dzy-bulletin-export-*)"
 ] } }
 ```
-做完後把 Claude 關掉再重新打開（確保新規則生效），跟它說「第 3 步做完了」。這條規則擋的是 Claude 的讀檔工具；`cat` 之類的指令仍靠上面的文字禁令。
+做完後把 Claude 關掉（確保新規則生效），在**同一個資料夾**打 `claude --continue` 接回原本的對話，跟它說「繼續照 server/DEPLOY.md 第 3 步的驗證」。這條規則擋的是 Claude 的讀檔工具；`cat` 之類的指令仍靠上面的文字禁令。
 
 **驗證（Claude 在 Eason 說做完之後跑；全部只印設定值或數字）：**
 ```sh
@@ -309,15 +315,16 @@ LP=$(launchctl print "$U/com.dzy.bulletin" | awk '$1=="pid"{print $3}'); SP=$(ls
 U="gui/$(id -u)"
 P1=$(launchctl print "$U/com.dzy.bulletin" | awk '$1=="pid"{print $3}'); echo "原 PID $P1"
 T0=$(date +%s); kill "$P1"
-curl -sf --retry 30 --retry-delay 1 --retry-connrefused -o /dev/null http://127.0.0.1:8793/health && echo "已恢復，約 $(( $(date +%s) - T0 )) 秒"
+curl -sf --retry 30 --retry-delay 1 --retry-connrefused -o /dev/null http://127.0.0.1:8793/health && SEC=$(( $(date +%s) - T0 )) && echo "已恢復，約 $SEC 秒"
 P2=$(launchctl print "$U/com.dzy.bulletin" | awk '$1=="pid"{print $3}'); echo "新 PID $P2"   # 要和原 PID 不同；秒數 ≤ 10
+echo "第 5 步 殺掉 node 後重起：${SEC:-失敗} 秒（原 PID $P1 → 新 PID $P2）／$(date '+%F %T')" >> "$HOME/dzy-bulletin-data/logs/deploy-evidence.txt"
 ```
 
 ---
 
-## 第 6 步：鏡像與快照各手動跑一次
+## 第 6 步：快照手動跑一次＋確認鏡像載入那一輪的結果
 
-- **mirror 不用再手動跑**：第 5 步 `bootstrap` 時它已經因 `RunAtLoad` 由 launchd 跑過一輪，這一輪就是驗收的「手動跑一次」。**不要**再 `kickstart` mirror——M4 階段每跑一次都被擋、失敗次數 +1，到 2 次 `/health` 就轉黃。
+- **mirror 不用再手動跑**：第 5 步 `bootstrap` 時它已經因 `RunAtLoad` 由 launchd 跑過一輪；這裡只**確認那一輪的結果**（M4 階段它本來就該被擋，不會是 `ok:true`）。**不要**再 `kickstart` mirror——M4 階段每跑一次都被擋、失敗次數 +1，到 2 次 `/health` 就轉黃。
 - daily 用 `kickstart` 走 launchd 跑（順便驗證 plist 本身能跑）：
 
 ```sh
@@ -334,18 +341,25 @@ cat "$DATA/logs/mirror-last.json"; echo; tail -3 "$DATA/logs/mirror.log"
 curl -s http://127.0.0.1:8793/health; echo
 ```
 
+判讀沒問題後（下表第一、二列），把這一刻的 `/health` 存進證據檔（`/health` 不含秘密與網址）：
+
+```sh
+DATA="$HOME/dzy-bulletin-data"
+echo "第 6 步 /health（$(date '+%F %T')）：$(curl -s http://127.0.0.1:8793/health)" >> "$DATA/logs/deploy-evidence.txt"
+```
+
 判讀——**M4 階段 Apps Script 還是 `PRIMARY=gas`，所以兩個結果不一樣是對的**。下表的字串是 `*-last.json` 的 `error` 欄位實際會出現的原文：
 
 | 看到什麼 | 意思 | 怎麼做 |
 |---|---|---|
 | `backup-last.json`：`"ok":true`、`"sharedWith":0`；`daily.log` 有「備份完成」 | 橋接網址與金鑰都對，快照已上傳到雲端「鼎兆元｜電子佈告欄備份」資料夾 | 正常（第 8 步 V1 請 Eason 看一眼雲端硬碟）。這個資料夾**不要分享給任何人**（備份含密碼雜湊與登入金鑰）；有共用者時 `sharedWith` 大於 0、`/health` 亮黃燈 |
 | `mirror-last.json`：`"ok":false`，`"error":"鏡像：BRIDGE mirror: AUTH 目前不接受這個橋接動作"` | **M4 的正確結果**：金鑰正確、橋接打得通，Apps Script 在 `PRIMARY=gas` 時擋下鏡像（還沒切換前，Mac mini 的空庫絕不能蓋掉正式試算表） | 正常。真正的 `ok:true` 在 M5 設 `PRIMARY=mini`、搬完資料之後 |
-| `"error":"鏡像：BAD_REQ 鏡像資料全空，拒絕覆寫"` | **危險訊號**：Apps Script 現在是 `PRIMARY=mini`——正式站的寫入正在回 MOVED，**同仁此刻簽不了名**（Apps Script 的防呆擋下了空庫，試算表沒被清空） | **立刻停下所有步驟**，告訴 Eason：「請馬上到 Apps Script 指令碼屬性把 `PRIMARY` 改回 `gas`」。改完後 `launchctl kickstart gui/$(id -u)/com.dzy.bulletin.mirror` 跑一次確認，應變回上一列 |
+| `"error"` 以 **`鏡像：BAD_REQ`** 開頭的任何一種——例如 `鏡像：BAD_REQ 鏡像資料全空，拒絕覆寫`、`鏡像：BAD_REQ 鏡像的公告筆數（0）比現有（N）少一半以上，拒絕覆寫（確認無誤請帶 force）`、`鏡像：BAD_REQ 鏡像資料缺 …` | **危險訊號**：Apps Script 只有在 `PRIMARY=mini` 時才會檢查鏡像內容，所以 M4 階段看到任何 `BAD_REQ` 都代表現在是 `PRIMARY=mini`——正式站的寫入正在回 MOVED，**同仁此刻簽不了名**（Apps Script 的防呆擋下了空庫，試算表沒被清空） | **立刻停下所有步驟**，告訴 Eason：「請馬上到 Apps Script 指令碼屬性把 `PRIMARY` 改回 `gas`」。改完後 `launchctl kickstart gui/$(id -u)/com.dzy.bulletin.mirror` 跑一次確認，應變回上一列。救回後失敗次數會累計到 2、`/health` 轉 `yellow`（鏡像連續失敗）——**不要為了拿綠燈一直重跑**；證據檔照實寫「yellow（PRIMARY 誤設已救回）」，回報第 6 步那一項也照填 |
 | `"error":"鏡像：BRIDGE mirror: AUTH 橋接金鑰錯誤"`（daily 則是 `BRIDGE backup: AUTH 橋接金鑰錯誤`） | 兩邊金鑰不一致 | 故障排除 D |
 | 其他（`BRIDGE_TIMEOUT`、`回應不是 JSON`、`未設定 Google 橋接`…） | 見故障排除 D | — |
 | `mirror-last.json` 的 `missing`／`bad` 大於 0 | 本機缺簽名圖／壞簽名圖（M4 空庫不會出現；M5 之後才可能） | `/health` 會黃；清單在 `missingIds`／`badIds` 與 `mirror.log`，回報 Eason，不要自己刪資料。壞圖（bad）要重試時，由負責的人把 `$DATA/logs/sig-state.json` 裡那筆刪掉，下一輪就會再傳 |
 
-此時 `/health` 應為 `"level":"green"`（鏡像失敗次數 1，未達黃燈門檻 2）——**把這一刻的 `/health` 回應存下來貼進回報**。
+此時 `/health` 應為 `"level":"green"`（鏡像失敗次數 1，未達黃燈門檻 2）——已用上面那段存進證據檔，回報時從證據檔貼。
 **已知且預期**：之後每小時（以及每次重開機載入時）的鏡像都會被擋，下一輪之後 `/health` 就轉 `yellow`（`why` 為「鏡像連續失敗」），直到 M5 切換。M5 之前守門還沒接上，不會告警。
 
 ---
@@ -361,6 +375,7 @@ perl -e 'alarm shift; exec @ARGV' 60 "$TS" funnel --bg 8793; echo "結束碼 $?"
 
 - 最後一行用 `perl alarm` 包了 60 秒逾時：如果 Funnel 或 HTTPS 還沒在後台同意，CLI 會印出一個連結然後**停在那裡等**。
 - 看到連結、或結束碼是 `142`（逾時被中止）：**停**，把連結交給 Eason，請他到後台同意（第 3 步 A8 應該已做，這是漏網的情況），他說好了再跑一次最後那行。
+- 其他非 0 結束碼（例如 HTTPS 憑證沒開、存取控制沒有 `funnel` 屬性時 CLI 會直接報錯退出）：**停**，把輸出原文交給 Eason（先遮掉網址與 tailnet 名稱），照 A8 補做後再跑一次。
 - 成功後：
 
 ```sh
@@ -376,12 +391,22 @@ TS=/Applications/Tailscale.app/Contents/MacOS/Tailscale
 
 ```sh
 H="<Funnel 主機名，也就是網址 https:// 後面、結尾 .ts.net 為止>"
-IP=$(dig +short "$H" @1.1.1.1 | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1); echo "公開 IP：$IP"   # 不能是空的、不能是 100. 開頭（100.x 是 tailnet 內部位址）
-curl -s --max-time 20 --resolve "$H:443:$IP" "https://$H/health"; echo                                        # 期望 {"ok":true,…}
+IP=$(dig +short "$H" @1.1.1.1 | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+case "$IP" in
+  "")    echo "✗ 公開 DNS 還沒生效（查不到 IPv4）";;
+  100.*) echo "✗ 拿到 tailnet 內部位址 $IP，不是公開入口";;
+  *)     echo "公開 IP：$IP"; curl -s --max-time 20 --resolve "$H:443:$IP" "https://$H/health"; echo;;   # 期望 {"ok":true,…}
+esac
 ```
 
 - 第一次開 Funnel 時，公開 DNS 最多可能要**約 10 分鐘**才查得到、首張 HTTPS 憑證也要幾十秒。`IP` 是空的或 TLS 錯誤就隔幾分鐘再跑，**10 分鐘內都不算失敗**。
-- 這一段需在實機確認 `dig` 的結果形式；若公開 DNS 回的不是 A 紀錄（例如只有 CNAME），用 `dig +short "$H" @1.1.1.1` 看完整輸出，取最後的 IPv4。
+- **退路**：這條路是 Mac mini 自己連到公開入口、再經 tailnet 繞回自己（hairpin），實機上不一定通。如果 **10 分鐘後仍不通**，但 `funnel status` 正確、本機 `/health` 通，就**不要**叫 Eason 重做後台設定：記一筆「繞回驗證不適用」，照樣進第 8 步，由 V3（手機關掉 Tailscale、用 4G）做最後判斷——**V3 通就算通過**；V3 也不通才照故障排除 B 查。
+- 結果寫進證據檔（二選一）：
+
+```sh
+echo "第 7 步 tailnet 外驗證：通過（$(date '+%F %T')）" >> "$HOME/dzy-bulletin-data/logs/deploy-evidence.txt"
+echo "第 7 步 tailnet 外驗證：繞回驗證不適用（10 分鐘後仍不通；funnel status 正確、本機通），交給 V3 判斷（$(date '+%F %T')）" >> "$HOME/dzy-bulletin-data/logs/deploy-evidence.txt"
+```
 
 手機驗證併入第 8 步那一批。
 
@@ -389,7 +414,7 @@ curl -s --max-time 20 --resolve "$H:443:$IP" "https://$H/health"; echo          
 
 ## 第 8 步：【Eason 第二批｜現場驗證】一次做完
 
-**前置條件**：第 4～7 步都通過（第 7 步「從 tailnet 外面驗證」已回 `{"ok":true…}`）。
+**前置條件**：第 4～7 步都通過（第 7 步「從 tailnet 外面驗證」已回 `{"ok":true…}`，或已記「繞回驗證不適用」交給 V3 判斷）。
 
 交給 Eason 之前，Claude 先把 V2 要看的本機網頁打開（模擬「後端打不通」；正式前端要到 M5 才指向 Funnel，而且 `?api=` 只在 localhost 生效）：
 
@@ -401,7 +426,7 @@ curl -s --retry 10 --retry-delay 1 --retry-connrefused -o /dev/null -w '%{http_c
 open "http://localhost:8792/?mode=cloud&api=http://127.0.0.1:9"
 ```
 
-（`127.0.0.1:9` 故意是沒有人在聽的埠。）然後 Claude 告訴 Eason：「V5、V6 會重開機，對話會中斷；做完後請重新打開 Claude，說『DEPLOY.md 第 8 步做完了』」，再把下表整段貼給他。
+（`127.0.0.1:9` 故意是沒有人在聽的埠。）然後 Claude 告訴 Eason：「V5、V6 會重開機，對話會中斷；全部做完後請在同一個資料夾打 `claude --continue` 接回這個對話，說『繼續照 server/DEPLOY.md 第 8 步的驗證』，並告訴我 V1～V7 各自通過沒有」，再把下表整段貼給他。
 
 **手機的準備（所有手機驗證都要）**：手機**關掉 Wi-Fi、用 4G**，而且**打開 Tailscale App 按中斷連線（或整個登出）**——手機若連在 tailnet 裡，`*.ts.net` 會走 tailnet 內部，Funnel 沒開也打得通，驗收就不準。也可以改用一支從沒裝過 Tailscale 的手機。
 
@@ -415,7 +440,7 @@ open "http://localhost:8792/?mode=cloud&api=http://127.0.0.1:9"
 | V6 | 直接拔掉 Mac mini 電源線，等 10 秒再插回（模擬停電）→ 不碰鍵盤滑鼠 → 3 分鐘後手機打 `/health` | 同上 |
 | V7 | 目視：系統設定 → 鎖定畫面，「要求密碼」為「立即」 | 是 |
 
-**V3～V6 任一步 3 分鐘後打不到，照這個順序查**（Eason 可以直接看螢幕；能進桌面的話請重新打開 Claude 跑右欄指令）：
+**V3～V6 任一步 3 分鐘後打不到，照這個順序查**（Eason 可以直接看螢幕；能進桌面的話在同一個資料夾打 `claude --continue`，說「照 server/DEPLOY.md 第 8 步的診斷表查」，由 Claude 跑右欄指令）：
 
 | 順序 | 看什麼 | 判讀 |
 |---|---|---|
@@ -425,7 +450,7 @@ open "http://localhost:8792/?mode=cloud&api=http://127.0.0.1:9"
 | 4 | 本機通：選單列 Tailscale 圖示是不是已連線；Claude：`"$TS" status \| head -3` | 未連線／Logged out → A7 的「登入時啟動」沒勾，或要重新登入；故障排除 B |
 | 5 | Tailscale 已連線：Claude：`"$TS" funnel status` | 設定不見了 → 重做第 7 步（`--bg` 的設定照理重開後還在，這一步正好在實機證明）；還在 → 用第 7 步「從 tailnet 外面驗證」判斷是 Funnel 還是手機那端的問題 |
 
-Eason 做完、重新打開 Claude 後，Claude 跑：
+Eason 做完、用 `claude --continue` 接回後，Claude 先把 Eason 說的 V1～V7 結果寫進證據檔（例如 `echo "第 8 步 V1～V7：V1 通過、V2 通過…（Eason 口述，$(date "+%F %T")）" >> "$HOME/dzy-bulletin-data/logs/deploy-evidence.txt"`），再跑：
 
 ```sh
 U="gui/$(id -u)"; DATA="$HOME/dzy-bulletin-data"; TS=/Applications/Tailscale.app/Contents/MacOS/Tailscale
@@ -449,8 +474,9 @@ REPO="$HOME/dzy-bulletin"; DATA="$HOME/dzy-bulletin-data"
 git -C "$REPO" grep -l "guo""eason" -- server/ | wc -l     # 期望 0（手冊與程式不寫死任何人的帳號；用 git grep 只搜進版控的檔、不會碰到 .env；字串拆兩半免得這行自己被搜到）
 ls -l "$REPO/server/.env"                                   # 期望 -rw-------
 git -C "$REPO" status --porcelain                           # 期望空白（.env 不在裡面、也沒有改到 repo）
-grep -c '^BRIDGE_KEY=[0-9a-f]\{64\}$' "$REPO/server/.env"    # 必須是 1 才做下一行（否則搜尋字串是空的，每個檔都會算命中）
-cd "$REPO" && grep -rl "$(sed -n 's/^BRIDGE_KEY=//p' server/.env | tr -d "\"'" | cut -c1-8)" ~/.claude/projects/ "$DATA/logs" 2>/dev/null | wc -l   # #10 金鑰檢查（前 8 碼）：期望 0
+cd "$REPO" && if [ "$(grep -c '^BRIDGE_KEY=[0-9a-f]\{64\}$' server/.env)" = 1 ]; then   # 沒有剛好一行金鑰就不比對（否則搜尋字串是空的，每個檔都會算命中）
+  grep -rl "$(sed -n 's/^BRIDGE_KEY=//p' server/.env | tr -d "\"'" | cut -c1-8)" ~/.claude/projects/ "$DATA/logs" 2>/dev/null | wc -l   # #10 金鑰檢查（前 8 碼）：期望 0
+else echo "✗ .env 的金鑰行不是剛好一行，先回第 3 步 A9"; fi
 ```
 
 最後一行是 #10 的金鑰外洩檢查：只拿金鑰前 8 碼去比對 Claude 的對話紀錄與伺服器 log，**指令本身不印金鑰**，只回命中檔案數。
@@ -459,7 +485,7 @@ cd "$REPO" && grep -rl "$(sed -n 's/^BRIDGE_KEY=//p' server/.env | tr -d "\"'" |
 
 ```sh
 REPO="$HOME/dzy-bulletin"; DATA="$HOME/dzy-bulletin-data"
-cd "$REPO" && grep -rl "$(sed -n 's/^BRIDGE_KEY=//p' server/.env | tr -d "\"'" | cut -c1-12)" ~/.claude/projects/ "$DATA/logs" 2>/dev/null | wc -l
+cd "$REPO" && [ "$(grep -c '^BRIDGE_KEY=[0-9a-f]\{64\}$' server/.env)" = 1 ] && grep -rl "$(sed -n 's/^BRIDGE_KEY=//p' server/.env | tr -d "\"'" | cut -c1-12)" ~/.claude/projects/ "$DATA/logs" 2>/dev/null | wc -l
 ```
 
   仍非 0 → **不要**打開命中的檔案看，直接告訴 Eason「金鑰檢查有 N 個命中」，由他重做 A9（Apps Script 屬性＋`.env` 兩處），Claude 執行 `launchctl kickstart -k gui/$(id -u)/com.dzy.bulletin` 重起，再跑一次檢查。12 碼為 0 → 視為碰巧，回報「8 碼 N 命中、12 碼 0 命中」。
@@ -473,27 +499,29 @@ cd "$REPO" && grep -rl "$(sed -n 's/^BRIDGE_KEY=//p' server/.env | tr -d "\"'" |
 ```markdown
 ## M4 部署回報（Mac mini）
 
-環境：macOS <版本>／<arm64 或 x86_64>／Node <v24.x.y>／Tailscale <版本>（官方 App）／repo <分支> <commit 前 7 碼>
+環境：<證據檔的「環境」那一行>／Tailscale <版本>（官方 App）
+
+（以下數據一律從 `$HOME/dzy-bulletin-data/logs/deploy-evidence.txt` 讀，不憑對話記憶；可把整個證據檔貼在最後的 details 裡。）
 
 - [ ] 照 DEPLOY.md 完成，過程沒有回 MacBook 問（卡住的地方：<無／列出>）
 - [ ] 第 9 步的帳號名稱 grep 為 0；`.env` 權限 `-rw-------`、`git status` 看不到；Claude 設定有 `.env` 的 Read 禁止規則
 - [ ] `lsof -nP -iTCP:8793 -sTCP:LISTEN` 只有 `127.0.0.1:8793`，且 PID＝launchd 的 pid
 - [ ] 正式模式 `POST /__seed` 回 404
-- [ ] `tailscale funnel status` 只有一條 443 → `http://127.0.0.1:8793`；從公開 DNS 解析的 IP（非 100.x）打 `/health` 200
+- [ ] `tailscale funnel status` 只有一條 443 → `http://127.0.0.1:8793`；tailnet 外驗證：<通過／繞回驗證不適用，由 V3 判定>（見證據檔）
 - [ ] Tailscale 後台 key expiry 已停用（截圖已遮網址，附在下面）
 - [ ] 重開機不碰鍵盤，3 分鐘內手機（已中斷 Tailscale、4G）打 `/health` 200
 - [ ] 拔電 10 秒再插，不碰鍵盤，3 分鐘內手機（同上）打 `/health` 200
 - [ ] `fdesetup status` 為 Off；自動登入＝部署帳號；螢幕保護後立即要求密碼（Eason 目視）
 - [ ] `date` 顯示 CST（台北）；`pmset` autorestart 1／sleep 0／disksleep 0；自動安裝 macOS 更新＝0
-- [ ] 第 6 步當下的 `/health`：`e2e` false、`bridge` configured、`level` green（之後每小時／每次重開機的鏡像都被擋，會轉 yellow「鏡像連續失敗」，M5 前屬預期）
-- [ ] `launchctl print` 三個 job 都已載入；殺掉 node 後 <N> 秒內（≤ 10）自動重起（PID 已換）
+- [ ] 第 6 步當時的狀態（見證據檔）：`e2e` false、`bridge` configured、`level` green（若第 6 步救回過 PRIMARY 誤設則照實填 yellow）。之後每小時／每次重開機的鏡像都被擋，現在轉 yellow「鏡像連續失敗」是 M5 前的預期狀態
+- [ ] `launchctl print` 三個 job 都已載入；殺掉 node 後 <證據檔第 5 步的秒數> 秒內（≤ 10）自動重起（PID 已換）
 - [ ] daily 手動跑一次 `ok:true`、`sharedWith` 為 0（雲端備份資料夾有新檔、沒有分享給任何人）；mirror 載入時自動跑的那一輪為預期的 `鏡像：BRIDGE mirror: AUTH 目前不接受這個橋接動作`
 - [ ] Tailscale 中斷時手機打不到、連回後打得到；本機模擬後端打不通時前端顯示錯誤文字、不白屏
 - [ ] #10 金鑰 grep 檢查：0 命中
 
-<details><summary>/health 回應</summary>
+<details><summary>證據檔與目前的 /health</summary>
 
-（貼 `curl -s http://127.0.0.1:8793/health` 的輸出）
+（貼 `cat "$HOME/dzy-bulletin-data/logs/deploy-evidence.txt"`，以及現在 `curl -s http://127.0.0.1:8793/health` 的輸出）
 </details>
 ```
 
@@ -503,7 +531,7 @@ Funnel 網址：**在對話裡**交給 Eason，不寫在上面。
 
 ## 交接給 M5（重要，負責切換的人必讀）
 
-Mac mini 上的位置（M5 的指令照這裡寫，**不要**直接打 `node`——這台沒把 Node 放進 `PATH`，會 `command not found`）：
+Mac mini 上的位置（M5 的指令照這裡寫；這台沒把 Node 放進 `PATH`，直接打 `node` 會 `command not found`——要嘛寫絕對路徑 `"$HOME/.local/node/bin/node"`，要嘛像下面一樣先定義 `node()` 函式）：
 
 | 東西 | 位置 |
 |---|---|
@@ -516,15 +544,17 @@ Mac mini 上的位置（M5 的指令照這裡寫，**不要**直接打 `node`—
 1. **設 `PRIMARY=mini` 之前，先停掉鏡像 job**。原因：一旦 `PRIMARY=mini`，Apps Script 就接受鏡像；每小時的鏡像若剛好在「設了 `PRIMARY=mini`」到「`migrate.js` 完成」之間跑，會嘗試把 Mac mini 的空庫寫進正式試算表（全空的會被 Apps Script 擋下，但只有一兩筆測試資料時擋不住）。完整順序（`migrate.js` 在 M5 的 PR 才進 repo）：
 
 ```sh
-REPO="$HOME/dzy-bulletin"; DATA="$HOME/dzy-bulletin-data"; NODE="$HOME/.local/node/bin/node"; U="gui/$(id -u)"
-launchctl bootout "$U/com.dzy.bulletin.mirror"              # ① 先停鏡像，再請 Eason 設 PRIMARY=mini、EXPORT_ONCE=1
-"$NODE" "$REPO/server/migrate.js" --dry-run                  # ② 看筆數與簽名圖預估時間
-"$NODE" "$REPO/server/migrate.js"                            # ③ 正式搬遷，六項全 ✅ 才往下
-launchctl bootstrap "$U" "$HOME/Library/LaunchAgents/com.dzy.bulletin.mirror.plist"   # ④ 載回鏡像（RunAtLoad：載入即跑一輪）
+REPO="$HOME/dzy-bulletin"; DATA="$HOME/dzy-bulletin-data"; U="gui/$(id -u)"
+node() { "$HOME/.local/node/bin/node" "$@"; }               # 這台的 node 不在 PATH；每段指令前都要定義一次（新 shell 不會記得）
+launchctl disable "$U/com.dzy.bulletin.mirror"; launchctl bootout "$U/com.dzy.bulletin.mirror"   # ① 先停鏡像（disable 撐得過重開機，bootout 才真的停），再請 Eason 設 PRIMARY=mini、EXPORT_ONCE=1
+node "$REPO/server/migrate.js" --dry-run                    # ② 呼叫 export（一次性）並立刻存成本機匯出檔，印筆數與簽名圖預估時間；最後一行是匯出檔路徑
+node "$REPO/server/migrate.js" --from "<②印出的匯出檔>"      # ③ 正式搬遷：export 已在 ② 用掉（再呼叫會回 AUTH），一律 --from；六項全 ✅ 才往下
+launchctl enable "$U/com.dzy.bulletin.mirror"; launchctl bootstrap "$U" "$HOME/Library/LaunchAgents/com.dzy.bulletin.mirror.plist"   # ④ 解除停用並載回鏡像（RunAtLoad：載入即跑一輪）
 cat "$DATA/logs/mirror-last.json"; echo                     # ⑤ 等一兩分鐘後看，應為 "ok":true、pending／missing／bad 為 0
 ```
 
-   回退時的手動鏡像：`touch "$DATA/READONLY"` 後 `"$NODE" "$REPO/server/mirror.js" --all`，重複到 `mirror-last.json` 的 `pending` 為 0。
+   **匯出檔**（②存下的 JSON，權限 600）含全部同仁密碼雜湊、登入簽章金鑰與管理通行碼雜湊，比照 `.env` 禁令：Claude 不打開、不印出、不貼進對話；搬遷確認無誤後由 Eason 決定刪除。完整切換步驟與失敗處理以 M5 的 `server/CUTOVER.md` 為準，回退以 `server/ROLLBACK.md` 為準。
+   回退時的手動鏡像，順序不可調換（#10）：① `launchctl disable "$U/com.dzy.bulletin.mirror"; launchctl bootout "$U/com.dzy.bulletin.mirror"`（否則 launchd 那一輪拿著工作鎖時，`--all` 會直接跳過並印 `pending=null`，容易誤讀）→ ② `touch "$DATA/READONLY"` → ③ `node "$REPO/server/mirror.js" --all`，重複到 `mirror-last.json` 的 `pending` 為 0 → ④ **這之後**才請 Eason 把 `PRIMARY` 改回 `gas`（Apps Script 只在 `PRIMARY=mini` 時接受鏡像，先改就鏡像不上去了）。
 2. Funnel 網址由 Eason 交給負責改 `js/config.js` 的人。
 3. 管理通行碼：搬遷後沿用 Apps Script 的雜湊，不需要 `ADMIN_INIT.txt`。
 
@@ -550,7 +580,9 @@ cat "$DATA/logs/mirror-last.json"; echo                     # ⑤ 等一兩分�
 - 本機 `curl http://127.0.0.1:8793/health` 就不通 → 是伺服器問題，看 A。
 - 剛開 Funnel 時 TLS 錯誤或公開 DNS 查不到 → 憑證與 DNS 還在生效，等 10 分鐘內再試。
 - 第 7 步「從 tailnet 外面驗證」通、手機不通 → 手機那端的問題（手機 Tailscale 沒中斷、4G 訊號、瀏覽器快取）。
-- 「從 tailnet 外面驗證」也不通、本機通 → 後台 Funnel 同意沒做（A8），或 MagicDNS／HTTPS Certificates 沒開。
+- 分辨「A8 沒做」和「只是繞回不通」：
+  - **A8 沒做**的樣子：`funnel --bg` 印出同意連結、逾時（142）或報錯退出；`funnel status` 沒有 `(Funnel on)`；公開 DNS 一直查不到 IPv4；**而且 V3 手機也打不到**。→ 請 Eason 補做 A8（Funnel 同意、MagicDNS、HTTPS Certificates），再重做第 7 步。
+  - **只是繞回不通**的樣子：`funnel status` 有 `(Funnel on)` 且指到 `http://127.0.0.1:8793`、公開 DNS 查得到非 100.x 的 IPv4，但 Mac mini 自己 `curl --resolve` 逾時或連不上；**V3 手機 4G（已中斷 Tailscale）打得到**。→ 不是故障，記「繞回驗證不適用」，以 V3 為準，不要叫 Eason 重做後台。
 - 幾個月後突然全斷 → 多半是 key expiry 沒停用（A8），請 Eason 在後台重新驗證並停用過期。
 
 **C. Node 版本不符**
@@ -564,7 +596,7 @@ cat "$DATA/logs/mirror-last.json"; echo                     # ⑤ 等一兩分�
 - `…未設定 Google 橋接（BRIDGE_URL／BRIDGE_KEY）` → 同上（背景工作也讀同一個 `.env`）。
 - `…AUTH 橋接金鑰錯誤` → 兩邊金鑰不一致或 Apps Script 的那把短於 32 字元。請 Eason 重做 A9（那一行會先刪掉 `.env` 裡舊的金鑰行，Claude 不經手），做完 `kickstart -k` 伺服器、再 `kickstart` daily 驗證。
 - `…AUTH 目前不接受這個橋接動作` → 金鑰是對的；是 `mirror`／`export` 在 `PRIMARY=gas` 時被擋。M4 階段 mirror 出現這個是**正常**的。
-- `鏡像：BAD_REQ 鏡像資料全空，拒絕覆寫` → Apps Script 被設成了 `PRIMARY=mini`，同仁此刻簽不了名。**立刻停下**，請 Eason 把 `PRIMARY` 改回 `gas`（見第 6 步判讀表）。
+- `鏡像：BAD_REQ` 開頭的任何錯誤（`鏡像資料全空，拒絕覆寫`、`鏡像的…筆數（…）比現有（…）少一半以上，拒絕覆寫…`、`鏡像資料缺 …`）→ M4 階段一律代表 Apps Script 被設成了 `PRIMARY=mini`，同仁此刻簽不了名。**立刻停下**，請 Eason 把 `PRIMARY` 改回 `gas`（見第 6 步判讀表）。
 - `…回應不是 JSON` → `BRIDGE_URL` 不是 Apps Script 網頁應用程式的 `/exec` 網址，或該部署的存取權不是「任何人」。
 - `BRIDGE_TIMEOUT …`／`連線 Google 逾時`、`Google 雲端暫時連不上` → Apps Script 排隊或 Google 暫時故障；下一輪會自己重跑，連續多次再回報。
 - `/health` 黃燈、`why` 有「備份資料夾有共用者」→ 雲端硬碟「鼎兆元｜電子佈告欄備份」資料夾被分享了。請 Eason 在雲端硬碟對該資料夾 → 共用 → 移除所有共用者（也不要開「知道連結的人」），隔天快照後 `sharedWith` 回到 0 就轉綠；急的話 `launchctl kickstart gui/$(id -u)/com.dzy.bulletin.daily` 立刻重跑一次。

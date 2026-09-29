@@ -2,7 +2,7 @@
  * 正本在 repo ~/dzy-bulletin/gas/；Logic.js 由 tools/build.sh 從 js/logic.js 產生，不要手改。 */
 'use strict';
 
-var VERSION_ = '0.3.0';
+var VERSION_ = '0.3.1';
 
 function doGet() {
   return json_({ ok: true, data: { app: 'dzy-bulletin', v: VERSION_ } });
@@ -16,7 +16,7 @@ function doPost(e) {
   try {
     var files = makeFiles_();
     var svc = makeService_(DZYB, makeStore_(files), files, makeAuth_(gasCrypto_(), DZYB),
-      { nowMs: function () { return Date.now(); }, today: function () { return DZYB.today(); } });
+      { nowMs: function () { return Date.now(); }, today: function () { return DZYB.today(); } }, clockSource_());
     if (svc.WRITE_ACTIONS.indexOf(action) < 0) return json_(svc.call(action, req));
     var lock = LockService.getScriptLock();
     if (!lock.tryLock(20000)) return json_({ ok: false, code: 'SERVER', message: '同時操作的人太多，請稍後再試' });
@@ -25,6 +25,32 @@ function doPost(e) {
     console.error(action + ': ' + (x && x.stack || x));
     return json_({ ok: false, code: 'SERVER', message: '系統忙碌，請稍後再試' });
   }
+}
+
+/* 打卡系統名單（唯讀）：roster 分頁的 emp_id／name／active／removed_at。來源清單在 Config.local.js（不進 git） */
+function clockSource_() {
+  if (typeof CLOCK_SOURCES_ === 'undefined') return null;
+  return {
+    read: function () {
+      var rows = [], errors = [], counts = {}, sources = [];
+      CLOCK_SOURCES_.forEach(function (c) {
+        try {
+          var v = SpreadsheetApp.openById(c.ssId).getSheetByName('roster').getDataRange().getValues();
+          var h = v[0].map(String), iE = h.indexOf('emp_id'), iN = h.indexOf('name'), iA = h.indexOf('active'), iR = h.indexOf('removed_at');
+          if (iE < 0 || iN < 0 || iA < 0) throw new Error('roster 欄位不符');
+          var n = 0;
+          v.slice(1).forEach(function (r) {
+            var active = (r[iA] === true || String(r[iA]).toUpperCase() === 'TRUE') && !(iR >= 0 && String(r[iR]).trim());
+            if (!String(r[iE]).trim()) return;
+            if (active) n++;
+            rows.push({ src: c.src, unit: c.unit, empId: String(r[iE]).trim(), name: String(r[iN]).trim(), active: active });
+          });
+          counts[c.label] = n; sources.push(c.src);
+        } catch (e) { errors.push(c.label + '：讀取失敗（' + (e && e.message) + '）'); console.error(e); }
+      });
+      return { rows: rows, errors: errors, counts: counts, sources: sources };
+    }
+  };
 }
 
 function json_(o) {

@@ -7,3 +7,4 @@ spike/sample/*.xlsx
 node_modules/
 test-results/
 playwright-report/
+gas/Config.local.js

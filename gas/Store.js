@@ -5,8 +5,8 @@
 var SHEETS_ = {
   posts: { name: '公告', cols: ['id', 'title', 'body', 'units', 'publishOn', 'expiresOn', 'pinned', 'published', 'offOn', 'files', 'createdAt', 'updatedAt'],
     head: ['id', '標題', '內容', '單位', '上架日', '到期日', '置頂', '上架中', '手動下架日', '附件', '建立時間', '最後修改時間'] },
-  staff: { name: '同仁', cols: ['id', 'name', 'unit', 'pinHash', 'salt', 'pinVer', 'fail', 'active', 'createdAt', 'deletedAt'],
-    head: ['id', '姓名', '單位', '密碼雜湊', 'salt', '密碼版本', '連續錯誤次數', '在職', '建立時間', '刪除時間'] },
+  staff: { name: '同仁', cols: ['id', 'name', 'unit', 'pinHash', 'salt', 'pinVer', 'fail', 'active', 'createdAt', 'deletedAt', 'src'],
+    head: ['id', '姓名', '單位', '密碼雜湊', 'salt', '密碼版本', '連續錯誤次數', '在職', '建立時間', '刪除時間', '來源（打卡系統）'] },
   reads: { name: '已讀', cols: ['postId', 'staffId', 'name', 'unit', 'at', 'sigId'],
     head: ['公告 id', '同仁 id', '姓名', '單位', '簽名時間', '簽名檔 id'] },
   log: { name: '操作紀錄', cols: ['at', 'action', 'target', 'summary'], head: ['時間', '動作', '對象', '摘要'] }
@@ -67,6 +67,10 @@ function makeStore_(files) {
   }
   function write(key, obj, row) {
     var cols = SHEETS_[key].cols, sh = sheet(key);
+    if (sh.getRange(1, cols.length).getValue() === '') {                 // 舊表補新欄表頭（例如同仁的「來源」欄）
+      sh.getRange(1, 1, 1, cols.length).setValues([SHEETS_[key].head]).setFontWeight('bold');
+      sh.getRange(1, cols.length, sh.getMaxRows(), 1).setNumberFormat('@');
+    }
     var vals = [cols.map(function (c) { var v = obj[c]; return v === undefined || v === null ? '' : String(v); })];
     if (row) sh.getRange(row, 1, 1, cols.length).setValues(vals);
     else sh.getRange(sh.getLastRow() + 1, 1, 1, cols.length).setValues(vals);
@@ -91,7 +95,7 @@ function makeStore_(files) {
   }
   function toStaff(r) {
     return { id: r.id, name: r.name, unit: r.unit, pinHash: r.pinHash, salt: r.salt, pinVer: Number(r.pinVer) || 0,
-      fail: Number(r.fail) || 0, active: bool_(r.active), createdAt: r.createdAt, deletedAt: r.deletedAt };
+      fail: Number(r.fail) || 0, active: bool_(r.active), createdAt: r.createdAt, deletedAt: r.deletedAt, src: r.src || '' };
   }
 
   return {

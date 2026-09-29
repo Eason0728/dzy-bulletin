@@ -113,7 +113,20 @@ var DZYB_MOCK = (function () {
     quota: function () { return { limit: 16106127360, usage: 7935000000 }; }
   };
   var clock = { nowMs: function () { return Date.now(); }, today: function () { return L.today(); } };
-  var svc = G.makeService_(L, store, files, auth, clock);
+  // 模擬打卡系統名單（小辛辣光復 gf／央廚 cf／墨竹亭金山 js）
+  var CLOCK = [
+    { src: 'gf', unit: 'mala', empId: 'A01', name: '陳大安', active: true },
+    { src: 'gf', unit: 'mala', empId: 'A02', name: '光復新人', active: true },
+    { src: 'gf', unit: 'mala', empId: 'A03', name: '已離職員工', active: false },
+    { src: 'cf', unit: 'cf', empId: 'CF01', name: '蔡明哲', active: true },
+    { src: 'cf', unit: 'cf', empId: 'CF09', name: '央廚新人', active: true },
+    { src: 'js', unit: 'mzt', empId: 'J01', name: '金山新人', active: true }
+  ];
+  var clockSrc = { read: function () {
+    return { rows: JSON.parse(JSON.stringify(CLOCK)), errors: [], sources: ['gf', 'cf', 'js'],
+      counts: { '小辛辣光復店': CLOCK.filter(function (r) { return r.src === 'gf' && r.active; }).length, '央廚': CLOCK.filter(function (r) { return r.src === 'cf' && r.active; }).length, '墨竹亭金山店': CLOCK.filter(function (r) { return r.src === 'js' && r.active; }).length } };
+  } };
+  var svc = G.makeService_(L, store, files, auth, clock, clockSrc);
 
   return {
     call: function (action, req) {
@@ -122,6 +135,7 @@ var DZYB_MOCK = (function () {
     },
     callSync: function (action, req) { return svc.call(action, clone(req || {})); },
     blobOf: function (id) { return BLOBS[id] || null; },
+    setClockActive: function (empId, on) { CLOCK.forEach(function (r) { if (r.empId === empId) r.active = on; }); },   // 測試用
     reset: function () { db = seed(); save(); },
     testerReset: function () {                       // 預覽用：清掉測試員的密碼與簽名
       var d = load();

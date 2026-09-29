@@ -2,10 +2,11 @@
  * 本機假後端（js/mock.js）與 GAS（gas/Code.js）都呼叫這一份，只換 store／files／auth／clock。
  * store: getPosts() savePost(p) getStaff() saveStaff(s) getReads() addRead(r) [getSigs(postId)] addLog(e) getAdmin() setAdmin(a) secret()
  * files: upload(name,mime,b64) share(ids) revoke(ids) quota()
- * clock: { nowMs(), today() } */
+ * clock: { nowMs(), today() }
+ * clockSrc（選用）: read() → { rows:[{src, unit, empId, name, active}], errors:[字串] }（打卡系統名單，唯讀） */
 'use strict';
 
-function makeService_(L, store, files, auth, clock) {
+function makeService_(L, store, files, auth, clock, clockSrc) {
   function err(code, message) { var e = new Error(message || code); e.code = code; return e; }
   function iso() { return new Date(clock.nowMs()).toISOString(); }
   function log(action, target, summary) { store.addLog({ at: iso(), action: action, target: target || '', summary: summary || '' }); }
@@ -212,6 +213,30 @@ function makeService_(L, store, files, auth, clock) {
       store.saveStaff(s); log('新增同仁', s.id, name + '（' + L.STAFF_UNIT_NAME[s.unit] + '）');
       return { staff: { id: s.id, name: s.name, unit: s.unit, hasPin: false, locked: false } };
     },
+    // 從打卡系統同步：只新增在職且尚未在名單的人；打卡已離職者只列出，不自動刪除
+    syncClock: function (q) {
+      requireAdmin(q);
+      if (!clockSrc) throw err('BAD_REQ', '未設定打卡系統來源');
+      var got = clockSrc.read(), all = store.getStaff(), added = [], adopted = 0;
+      var liveKeys = {};
+      got.rows.forEach(function (r) {
+        var key = r.src + ':' + r.empId, name = String(r.name || '').trim();
+        if (!r.empId || !name || L.STAFF_UNIT_IDS.indexOf(r.unit) < 0) return;
+        if (r.active) liveKeys[key] = 1;
+        if (!r.active) return;
+        if (all.some(function (s) { return s.src === key; })) return;         // 已同步過（含被手動刪除的，不再加回）
+        var same = all.filter(function (s) { return s.active && !s.src && s.name === name && s.unit === r.unit; })[0];
+        if (same) { same.src = key; store.saveStaff(same); adopted++; return; }   // 手動建過的同一人：補上來源
+        var gone = all.filter(function (s) { return !s.active && !s.src && s.name === name && s.unit === r.unit; })[0];
+        if (gone) { gone.src = key; store.saveStaff(gone); return; }            // 佈告欄已手動刪除的同一人：視為刻意刪除，不加回
+        var s = { id: nextId('S-', all, 3), name: name, unit: r.unit, pinHash: '', salt: '', pinVer: 0, fail: 0, active: true, createdAt: iso(), deletedAt: '', src: key };
+        store.saveStaff(s); all.push(s); added.push(name + '（' + L.STAFF_UNIT_NAME[r.unit] + '）');
+      });
+      var left = all.filter(function (s) { return s.active && s.src && !liveKeys[s.src] && got.sources.indexOf(s.src.split(':')[0]) >= 0; })
+        .map(function (s) { return { id: s.id, name: s.name, unit: s.unit }; });
+      if (added.length || adopted) log('打卡同步', '', '新增 ' + added.length + ' 人、對應 ' + adopted + ' 人');
+      return { added: added, adopted: adopted, left: left, counts: got.counts, errors: got.errors };
+    },
     staffDelete: function (q) {
       requireAdmin(q);
       var s = findStaff(q.staffId); s.active = false; s.deletedAt = iso(); store.saveStaff(s);
@@ -248,7 +273,7 @@ function makeService_(L, store, files, auth, clock) {
       return { ok: false, code: 'SERVER', message: '系統忙碌，請稍後再試' };
     }
   }
-  return { call: call, WRITE_ACTIONS: ['setPin', 'login', 'ack', 'adminLogin', 'uploadFile', 'savePost', 'setPublished', 'setPinned', 'staffAdd', 'staffDelete', 'staffResetPin', 'changePass'] };
+  return { call: call, WRITE_ACTIONS: ['setPin', 'login', 'ack', 'adminLogin', 'uploadFile', 'savePost', 'setPublished', 'setPinned', 'staffAdd', 'staffDelete', 'staffResetPin', 'changePass', 'syncClock'] };
 }
 
 if (typeof module !== 'undefined') module.exports = { makeService_: makeService_ };

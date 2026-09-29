@@ -147,6 +147,7 @@ Apps Script Web App（madesiaosinla，以擁有者身分執行、任何人可呼
 | `staffAdd` | 管理憑證 | `name, unit` | `{staff}` |
 | `staffDelete` | 管理憑證 | `staffId` | — |
 | `staffResetPin` | 管理憑證 | `staffId` | — |
+| `syncClock` | 管理憑證 | — | `{added:[姓名（單位）], adopted, left:[{id,name,unit}], counts:{來源:在職人數}, errors:[]}`（2026-09-29 追加：從小辛辣光復、央廚、墨竹亭金山打卡系統 roster 唯讀同步；只新增，打卡已離職者只列出不刪；同仁表新增「來源」欄 `src`＝`gf|cf|js:emp_id`） |
 | `changePass` | 管理憑證 | `oldPass, newPass` | `{atoken}`（ADMIN_VER+1 使所有舊管理憑證失效，回傳新憑證讓操作者不被登出） |
 
 - 所有寫入都用 `LockService` 排隊，避免兩個人同時上架時流水號重複。

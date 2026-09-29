@@ -2,7 +2,7 @@
 'use strict';
 var Admin = (function () {
   var L = DZYB, esc = UI.esc;
-  var a = { tab: 'posts', filter: 'on', data: null, expand: null, receipts: {}, edit: null, draft: null, files: [], upMsg: '', dirty: false };
+  var a = { tab: 'posts', filter: 'on', data: null, expand: null, receipts: {}, edit: null, draft: null, files: [], upMsg: '', dirty: false, sync: null };
 
   function open() { if (UI.store.get('atoken')) load(); else loginForm(); }
   function needLogin(msg) { loginForm(msg); }
@@ -183,7 +183,18 @@ var Admin = (function () {
   /* ---------- 同仁名單 ---------- */
   function staffHTML() {
     var st = a.data.staff;
-    return '<div class="panel"><h4>新增同仁</h4><div class="row"><input class="inp" id="sName" placeholder="姓名（全名）" maxlength="20">' +
+    var sy = a.sync, syHTML = '';
+    if (sy) {
+      syHTML = '<div class="upbar" style="margin-top:10px">' +
+        '各來源在職人數：' + Object.keys(sy.counts || {}).map(function (k) { return esc(k) + ' ' + sy.counts[k] + ' 人'; }).join('、') + '<br>' +
+        '新增 ' + sy.added.length + ' 人' + (sy.added.length ? '：' + sy.added.map(esc).join('、') : '') +
+        (sy.adopted ? '<br>已對應既有名單 ' + sy.adopted + ' 人' : '') +
+        (sy.left.length ? '<br>⚠️ 打卡系統已離職、但仍在佈告欄名單（請自行決定是否刪除）：' + sy.left.map(function (x) { return esc(x.name) + '（' + L.STAFF_UNIT_NAME[x.unit] + '）'; }).join('、') : '') +
+        (sy.errors.length ? '<br>❌ ' + sy.errors.map(esc).join('<br>❌ ') : '') + '</div>';
+    }
+    return '<div class="panel"><h4>從打卡系統同步</h4><div class="hint" style="margin:0 0 8px">讀取小辛辣光復店、央廚、墨竹亭金山店打卡系統的在職名單，自動加入缺少的同仁（只讀取，不會改動打卡系統）。其他門市與總部請手動新增。</div>' +
+      '<button class="btn ghost" id="syncBtn">↻ 從打卡系統同步</button>' + syHTML + '</div>' +
+      '<div class="panel"><h4>新增同仁</h4><div class="row"><input class="inp" id="sName" placeholder="姓名（全名）" maxlength="20">' +
       '<select class="inp" id="sUnit">' + L.STAFF_UNITS.map(function (u) { return '<option value="' + u.id + '">' + u.name + '</option>'; }).join('') + '</select></div>' +
       '<div class="err" id="sErr"></div><div style="height:10px"></div><button class="btn primary" id="sAdd">新增</button></div>' +
       L.STAFF_UNITS.map(function (u) {
@@ -253,6 +264,13 @@ var Admin = (function () {
       var st = a.data.staff.filter(function (x) { return x.id === b.dataset.del; })[0];
       b.onclick = function () { act(b, 'staffDelete', { staffId: st.id }, '已刪除', '確定從名單刪除「' + st.name + '」？\n他的簽名紀錄會保留。'); };
     });
+    if (q('syncBtn')) q('syncBtn').onclick = function () {
+      var done = UI.busy(q('syncBtn'), '同步中…');
+      API.admin('syncClock', {}).then(function (r) {
+        done(); if (!r.ok) { if (r.code !== 'AUTH') UI.toast(r.message); return; }
+        a.sync = r.data; UI.toast('同步完成，新增 ' + r.data.added.length + ' 人'); a.dirty = true; load(true);
+      });
+    };
     if (q('npGo')) q('npGo').onclick = function () {
       var o = q('op').value, n = q('np').value, err = q('npErr');
       if (n.length < 4) { err.textContent = '新通行碼至少 4 碼'; return; }

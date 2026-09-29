@@ -146,8 +146,25 @@ eq('login new pass', C('adminLogin', { pass: '5678' }).ok, true);
   eq('staffAdd hq unit', C('staffAdd', { atoken: ad, name: '總部新人', unit: 'hq-mzt' }).ok, true);
   eq('staffAdd bad unit', C('staffAdd', { atoken: ad, name: 'x', unit: 'hq' }).code, 'BAD_REQ');
 }
+// 從打卡系統同步
+{ const ad = C('adminLogin', { pass: '5678' }).data.atoken;
+  eq('syncClock no token', call('syncClock', {}).code, 'AUTH');
+  let s1 = C('syncClock', { atoken: ad }).data;
+  eq('sync added', s1.added, ['光復新人（小辛辣）', '央廚新人（央廚）', '金山新人（墨竹亭）']);
+  eq('sync adopted existing', s1.adopted, 1);    // 蔡明哲對應既有 S-009；陳大安 S-001 已在佈告欄刪除 → 不加回
+  const s2 = C('syncClock', { atoken: ad }).data;
+  eq('sync idempotent', [s2.added.length, s2.adopted], [0, 0]);
+  eq('sync counts', s1.counts['央廚'], 2);
+  M.setClockActive('CF09', false);
+  eq('sync lists left', C('syncClock', { atoken: ad }).data.left.map(x => x.name), ['央廚新人']);
+  const st = C('adminData', { atoken: ad }).data.staff;
+  eq('left not auto-deleted', st.some(x => x.name === '央廚新人'), true);
+  const del = st.find(x => x.name === '金山新人'); C('staffDelete', { atoken: ad, staffId: del.id });
+  eq('deleted not re-added', C('syncClock', { atoken: ad }).data.added.includes('金山新人（墨竹亭）'), false);
+  eq('roster has no src leak', Object.keys(C('roster').data[0]).includes('src'), false);
+}
 eq('unknown action', C('hack', {}).code, 'BAD_REQ');
-eq('all 17 actions covered', seen.size, 17);
+eq('all 18 actions covered', seen.size, 18);
 
 console.log(`service: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

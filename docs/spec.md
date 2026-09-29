@@ -140,7 +140,7 @@ Apps Script Web App（madesiaosinla，以擁有者身分執行、任何人可呼
 | `adminLogin` | — | `pass` | `{atoken}` |
 | `adminData` | 管理憑證 | — | `{today, posts:[每則含 status、readCount、targetCount], staff:[{id,name(全名),unit,hasPin,locked}], quota:{limit,usage}\|null}` |
 | `receipts` | 管理憑證 | `postId` | `{rows:[{staffId, name, unit, active, inTarget, read, at, sig}]}`（應讀名單＋不在應讀名單但簽過的人；`active`＝同仁是否在職，`inTarget`＝是否屬於公告目前的單位；簽名圖只在展開時才載入） |
-| `uploadFile` | 管理憑證 | `name, mime, data(base64)` | `{id, name, type, size}` |
+| `uploadFile` | 管理憑證 | `name, data(base64)`（類型與 MIME 一律由後端依副檔名判斷） | `{id, name, type, size}` |
 | `savePost` | 管理憑證 | `{id?, title, body, units, publishOn, expiresOn, pinned, files}` | `{post}` |
 | `setPublished` | 管理憑證 | `postId, on` | `{post}` |
 | `setPinned` | 管理憑證 | `postId, on` | `{post}` |

@@ -208,8 +208,9 @@ var Staff = (function () {
     var ack = s.querySelector('#ackBtn');
     if (ack) ack.onclick = function () {
       Sign.open(p, me(), function () { openPost(id); }, function (at2, sig) {
-        v.board.myReads[p.id] = at2 || new Date().toISOString();
-        UI.toast(at2 ? '已簽名確認' : '你已經簽過這則公告'); render(); openPost(id, sig);
+        if (!at2) { UI.closeSheet(); UI.toast('你已經簽過這則公告'); loadBoard(); return; }   // 重複送出：以伺服器紀錄為準
+        v.board.myReads[p.id] = at2;
+        UI.toast('已簽名確認'); render(); openPost(id, sig);
       });
     };
   }

@@ -50,9 +50,9 @@ var DZYB = (function () {
   }
   function isAllUnits(list) { return normUnits(list).length === UNIT_IDS.length; }
 
-  // C15 看得到哪些分頁：總部墨竹亭／小辛辣只看自己品牌；其餘（門市、總部鼎兆元）三個分頁都能看
-  function viewTabs(staffUnit) { return HQ_BRAND[staffUnit] ? [HQ_BRAND[staffUnit]] : UNIT_IDS.slice(); }
-  function canSee(staffUnit, p) { var b = HQ_BRAND[staffUnit]; return !b || (p.units || []).indexOf(b) >= 0; }
+  // C15 看得到哪些分頁：所有人三個分頁都能看（2026-09-29 Eason 改：總部墨竹亭／小辛辣也看得到全部，只簽自己品牌）
+  function viewTabs(staffUnit) { return UNIT_IDS.slice(); }
+  function canSee(staffUnit, p) { return true; }
   // C15 要不要簽：門市＝公告含自己單位；總部墨竹亭／小辛辣＝公告含該品牌；總部鼎兆元＝只簽「全部」
   function mustSign(staffUnit, p) {
     if (staffUnit === 'hq-dzy') return isAllUnits(p.units);

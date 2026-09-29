@@ -23,7 +23,28 @@ var DZYB_MOCK = (function () {
   };
   var auth = G.makeAuth_(fakeCrypto, L);
 
+  // 資料帶入測試：測試以 add_init_script 注入 window.__E2E_DATA（每次隨機產生），有就用它，不用下方示範資料
+  function seedFromE2E(d) {
+    var staff = d.staff.map(function (x) {
+      var salt = x.pin ? 'e2e-' + x.id : '';
+      return { id: x.id, name: x.name, unit: x.unit, salt: salt, pinHash: x.pin ? auth.hashPin(salt, x.pin) : '',
+        pinVer: 1, fail: x.fail || 0, active: true, createdAt: '2026-01-01T00:00:00.000Z', deletedAt: '', src: x.src || '' };
+    });
+    var posts = d.posts.map(function (p) {
+      return { id: p.id, title: p.title, body: p.body || '', units: p.units, publishOn: p.publishOn, expiresOn: p.expiresOn || '',
+        pinned: !!p.pinned, published: p.published !== false, offOn: p.offOn || '', files: p.files || [],
+        createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' };
+    });
+    var reads = d.reads.map(function (r) {
+      var st = staff.filter(function (x) { return x.id === r.staffId; })[0];
+      return { postId: r.postId, staffId: r.staffId, name: st.name, unit: st.unit, at: r.at, sig: '' };
+    });
+    return { posts: posts, staff: staff, reads: reads, log: [], admin: { hash: '', salt: '', init: d.adminPass, ver: 1, fail: 0, lockUntil: 0 },
+      secret: 'e2e-secret', fileSeq: 0 };
+  }
+
   function seed() {
+    if (G.__E2E_DATA) return seedFromE2E(G.__E2E_DATA);
     var T = L.today(), A = L.addDays;
     var salt = 'seed';
     var staff = [
@@ -124,6 +145,7 @@ var DZYB_MOCK = (function () {
     { src: 'cf', unit: 'cf', empId: 'CF09', name: '央廚新人', active: true },
     { src: 'js', unit: 'mzt', empId: 'J01', name: '金山新人', active: true }
   ];
+  if (G.__E2E_DATA && G.__E2E_DATA.clock) CLOCK = G.__E2E_DATA.clock;
   var clockSrc = { read: function () {
     return { rows: JSON.parse(JSON.stringify(CLOCK)), errors: [], sources: ['gf', 'cf', 'js'],
       counts: { '小辛辣光復店': CLOCK.filter(function (r) { return r.src === 'gf' && r.active; }).length, '央廚': CLOCK.filter(function (r) { return r.src === 'cf' && r.active; }).length, '墨竹亭金山店': CLOCK.filter(function (r) { return r.src === 'js' && r.active; }).length } };

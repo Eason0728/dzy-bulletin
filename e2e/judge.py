@@ -112,7 +112,7 @@ async def main(base, brk):
 
         await login('S-017', grp='hq')
         tabs = await pg.locator('#app .seg button').all_inner_texts()
-        check('A17 總部墨竹亭只看到墨竹亭分頁', [t.rstrip('0123456789') for t in tabs] == ['墨竹亭'], tabs)
+        check('A17 總部墨竹亭看到三個分頁、紅點只在墨竹亭', [t.rstrip('0123456789') for t in tabs] == ['墨竹亭', '小辛辣', '央廚'] and tabs[1] == '小辛辣' and tabs[2] == '央廚', tabs)
         await q('#chgMe').click(); await pg.wait_for_selector('[data-pick]')
         await login('S-016', grp='hq')
         tabs = await pg.locator('#app .seg button').all_inner_texts()

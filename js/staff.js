@@ -116,6 +116,8 @@ var Staff = (function () {
             // 回到名單時，合併這支手機剛發生的變化（被鎖、設好密碼），避免期間抵達的名單把它蓋掉
             applyPatches(people, people._srcAt || 0);                        // 只套用比目前名單來源更新的本機變化（不會卡在已被重設的鎖定）
             done = false; draw();
+            var t2 = Date.now();                                               // 回到名單時重抓一次（別支手機可能已重設鎖定）
+            API.call('roster').then(function (r) { if (r.ok && !done) { r.data._api = true; applyPatches(r.data, t2); prunePatches(t2); r.data._srcAt = t2; people = r.data; UI.store.set('roster', JSON.stringify(r.data)); draw(); } });
           });
         };
       });

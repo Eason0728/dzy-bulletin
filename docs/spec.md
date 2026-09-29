@@ -112,7 +112,7 @@ Apps Script Web App（madesiaosinla，以擁有者身分執行、任何人可呼
 ### 管理者
 - 輸入管理通行碼 → `adminLogin` → 發一張 12 小時有效的管理憑證。憑證綁 `ADMIN_VER`，變更通行碼後舊憑證全部失效。
 - 管理通行碼連錯 5 次，鎖 15 分鐘。
-- **初始通行碼由你自己設定**：在指令碼屬性填 `ADMIN_INIT`，第一次登入時後端把它轉成雜湊並刪掉原文。我不會經手正式通行碼。
+- **通行碼只有 Eason 能設定與更換**（2026-09-29 定案，網頁不提供變更功能、API 也沒有 `changePass`）：在指令碼屬性填 `ADMIN_INIT`，下一次有人登入時後端轉成雜湊並刪掉原文；若原本已有通行碼，`ADMIN_VER`+1，所有舊的管理登入立即失效。我不會經手正式通行碼。
 
 ## 四、附件（依 ② 探的實測結果）
 1. 管理者在新增或編輯頁選檔。前端先檢查：副檔名只能是 doc、docx、pdf、xls、xlsx，最多 5 個，單檔 ≤ 20MB。
@@ -148,7 +148,6 @@ Apps Script Web App（madesiaosinla，以擁有者身分執行、任何人可呼
 | `staffDelete` | 管理憑證 | `staffId` | — |
 | `staffResetPin` | 管理憑證 | `staffId` | — |
 | `syncClock` | 管理憑證 | — | `{added:[姓名（單位）], adopted, left:[{id,name,unit}], counts:{來源:在職人數}, errors:[]}`（2026-09-29 追加：從小辛辣光復、央廚、墨竹亭金山打卡系統 roster 唯讀同步；只新增，打卡已離職者只列出不刪；同仁表新增「來源」欄 `src`＝`gf|cf|js:emp_id`） |
-| `changePass` | 管理憑證 | `oldPass, newPass` | `{atoken}`（ADMIN_VER+1 使所有舊管理憑證失效，回傳新憑證讓操作者不被登出） |
 
 - 所有寫入都用 `LockService` 排隊，避免兩個人同時上架時流水號重複。
 - 後端的日期一律用 `Asia/Taipei`。

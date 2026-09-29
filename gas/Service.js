@@ -101,11 +101,15 @@ function makeService_(L, store, files, auth, clock, clockSrc) {
     },
     adminLogin: function (q) {
       var a = store.getAdmin();
-      if (!a.hash) {
-        if (!a.init) throw err('AUTH', '管理通行碼尚未設定');
-        a.salt = auth.newSalt(); a.hash = auth.hashPin(a.salt, String(a.init)); a.init = ''; a.ver = Number(a.ver) || 1;
-        store.setAdmin(a);
+      // 通行碼只能由 Eason 在 Apps Script「指令碼屬性」填 ADMIN_INIT 設定或更換（網頁沒有變更功能）。
+      // 偵測到 ADMIN_INIT：轉成雜湊、刪掉原文；若是更換（原本已有通行碼），版本 +1 讓所有舊的管理登入失效。
+      if (a.init) {
+        var replacing = !!a.hash;
+        a.salt = auth.newSalt(); a.hash = auth.hashPin(a.salt, String(a.init)); a.init = '';
+        a.ver = replacing ? (Number(a.ver) || 1) + 1 : (Number(a.ver) || 1); a.fail = 0; a.lockUntil = 0;
+        store.setAdmin(a); if (replacing) log('更換通行碼', '', '由指令碼屬性 ADMIN_INIT 更換');
       }
+      if (!a.hash) throw err('AUTH', '管理通行碼尚未設定');
       var r = auth.adminLogin(a, String(q.pass || ''), clock.nowMs());
       a.fail = r.st.fail; a.lockUntil = r.st.lockUntil; store.setAdmin(a);
       if (!r.ok) {
@@ -247,14 +251,6 @@ function makeService_(L, store, files, auth, clock, clockSrc) {
       var s = findStaff(q.staffId); s.pinHash = ''; s.salt = ''; s.pinVer = (Number(s.pinVer) || 0) + 1; s.fail = 0; store.saveStaff(s);
       log('重設密碼', s.id, s.name); return {};
     },
-    changePass: function (q) {
-      var a = requireAdmin(q);
-      if (!auth.safeEq(auth.hashPin(a.salt, String(q.oldPass || '')), a.hash)) throw err('AUTH', '目前的通行碼錯誤');
-      if (String(q.newPass || '').length < 4) throw err('BAD_REQ', '新通行碼至少 4 碼');
-      a.salt = auth.newSalt(); a.hash = auth.hashPin(a.salt, String(q.newPass)); a.ver = (Number(a.ver) || 1) + 1; a.fail = 0; a.lockUntil = 0;
-      store.setAdmin(a); log('變更通行碼', '', '');
-      return { atoken: auth.makeAdminToken(store.secret(), a.ver, clock.nowMs() + 12 * 3600e3) };
-    }
   };
 
   // 回傳 C12 格式；不讓內部錯誤訊息外洩
@@ -273,7 +269,7 @@ function makeService_(L, store, files, auth, clock, clockSrc) {
       return { ok: false, code: 'SERVER', message: '系統忙碌，請稍後再試' };
     }
   }
-  return { call: call, WRITE_ACTIONS: ['setPin', 'login', 'ack', 'adminLogin', 'savePost', 'setPublished', 'setPinned', 'staffAdd', 'staffDelete', 'staffResetPin', 'changePass', 'syncClock'] };   // uploadFile 不碰試算表，不上鎖
+  return { call: call, WRITE_ACTIONS: ['setPin', 'login', 'ack', 'adminLogin', 'savePost', 'setPublished', 'setPinned', 'staffAdd', 'staffDelete', 'staffResetPin', 'syncClock'] };   // uploadFile 不碰試算表，不上鎖
 }
 
 if (typeof module !== 'undefined') module.exports = { makeService_: makeService_ };

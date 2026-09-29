@@ -135,6 +135,7 @@ var DZYB_MOCK = (function () {
     },
     callSync: function (action, req) { return svc.call(action, clone(req || {})); },
     blobOf: function (id) { return BLOBS[id] || null; },
+    setAdminInit: function (pw) { var d = load(); d.admin.init = pw; save(); },   // 模擬 Eason 在指令碼屬性填 ADMIN_INIT
     setClockActive: function (empId, on) { CLOCK.forEach(function (r) { if (r.empId === empId) r.active = on; }); },   // 測試用
     reset: function () { db = seed(); save(); },
     testerReset: function () {                       // 預覽用：清掉測試員的密碼與簽名

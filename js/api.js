@@ -46,7 +46,7 @@ var API = (function () {
   // 管理動作：自動帶管理憑證；失效就回到輸入通行碼
   function admin(action, payload) {
     return call(action, Object.assign({ atoken: UI.store.get('atoken') }, payload)).then(function (r) {
-      if (!r.ok && r.code === 'AUTH' && action !== 'changePass') { UI.store.del('atoken'); Admin.needLogin(r.message); }
+      if (!r.ok && r.code === 'AUTH') { UI.store.del('atoken'); Admin.needLogin(r.message); }
       return r;
     });
   }

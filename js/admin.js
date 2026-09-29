@@ -45,10 +45,10 @@ var Admin = (function () {
   }
 
   function render() {
-    var tabs = [['posts', '公告管理'], ['new', a.edit ? '編輯公告' : '新增公告'], ['staff', '同仁名單'], ['pass', '通行碼']];
+    var tabs = [['posts', '公告管理'], ['new', a.edit ? '編輯公告' : '新增公告'], ['staff', '同仁名單']];
     var h = '<div class="bar"><b>設定</b><button id="lock">登出</button><button data-close>關閉</button></div><div class="body">' +
       '<div class="seg">' + tabs.map(function (t) { return '<button data-at="' + t[0] + '" class="' + (a.tab === t[0] ? 'on' : '') + '">' + t[1] + '</button>'; }).join('') + '</div>';
-    h += a.tab === 'posts' ? postsHTML() : a.tab === 'new' ? formHTML() : a.tab === 'staff' ? staffHTML() : passHTML();
+    h += a.tab === 'posts' ? postsHTML() : a.tab === 'new' ? formHTML() : staffHTML();
     var s = UI.sheet(h + '</div>');
     s.querySelector('#lock').onclick = function () { UI.store.del('atoken'); a.data = null; UI.closeSheet(); UI.toast('已登出設定'); };
     s.querySelectorAll('[data-at]').forEach(function (b) {
@@ -208,13 +208,6 @@ var Admin = (function () {
       }).join('') +
       '<div class="hint">總部鼎兆元看得到全部公告、只簽「全部」；總部墨竹亭／小辛辣只看得到並簽自己品牌的公告。名單頁只顯示遮罩姓名（例：陳O安）。應讀人數＝公告單位內目前名單上的同仁；刪除同仁後，他的簽名紀錄保留，但不再計入人數。</div>';
   }
-  function passHTML() {
-    return '<div class="panel"><h4>變更管理通行碼</h4><label class="f">目前的通行碼</label><input class="inp" id="op" type="password" autocomplete="off">' +
-      '<label class="f">新通行碼（至少 4 碼）</label><input class="inp" id="np" type="password" autocomplete="new-password">' +
-      '<label class="f">再輸入一次新通行碼</label><input class="inp" id="np2" type="password" autocomplete="new-password">' +
-      '<div class="err" id="npErr"></div><div style="height:10px"></div><button class="btn primary" id="npGo">儲存</button>' +
-      '<div class="hint" style="margin-top:10px">變更後，其他裝置的設定面板會被登出；請通知所有管理者新的通行碼。</div></div>';
-  }
 
   /* ---------- 事件 ---------- */
   function act(btn, action, payload, okMsg, confirmMsg) {
@@ -269,16 +262,6 @@ var Admin = (function () {
       API.admin('syncClock', {}).then(function (r) {
         done(); if (!r.ok) { if (r.code !== 'AUTH') UI.toast(r.message); return; }
         a.sync = r.data; UI.toast('同步完成，新增 ' + r.data.added.length + ' 人'); a.dirty = true; load(true);
-      });
-    };
-    if (q('npGo')) q('npGo').onclick = function () {
-      var o = q('op').value, n = q('np').value, err = q('npErr');
-      if (n.length < 4) { err.textContent = '新通行碼至少 4 碼'; return; }
-      if (n !== q('np2').value) { err.textContent = '兩次輸入的新通行碼不一樣'; return; }
-      var done = UI.busy(q('npGo'), '儲存中…');
-      API.admin('changePass', { oldPass: o, newPass: n }).then(function (r) {
-        done(); if (!r.ok) { err.textContent = r.message; return; }
-        UI.store.set('atoken', r.data.atoken); UI.toast('通行碼已更新'); a.tab = 'posts'; render();
       });
     };
   }

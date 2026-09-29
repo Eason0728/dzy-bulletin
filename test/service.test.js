@@ -120,13 +120,15 @@ eq('deleted reader kept, inactive', [r.data.rows.find(x => x.staffId === 'S-001'
 eq('no debug field on server error', Object.keys(M.callSync('receipts', { atoken: at, postId: null })).includes('debug'), false);
 eq('deleted not counted', C('adminData', { atoken: at }).data.posts.find(p => p.id === 'P-20260920-001').targetCount, 5);
 
-// 變更通行碼 → 舊管理憑證失效
-eq('changePass wrong old', call('changePass', { atoken: at, oldPass: 'x', newPass: '5678' }).code, 'AUTH');
-r = C('changePass', { atoken: at, oldPass: '1234', newPass: '5678' });
-eq('changePass ok', r.ok, true);
-eq('old atoken dead', C('adminData', { atoken: at }).code, 'AUTH');
+// 更換通行碼：只能經由 ADMIN_INIT（網頁沒有 changePass）
+eq('changePass removed', C('changePass', { atoken: at, oldPass: '1234', newPass: '5678' }).code, 'BAD_REQ');
+M.setAdminInit('5678');
+r = C('adminLogin', { pass: '5678' });
+eq('ADMIN_INIT replaces pass', r.ok, true);
+eq('old atoken dead after replace', C('adminData', { atoken: at }).code, 'AUTH');
 eq('new atoken ok', C('adminData', { atoken: r.data.atoken }).ok, true);
-eq('login new pass', C('adminLogin', { pass: '5678' }).ok, true);
+eq('old pass rejected', C('adminLogin', { pass: '1234' }).code, 'AUTH');
+eq('ADMIN_INIT consumed', C('adminLogin', { pass: '5678' }).ok, true);
 
 // C15 總部：看得到／要簽
 { const tk = id => { M.callSync('staffResetPin', { atoken: C('adminLogin', { pass: '5678' }).data.atoken, staffId: id }); return C('setPin', { staffId: id, pin: '2580' }).data.token; };
@@ -164,7 +166,7 @@ eq('login new pass', C('adminLogin', { pass: '5678' }).ok, true);
   eq('roster has no src leak', Object.keys(C('roster').data[0]).includes('src'), false);
 }
 eq('unknown action', C('hack', {}).code, 'BAD_REQ');
-eq('all 18 actions covered', seen.size, 18);
+eq('all 17 actions covered', seen.size, 17);
 
 console.log(`service: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

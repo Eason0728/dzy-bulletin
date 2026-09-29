@@ -186,8 +186,8 @@ async function main() {
     T += 3600e3; const r3 = await runMirror({ dir, bridge, all: true, nowMs: clk });
     const sigFiles = Object.values(FG.drive.files).filter((f) => f.parent === FG.props.SIG_FOLDER_ID).length;
     eq('真 saveSigs：第 2 輪補上 Drive 失敗那張（與 0 位元組同批→後者計數）', [r2.ok, r2.uploaded, r2.failed], [true, 1, 1]);
-    eq('真 saveSigs：只剩 0 位元組單獨成批＝整批 null → 不計數、ok:false 附原因、仍 pending（已知限制，由人處理）',
-      [r3.ok, r3.pending, r3.bad, /全部失敗/.test(r3.error), JSON.parse(fs.readFileSync(path.join(dir, 'logs/sig-state.json'), 'utf8')).fails['P-1\tS-002\tP-1_S-002.png'].n], [false, 1, 0, true, 2]);
+    eq('真 saveSigs：0 位元組單獨成批，但上次失敗後別張成功過 → 仍計數、第 3 次成壞圖、--all 結束 pending 0、ok',
+      [r3.ok, r3.pending, r3.bad, r3.badIds, JSON.parse(fs.readFileSync(path.join(dir, 'logs/sig-state.json'), 'utf8')).fails['P-1\tS-002\tP-1_S-002.png'].n], [true, 0, 1, ['P-1/S-002'], 3]);
     eq('真 saveSigs：Drive 簽名資料夾只有 4 個檔（沒有重複的孤兒檔）', [sigFiles, q(dir, "SELECT COUNT(*) AS n FROM reads WHERE driveSigId LIKE 'G%'")[0].n], [4, 4]); }
   // UPDATE 的保護：上傳這幾分鐘裡別人已填 driveSigId（搬遷）→ 不覆蓋；sigId 被重建成別張圖 → 不套用舊圖的 id
   { const dir = tmp(); seedDb(dir, 3);
@@ -228,14 +228,51 @@ async function main() {
     const B = fakeBridge(); B.nullIf = () => true;           // Drive 配額用完／5xx：每一張都回 null
     let T = Date.now(); const clk = () => T;
     const ra = await runMirror({ dir, bridge: B, all: true, nowMs: clk });
-    eq('B2：30 張整批 null，--all → bad 0、ok:false 附原因、只打 1 次 sigs 就停', [ra.bad, ra.ok, /全部失敗/.test(ra.error), B.n('sigs'), ra.pending], [0, false, true, 1, 30]);
+    eq('B2：30 張整批 null，--all → bad 0、ok:false 附原因、只多探測 1 批就停（sigs 2 次，不空轉）', [ra.bad, ra.ok, /Drive 暫時故障/.test(ra.error), B.n('sigs'), ra.pending, ra.driveDown], [0, false, true, 2, 30, true]);
     const hourly = [];
     for (let i = 0; i < 5; i++) { T += 3600e3; const r = await runMirror({ dir, bridge: B, nowMs: clk }); hourly.push(r.bad); }
     eq('B2：接著 5 個每小時輪都整批 null → bad 始終 0', hourly, [0, 0, 0, 0, 0]);
-    eq('B2：整批 null 不留任何失敗計數', Object.keys(JSON.parse(fs.readFileSync(path.join(dir, 'logs/sig-state.json'), 'utf8')).fails).length, 0);
+    eq('B2：整批 null 不累計任何一張（n 全是 0）', Object.values(JSON.parse(fs.readFileSync(path.join(dir, 'logs/sig-state.json'), 'utf8')).fails).filter((f) => f.n > 0).length, 0);
     B.nullIf = null; T += 3600e3;
     const rb = await runMirror({ dir, bridge: B, all: true, nowMs: clk });
     eq('B2：Drive 恢復後 --all 全部上傳、pending 0', [rb.ok, rb.uploaded, rb.pending, rb.bad], [true, 30, 0, 0]); }
+  // B2 (1)：1 張壞圖＋5 張好圖、每輪 3 張（壞圖都跟好圖同批）、跨 3 輪 → bad 1、pending 0
+  { const dir = tmp(); seedDb(dir, 6);
+    const B = fakeBridge(); B.nullIf = (n) => n === 'P-1_S-000';
+    let T = Date.now(); const clk = () => T; const rs = [];
+    for (let i = 0; i < 3; i++) { rs.push(await runMirror({ dir, bridge: B, batch: 3, maxPerRun: 3, nowMs: clk })); T += 31 * 60e3; }
+    const r = rs[2];
+    eq('B2(1)：1 壞＋5 好跨 3 輪（間隔 31 分）→ bad 1、pending 0、ok', [r.bad, r.pending, r.ok, r.badIds, rs.map((x) => x.uploaded)], [1, 0, true, ['P-1/S-000'], [2, 2, 1]]); }
+  // B2 (2)：壞圖每次都單獨一批（batch 1），但其他時候有別張成功 → 一樣變成壞圖
+  { const dir = tmp(); seedDb(dir, 6);
+    const B = fakeBridge(); B.nullIf = (n) => n === 'P-1_S-000';
+    let T = Date.now(); const clk = () => T; const rs = [];
+    for (let i = 0; i < 5; i++) { rs.push(await runMirror({ dir, bridge: B, batch: 1, maxPerRun: 2, nowMs: clk })); T += 31 * 60e3; }
+    const n = (x) => x.bad;
+    eq('B2(2)：壞圖單獨成批（排最前）：第 1 輪沒證據不計，但下一批探測成功所以照常前進；之後每輪都有別張成功 → 第 4 輪成壞圖、最後 pending 0',
+      [rs[0].ok, !!rs[0].driveDown, rs.map(n), rs.map((x) => x.uploaded), rs[4].pending, rs[4].ok], [true, false, [0, 0, 0, 1, 1], [1, 1, 1, 1, 1], 0, true]); }
+  // B2 (3) 變形：Drive 在一輪中途掛掉（前一批成功、後面整批 null），之後一直沒恢復 → 後面那些不會因為「前面有成功」被計數
+  { const dir = tmp(); seedDb(dir, 10);
+    const B = fakeBridge(); let sent = 0; B.nullIf = () => ++sent > 5;
+    let T = Date.now(); const clk = () => T; const bads = [];
+    for (let i = 0; i < 4; i++) { const r = await runMirror({ dir, bridge: B, batch: 5, nowMs: clk }); bads.push(r.bad); T += 31 * 60e3; }
+    eq('B2(3)：Drive 中途掛掉後一直沒恢復 → bad 維持 0、pending 5', [bads, last(dir, 'mirror-last.json').pending], [[0, 0, 0, 0], 5]); }
+  // B2 (3) 變形：在混合批被計 1 次後 Drive 全掛 3 輪 → 最多再多計 1 次（停在 2），不會被以前的成功一路推成壞圖
+  { const dir = tmp(); seedDb(dir, 5);
+    const B = fakeBridge(); B.nullIf = (n) => n === 'P-1_S-000';
+    let T = Date.now(); const clk = () => T; const rs = [];
+    rs.push(await runMirror({ dir, bridge: B, batch: 3, maxPerRun: 3, nowMs: clk })); T += 31 * 60e3;
+    B.nullIf = () => true;
+    for (let i = 0; i < 3; i++) { rs.push(await runMirror({ dir, bridge: B, batch: 3, maxPerRun: 3, nowMs: clk })); T += 31 * 60e3; }
+    eq('B2(3)：混合批計 1 次後 Drive 全掛 3 輪 → 停在 2、bad 0', [rs.map((x) => x.bad), JSON.parse(fs.readFileSync(path.join(dir, 'logs/sig-state.json'), 'utf8')).fails['P-1\tS-000\tP-1_S-000.png'].n], [[0, 0, 0, 0], 2]); }
+  // --all 遇到 Drive 故障：立刻結束、exit 非 0、印「Drive 暫時故障，稍後再跑」
+  { const FG = makeFakeGas(); const URL0 = await FG.listen(); const KEY = 'k'.repeat(40);
+    Object.assign(FG.props, { BRIDGE_KEY: KEY, PRIMARY: 'mini' });
+    const dir = tmp(); seedDb(dir, 20);
+    FG.st.failCreate = () => true;                             // Drive 每一張都寫不進去
+    const c = await runJob('mirror.js', ['--all'], { DATA_DIR: dir, BRIDGE_URL: URL0, BRIDGE_KEY: KEY, SIG_BATCH: '5' });
+    eq('B2：--all 整批 null → exit 1、印「Drive 暫時故障，稍後再跑」、sigs 只打 2 次、bad 0', [c.code, /Drive 暫時故障，稍後再跑/.test(c.out), FG.st.hits.sigs, last(dir, 'mirror-last.json').bad], [1, true, 2, 0]);
+    await FG.close(); }
   { const dir = tmp(); seedDb(dir, 3);                       // 同一批有成功有失敗才計數；--all 重掃同一張、30 分鐘內再跑都不重複計
     const B = fakeBridge(); B.nullIf = (n) => n === 'P-1_S-000';
     let T = Date.now(); const clk = () => T;

@@ -36,7 +36,7 @@ r = call('board', { token: tok });
 eq('board ok', r.ok, true);
 eq('board only on', r.data.posts.every(p => p.status.state === 'on'), true);
 eq('board pinned first', r.data.posts[0].pinned, true);
-eq('board myReads empty', r.data.myReads, []);
+eq('board myReads empty', r.data.myReads, {});
 eq('board excludes plan', r.data.posts.some(p => p.id === 'P-20260929-001'), false);
 eq('ack bad sig', call('ack', { token: tok, postId: 'P-20260920-001', sig: 'x' }).code, 'BAD_REQ');
 eq('ack other unit', call('ack', { token: tok, postId: 'P-20260915-001', sig: 'data:image/jpeg;base64,AA' }).code, 'BAD_REQ');
@@ -44,7 +44,7 @@ eq('ack huge sig', call('ack', { token: tok, postId: 'P-20260920-001', sig: 'dat
 r = call('ack', { token: tok, postId: 'P-20260920-001', sig: 'data:image/jpeg;base64,AA' });
 eq('ack ok', r.ok, true);
 eq('ack twice', call('ack', { token: tok, postId: 'P-20260920-001', sig: 'data:image/jpeg;base64,AA' }).code, 'ALREADY');
-eq('board myReads', call('board', { token: tok }).data.myReads, ['P-20260920-001']);
+eq('board myReads', Object.keys(call('board', { token: tok }).data.myReads), ['P-20260920-001']);
 eq('ack archived', call('ack', { token: tok, postId: 'P-20260720-001', sig: 'data:image/jpeg;base64,AA' }).code, 'BAD_REQ');
 
 // history

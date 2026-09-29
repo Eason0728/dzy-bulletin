@@ -36,6 +36,9 @@ function makeService_(L, store, files, auth, clock) {
   function myReadIds(sid) {
     return store.getReads().filter(function (r) { return r.staffId === sid; }).map(function (r) { return r.postId; });
   }
+  function myReadAt(sid) {
+    var o = {}; store.getReads().forEach(function (r) { if (r.staffId === sid) o[r.postId] = r.at; }); return o;
+  }
   function targets(p) {
     return store.getStaff().filter(function (s) { return s.active && p.units.indexOf(s.unit) >= 0; });
   }
@@ -76,13 +79,13 @@ function makeService_(L, store, files, auth, clock) {
       var s = staffOf(q), td = clock.today();
       var posts = store.getPosts().map(function (p) { return withStatus(p, td); })
         .filter(function (p) { return p.status.state === 'on'; }).sort(L.sortBoard);
-      return { today: td, me: me(s), posts: posts, myReads: myReadIds(s.id) };
+      return { today: td, me: me(s), posts: posts, myReads: myReadAt(s.id) };
     },
     history: function (q) {
       var s = staffOf(q), td = clock.today();
       var posts = store.getPosts().filter(function (p) { return L.status(p, td).state === 'off'; })
         .sort(function (a, b) { return L.sortHistory(a, b, td); }).map(function (p) { return withStatus(p, td); });
-      return { today: td, posts: posts, myReads: myReadIds(s.id) };
+      return { today: td, posts: posts, myReads: myReadAt(s.id) };
     },
     ack: function (q) {
       var s = staffOf(q), p = findPost(q.postId);

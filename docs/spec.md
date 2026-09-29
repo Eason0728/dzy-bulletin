@@ -134,8 +134,8 @@ Apps Script Web App（madesiaosinla，以擁有者身分執行、任何人可呼
 | `roster` | — | — | `[{id, name(遮罩), unit, hasPin, locked}]`（只列在職） |
 | `setPin` | — | `staffId, pin` | `{token, me}` |
 | `login` | — | `staffId, pin` | `{token, me}`；錯誤時 code＝`BAD_PIN`（附剩餘次數）／`LOCKED`（需主管重設） |
-| `board` | 同仁憑證 | — | `{today, posts:[上架中，三個單位全部], myReads:[postId]}` |
-| `history` | 同仁憑證 | — | `{posts:[已下架], myReads}` |
+| `board` | 同仁憑證 | — | `{today, me, posts:[上架中，三個單位全部], myReads:{postId: 簽名時間}}` |
+| `history` | 同仁憑證 | — | `{today, posts:[已下架], myReads:{postId: 簽名時間}}` |
 | `ack` | 同仁憑證 | `postId, sig` | `{at}`；已經簽過回 code＝`ALREADY` |
 | `adminLogin` | — | `pass` | `{atoken}` |
 | `adminData` | 管理憑證 | — | `{posts（含排定、已下架）, staff（全名、在職、是否已設密碼、是否鎖定）, readCounts, quota}` |

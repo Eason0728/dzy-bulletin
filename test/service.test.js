@@ -15,7 +15,8 @@ if (process.env.DRIVER === 'server') {
   M = {
     blobOf: (id) => JSON.parse(execFileSync('curl', ['-s', S + '/__blob?id=' + encodeURIComponent(id)]).toString()).data,
     setClockActive: (empId, on) => post('/__clockActive', { empId, on }),
-    setAdminInit: (pass) => post('/__adminInit', { pass })
+    setAdminInit: (pass) => post('/__adminInit', { pass }),
+    dropPost: (id) => post('/__dropPost', { id })
   };
 } else {
   M = require('../js/mock.js');
@@ -123,6 +124,12 @@ const f1 = r.data;
   // 編輯別則公告時沿用舊 reqId 也不會被誤判
   const p5 = C('savePost', { atoken: ad0, post: Object.assign({}, body, { id: p4, title: '改第二則' }), reqId: 'rid-1' }).data.post;
   eq('reqId with different post id not deduped', [p5.id, p5.title], [p4, '改第二則']); }
+// gas/Service.js「reqId 紀錄指向的公告不存在就當新請求」：重送同一個 reqId 時要建出新公告，不能回 NOT_FOUND（兩個 DRIVER 都跑）
+{ const ad = C('adminLogin', { pass: '1234' }).data.atoken, body = { title: '指向消失', units: ['cf'], publishOn: DZYB.today(), files: [] };
+  const g1 = C('savePost', { atoken: ad, post: body, reqId: 'rid-gone' }).data.post.id;
+  M.dropPost(g1);
+  const g2 = C('savePost', { atoken: ad, post: body, reqId: 'rid-gone' });
+  eq('reqId pointing to missing post → new post', [g2.ok, C('adminData', { atoken: ad }).data.posts.some((p) => g2.ok && p.id === g2.data.post.id && p.title === '指向消失')], [true, true]); }
 eq('savePost bad file type', C('savePost', { atoken: at, post: { title: 't', units: ['mala'], publishOn: DZYB.today(), files: [{ id: 'x', name: 'evil.exe', type: 'pdf', size: 1 }] } }).code, 'BAD_TYPE');
 eq('savePost invalid', call('savePost', { atoken: at, post: { title: '', units: ['mala'], publishOn: '2026-09-29' } }).code, 'BAD_REQ');
 r = C('savePost', { atoken: at, post: { title: '測試公告', body: 'x', units: ['cf', 'mzt', 'mala'], publishOn: DZYB.today(), expiresOn: '', pinned: true, files: [f1] } });

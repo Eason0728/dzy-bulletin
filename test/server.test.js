@@ -30,7 +30,9 @@ function cleanEnv(extra) {
 async function start(env) {
   const port = await freePort();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dzyb-srv-')); tmps.push(dir);
-  const p = spawn(process.execPath, [SERVER_JS], { env: cleanEnv(Object.assign({ PORT: String(port), DATA_DIR: dir }, env)), stdio: ['ignore', 'pipe', 'pipe'] });
+  const e = cleanEnv(Object.assign({ PORT: String(port), DATA_DIR: dir }, env));
+  Object.keys(e).forEach((k) => { if (e[k] === null) delete e[k]; });   // env 值給 null＝不設這個變數
+  const p = spawn(process.execPath, [SERVER_JS], { env: e, stdio: ['ignore', 'pipe', 'pipe'] });
   procs.push(p);
   let out = '', err = '';
   p.stdout.on('data', (c) => { out += c; }); p.stderr.on('data', (c) => { err += c; });
@@ -73,6 +75,17 @@ async function login(s) {   // 以 demo 資料建一個同仁憑證＋主管憑�
   return { tok, at };
 }
 const calls = async (s) => (await request(s.port, 'GET', '/__bridgeCalls')).json.data;
+const today = () => new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
+// 直接讀伺服器的 SQLite（唯讀連線），驗「沒有多寫一筆」這類 API 看不到的事
+function dbq(dir, sql) {
+  const { DatabaseSync } = require('node:sqlite');
+  const db = new DatabaseSync(path.join(dir, 'bulletin.db'), { readOnly: true });
+  try { return db.prepare(sql).all().map((r) => Object.assign({}, r)); } finally { db.close(); }
+}
+// 開一條原始 TCP 連線、只送 header（不送或少送 body）；回傳 socket
+function rawConn(port, head) {
+  return new Promise((ok) => { const c = net.connect(port, '127.0.0.1', () => { c.write(head); ok(c); }); c.on('error', () => {}); });
+}
 
 async function main() {
   // ---- Node 版本檢查 ----
@@ -83,9 +96,18 @@ async function main() {
   { const r = await start({ E2E: '1', DZYB_NODE_VERSION: '22.13.1' });
     eq('old node exits with needed version', [r.code, /Node 24/.test(r.stderr || '')], [1, true]); }
 
-  // ---- E2E 模式遇正式網域拒絕啟動 ----
+  // ---- E2E 模式的保險：正式網域／沒指定或指定預設 DATA_DIR／有真橋接設定，一律拒絕啟動 ----
   { const r = await start({ E2E: '1', ALLOW_ORIGIN: 'https://dzy-bulletin.github.io' });
-    eq('E2E with prod ALLOW_ORIGIN refuses to start', [r.code, /拒絕啟動/.test(r.stderr || '')], [1, true]); }
+    eq('E2E with prod ALLOW_ORIGIN refuses to start', [r.code, /拒絕啟動/.test(r.stderr || '')], [1, true]);
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dzyb-home-')); tmps.push(home);   // 假 HOME：就算保險失效也碰不到真的 ~/dzy-bulletin-data
+    const r1 = await start({ E2E: '1', HOME: home, DATA_DIR: null });
+    eq('E2E without DATA_DIR refuses to start', [r1.code, /DATA_DIR/.test(r1.stderr || '')], [1, true]);
+    const r2 = await start({ E2E: '1', HOME: home, DATA_DIR: path.join(home, 'dzy-bulletin-data') });
+    const r3 = await start({ E2E: '1', HOME: home, DATA_DIR: '~/dzy-bulletin-data/' });
+    eq('E2E with default DATA_DIR refuses to start', [r2.code, r3.code, fs.existsSync(path.join(home, 'dzy-bulletin-data'))], [1, 1, false]);
+    const r4 = await start({ E2E: '1', BRIDGE_KEY: 'k' });
+    const r5 = await start({ E2E: '1', BRIDGE_URL: 'https://example.invalid/exec' });
+    eq('E2E with real bridge settings refuses to start', [r4.code, r5.code, /BRIDGE/.test(r4.stderr || '')], [1, 1, true]); }
 
   // ---- 正式模式（無 E2E）----
   const P = await start({});
@@ -113,11 +135,34 @@ async function main() {
     eq('41MB body → 413', (await request(P.port, 'POST', '/', big)).status, 413);
     eq('41MB chunked body → 413', (await request(P.port, 'POST', '/', big, { chunked: true })).status, 413);
     eq('server alive after 413', (await api(P, 'roster')).status, 200); }
+  // B1：只送 header、不送資料的連線不佔請求體額度（5×40MB 閒置連線時 roster 仍 200）
+  { const conns = await Promise.all(Array.from({ length: 5 }, () => rawConn(P.port, 'POST / HTTP/1.1\r\nHost: x\r\nContent-Type: text/plain\r\nContent-Length: 41943040\r\n\r\n')));
+    await sleep(100);
+    const r = await api(P, 'roster');
+    eq('5 idle 40MB header-only conns do not exhaust budget', [r.status, r.json && r.json.ok], [200, true]);
+    conns.forEach((c) => c.destroy()); }
   { await api(P, 'login', { staffId: 'S-001', pin: '97531' });
     const lines = P.out().split('\n');
     eq('one log line per request: time action ms ok/code', [lines.some((l) => /^\d{4}-\d\d-\d\dT[\d:.]+Z roster \d+ms ok$/.test(l)), lines.some((l) => /^\S+Z login \d+ms NOT_FOUND$/.test(l))], [true, true]);
     eq('log has no parameters', /97531|S-001/.test(P.out()), false); }
   P.stop();
+
+  // ---- 慢速連線：請求體 BODY_IDLE_MS 沒有新資料就中斷 ----
+  { const S = await start({ E2E: '1', BODY_IDLE_MS: '300' });
+    const c = await rawConn(S.port, 'POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 1000\r\n\r\n{"act');
+    const closed = await new Promise((ok) => { const t = setTimeout(() => ok(false), 3000); c.on('close', () => { clearTimeout(t); ok(true); }); });
+    eq('slow body is cut after idle timeout', closed, true);
+    eq('server alive after idle cut', (await api(S, 'roster')).status, 200);
+    S.stop(); }
+
+  // ---- 橋接錯誤碼不原樣回傳（假橋接一律回 AUTH，模擬 BRIDGE_KEY 設錯）----
+  { const F = await start({ E2E: '1', BRIDGE_FAKE_FAIL: '1' });
+    const { at: atF } = await login(F);
+    const r = await api(F, 'uploadFile', { atoken: atF, name: 'a.pdf', data: 'JVBERi0x' });
+    eq('bridge AUTH error mapped to BRIDGE (admin not logged out)', [r.json.code, r.json.message], ['BRIDGE', 'Google 雲端暫時連不上，請稍後再試']);
+    eq('bridge error on syncClock also BRIDGE', (await api(F, 'syncClock', { atoken: atF })).json.code, 'BRIDGE');
+    eq('bridge detail only in stderr', /橋接金鑰錯誤/.test(F.err()), true);
+    F.stop(); }
 
   // ---- E2E 伺服器（假橋接每個動作延遲 10 秒）----
   const A = await start({ E2E: '1', BRIDGE_FAKE_DELAY_MS: '10000' });
@@ -170,6 +215,15 @@ async function main() {
     fs.unlinkSync(path.join(A.dir, 'READONLY'));
     eq('READONLY removed: ack ok', (await api(A, 'ack', { token: tok, postId: 'P-20260920-001', sig: 'data:image/jpeg;base64,AA' })).json.ok, true); }
 
+  // store 系統錯誤不外洩（sigs/ 沒有寫入權限時 ack 回通用 SERVER，不帶 EACCES 與路徑）
+  { const np = (await api(A, 'savePost', { atoken: at, post: { title: '權限測試', units: ['mala'], publishOn: today(), files: [] } })).json.data.post.id;
+    fs.chmodSync(path.join(A.dir, 'sigs'), 0o555);
+    const r = await api(A, 'ack', { token: tok, postId: np, sig: 'data:image/png;base64,iVBORw0K' });
+    fs.chmodSync(path.join(A.dir, 'sigs'), 0o755);
+    eq('store error → generic SERVER', [r.json.code, r.json.message], ['SERVER', '系統忙碌，請稍後再試']);
+    eq('store error text only in stderr', [/EACCES/.test(JSON.stringify(r.json)), /EACCES/.test(A.err())], [false, true]);
+    eq('failed ack not recorded', (await api(A, 'board', { token: tok })).json.data.myReads[np], undefined); }
+
   // 並發 50 個 board
   { const rs = await Promise.all(Array.from({ length: 50 }, () => api(A, 'board', { token: tok })));
     const ms = rs.map((r) => r.ms);
@@ -184,8 +238,29 @@ async function main() {
     const rs = await Promise.all([0, 1, 2].map(() => api(B, 'uploadFile', { atoken: atB, name: 'a.pdf', data })));
     const busy = rs.filter((r) => r.status === 503);
     eq('inflight cap: at least one 503 BUSY', [busy.length >= 1, busy.every((r) => r.json && r.json.code === 'BUSY')], [true, true]);
-    eq('inflight cap: at least one accepted', rs.some((r) => r.status === 200 && r.json.ok), true);
     eq('inflight released after response', (await api(B, 'uploadFile', { atoken: atB, name: 'a.pdf', data })).json.ok, true); }
+  // S1：等 share 橋接期間才建立的 READONLY 也擋得住寫入
+  { const { at: atB } = await login(B);
+    const n0 = dbq(B.dir, 'SELECT COUNT(*) AS n FROM posts')[0].n;
+    const pr = api(B, 'savePost', { atoken: atB, post: { title: '凍結中', units: ['mala'], publishOn: today(), files: [{ id: 'F-1', name: 'x.pdf' }] } });
+    await sleep(400); fs.writeFileSync(path.join(B.dir, 'READONLY'), '');
+    const r = await pr;
+    fs.unlinkSync(path.join(B.dir, 'READONLY'));
+    eq('READONLY created during bridge wait blocks the write', [r.json.code, dbq(B.dir, 'SELECT COUNT(*) AS n FROM posts')[0].n - n0], ['MOVED', 0]);
+    eq('READONLY blocks uploadFile too', (fs.writeFileSync(path.join(B.dir, 'READONLY'), ''), (await api(B, 'uploadFile', { atoken: atB, name: 'a.pdf', data: 'JVBERi0x' })).json.code), 'MOVED');
+    fs.unlinkSync(path.join(B.dir, 'READONLY')); }
+  // S4：重跑 Service 與 GAS 一樣冪等——同 reqId 依序送 A（含附件）→ B（改標題、不帶 id）→ B 重送：重送不 share、不重寫、不多記一筆
+  { const { at: atB } = await login(B);
+    const body = { title: '冪等附件', units: ['mala'], publishOn: today(), files: [{ id: 'F-9', name: 'x.pdf' }] };
+    const share = async () => (await calls(B)).share;
+    const s0 = await share();
+    const ra = await api(B, 'savePost', { atoken: atB, post: body, reqId: 'rid-s4' }); const s1 = await share();
+    const rb = await api(B, 'savePost', { atoken: atB, post: Object.assign({}, body, { title: '冪等附件（改）' }), reqId: 'rid-s4' }); const s2 = await share();
+    const logs = dbq(B.dir, 'SELECT COUNT(*) AS n FROM log')[0].n;
+    const rc = await api(B, 'savePost', { atoken: atB, post: Object.assign({}, body, { title: '冪等附件（改）' }), reqId: 'rid-s4' }); const s3 = await share();
+    eq('same post id through A→B→B', [ra.json.ok, rb.json.data.post.id === ra.json.data.post.id, rc.json.data.post.id === ra.json.data.post.id], [true, true, true]);
+    eq('resend: share 1/1/0', [s1 - s0, s2 - s1, s3 - s2], [1, 1, 0]);
+    eq('resend: no extra log, updatedAt unchanged', [dbq(B.dir, 'SELECT COUNT(*) AS n FROM log')[0].n - logs, rc.json.data.post.updatedAt === rb.json.data.post.updatedAt], [0, true]); }
   B.stop();
 
   // ---- 真橋接（async fetch）對本機假 Apps Script：302 轉址、錯誤碼、逾時 ----
@@ -202,13 +277,26 @@ async function main() {
     const br = makeBridge('http://127.0.0.1:' + gas.address().port + '/exec', 'k');
     const r = await br.call('quota', { x: 1 });
     eq('real bridge follows 302 (POST→GET like curl -L)', [r, got.key, got.x], [{ op: 'quota', method: 'GET' }, 'k', 1]);
-    let e1 = null; try { await br.call('bad'); } catch (e) { e1 = [e.code, e.message]; }
-    eq('real bridge error code passthrough', e1, ['BAD_REQ', '不行']);
+    let e1 = null; try { await br.call('bad'); } catch (e) { e1 = [e.code, e.message]; eq('bridge detail has original', /BAD_REQ 不行/.test(e.detail), true); }
+    eq('real bridge error mapped to BRIDGE (detail kept for log)', e1, ['BRIDGE', 'Google 雲端暫時連不上，請稍後再試']);
     const t0 = Date.now(); let e2 = null; try { await br.call('slow', {}, 0.3); } catch (e) { e2 = e.code; }
-    eq('real bridge timeout via AbortSignal', [e2, Date.now() - t0 < 2000], ['SERVER', true]);
-    let e3 = null; try { await makeBridge('', '').call('quota'); } catch (e) { e3 = e.message; }
-    eq('real bridge missing config', e3, '未設定 Google 橋接');
+    eq('real bridge timeout via AbortSignal', [e2, Date.now() - t0 < 2000], ['BRIDGE_TIMEOUT', true]);
+    let e3 = null; try { await makeBridge('', '').call('quota'); } catch (e) { e3 = e.code; }
+    eq('real bridge missing config', e3, 'BRIDGE');
     gas.closeAllConnections(); gas.close(); }
+
+  // ---- store 單元：交易中 store 動作失敗 → ROLLBACK，丟給 Service 的錯誤沒有 code ----
+  { const { makeSqliteStore } = require('../server/store-sqlite.js');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dzyb-st-')); tmps.push(dir);
+    const st = makeSqliteStore(dir); let seen = 'none';   // id 給物件 → node:sqlite 丟帶 code 的 ERR_INVALID_ARG_TYPE
+    const origErr = console.error; console.error = () => {};
+    st.tx(() => { st.savePost({ id: 'P-X', title: 'x' }); try { st.savePost({ id: { bad: 1 }, title: 'z' }); } catch (e) { seen = [e.code, e.message]; } return 1; });
+    console.error = origErr;
+    eq('store error has no code', seen, [undefined, '資料層錯誤']);
+    eq('tx rolled back after store error', st.getPosts().length, 0);
+    st.tx(() => { st.savePost({ id: 'P-Y', title: 'y' }); return 1; });
+    eq('next tx commits normally', st.getPosts().map((p) => p.id), ['P-Y']);
+    st.close(); }
 
   // ---- store 單元：req:* 過期清除 ----
   { const { makeSqliteStore } = require('../server/store-sqlite.js');

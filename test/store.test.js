@@ -87,6 +87,14 @@ eq('更新寫回原列、不重複', [sheets['同仁'].data.filter(r => r[0] ===
 const F = vm.runInContext('makeStore_', G)(files);
 eq('新請求讀到的與試算表一致', F.getStaff().map(s => s.name), ['甲', '乙', '丙', '丁（改）', '戊']);
 
+// 6) 有人手動刪掉試算表一列（沒有換世代）→ 快取列號過期，寫回時要偵測並寫到正確的列
+const P = vm.runInContext('makeStore_', G)(files); P.getStaff();         // 讓快取有舊列號
+sheets['同仁'].data.splice(2, 1);                                          // 手動刪掉第 3 列（乙）
+const Q = vm.runInContext('makeStore_', G)(files);                         // 新請求：讀到的是舊快取（列號過期）
+Q.saveStaff(Object.assign({ id: 'S-005' }, S, { name: '戊（改）' }));
+const col = sheets['同仁'].data.map(r => r[0] + ':' + r[1]);
+eq('手動刪列後寫回正確的列、沒有蓋到別人', col, ['id:姓名', 'S-001:甲', 'S-003:丙', 'S-004:丁（改）', 'S-005:戊（改）']);
+
 // 5) 操作紀錄不換世代（不讓快取失效）
 const genBefore = props.DATA_GEN;
 F.addLog({ at: 'x', action: 'y', target: '', summary: '' });

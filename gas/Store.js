@@ -56,10 +56,10 @@ function cachePut_(key, obj) {
 function makeStore_(files) {
   var book = null, memo = {}, gen = null;                              // gen 惰性讀取：寫入動作在鎖內才第一次讀
   function sheet(key) { if (!book) book = ss_(); return book.getSheetByName(SHEETS_[key].name); }
-  function rows(key) {
-    if (memo[key]) return memo[key];
+  function rows(key, fresh) {
+    if (memo[key] && !fresh) return memo[key];
     if (gen === null) gen = dataGen_();
-    var ck = 'rows:' + key + ':' + gen, hit = cacheGet_(ck);
+    var ck = 'rows:' + key + ':' + gen, hit = fresh ? null : cacheGet_(ck);
     if (hit) { memo[key] = hit; return hit; }
     var sh = sheet(key), n = sh.getLastRow() - 1, cols = SHEETS_[key].cols;
     var vals = n > 0 ? sh.getRange(2, 1, n, cols.length).getValues() : [];
@@ -91,8 +91,12 @@ function makeStore_(files) {
     bumpGen_(); gen = dataGen_();                                    // 資料變了：快取世代換新
     if (memo[key]) cachePut_('rows:' + key + ':' + gen, memo[key]);
   }
+  // 寫回既有列之前，確認那一列的 id 還是它（有人手動刪列／排序過試算表時，快取裡的列號會錯）；對不上就重讀試算表
   function upsert(key, obj) {
     var hit = rows(key).filter(function (r) { return r.id === obj.id; })[0];
+    if (hit && String(sheet(key).getRange(hit._row, 1).getValue()) !== String(obj.id)) {
+      hit = rows(key, true).filter(function (r) { return r.id === obj.id; })[0];
+    }
     write(key, obj, hit ? hit._row : null);
   }
 

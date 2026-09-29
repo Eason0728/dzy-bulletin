@@ -2,7 +2,7 @@
 'use strict';
 var CFG = (function () {
   var c = {
-    VERSION: '0.4.3',
+    VERSION: '0.4.4',
     GAS_URL: 'https://script.google.com/macros/s/AKfycbzQXAnMnrYGoUEMDzr6XbtsuIDYyGWbGLcFW1xVDpa64NcBrMzI9GaVKJhIlC-WxnGK5g/exec',
     MODE: 'cloud',
     TIMEOUT: { _default: 30000, uploadFile: 120000, adminData: 40000, savePost: 40000, syncClock: 60000, receipts: 90000 }

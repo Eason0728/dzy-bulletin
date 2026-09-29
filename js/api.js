@@ -3,10 +3,14 @@
 var API = (function () {
   function timeoutOf(action) { return CFG.TIMEOUT[action] || CFG.TIMEOUT._default; }
 
-  var RETRY = { roster: 1, board: 1, history: 1, adminData: 1, receipts: 1 };   // 唯讀動作逾時自動重試一次
+  var RETRY = { roster: 1, board: 1, history: 1, adminData: 1, receipts: 1 };   // 可安全重試的唯讀動作
   function call(action, payload) {
     return once(action, payload).then(function (r) {
-      if (!r.ok && r.code === 'NET' && RETRY[action] && CFG.MODE === 'cloud') return once(action, payload);
+      // 唯讀動作：逾時（NET）或 Google 回錯誤網頁（BAD_RESP，多見於冷啟動）都自動重試一次
+      if (!r.ok && (r.code === 'NET' || r.code === 'BAD_RESP') && RETRY[action] && CFG.MODE === 'cloud') return once(action, payload);
+      return r;
+    }).then(function (r) {
+      if (!r.ok && r.code === 'BAD_RESP') r.code = 'SERVER';   // 對外仍是 C12 的 SERVER
       return r;
     });
   }
@@ -21,7 +25,10 @@ var API = (function () {
     }).then(function (r) { return r.text(); }).then(function (t) {
       clearTimeout(timer);
       try { var j = JSON.parse(t); if (j && typeof j.ok === 'boolean') return j; } catch (e) {}
-      return { ok: false, code: 'SERVER', message: '後端沒有回正常資料，請稍後再試' };
+      // 留存錯誤網頁片段供診斷（只存標題與前 300 字，不含使用者資料）
+      var title = (/<title>([^<]*)<\/title>/i.exec(t) || [])[1] || '';
+      UI.store.set('lastBad', JSON.stringify({ at: new Date().toISOString(), action: action, title: title, head: String(t).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 300) }));
+      return { ok: false, code: 'BAD_RESP', message: '後端沒有回正常資料，請稍後再試' };
     }, function (e) {
       clearTimeout(timer);
       var aborted = e && e.name === 'AbortError';

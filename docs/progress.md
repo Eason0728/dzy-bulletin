@@ -2,8 +2,8 @@
 - 開案日：2026-09-29
 - 分級：完整
 - 分級依據：排程=否 發訊息=否 外部後台=是 被看到=是 寫正式資料=是
-- 現在在：④（①｜②｜③-需求｜③-規格｜③-方案｜④｜⑤｜結案）
-- 等 Eason：無（下一步 Phase 3：端到端測試、整套關、手機實測）
+- 現在在：結案（①｜②｜③-需求｜③-規格｜③-方案｜④｜⑤｜結案）
+- 等 Eason：清除手機實測時的【測試】公告（系統不能刪公告，需在試算表手動刪列）
 
 ## Eason 已定案（2026-09-29）
 1. 獨立網址（不併入 dzy、不擴充打卡店內公告）
@@ -43,14 +43,14 @@
 | 2026-09-29 | 整套關 | e2e/judge.py（local，真實 Word/PDF/Excel） | 先以 --break sign 證明裁判會 FAIL（38/39，A10 抓到），正常版 39/39 PASS；加入複製未簽名名單後 41/41 PASS | 1 | e2e/judge.py 輸出 |
 
 ## 落地清單
-- [ ] 1 排程上線：
-- [ ] 2 掛進監看：
-- [ ] 3 納入故障追蹤：
-- [ ] 4 登錄資源：
-- [ ] 5 建 skill 並登錄路由：
-- [ ] 6 寫一則記憶：
-- [ ] 7 進版控：
-- [ ] 8 回報未完成與等待事項：
+- [x] 1 排程上線：不適用——系統沒有任何排程（到期下架是讀取時判斷日期）
+- [x] 2 掛進監看：不適用——無排程可漏跑；前端錯誤網頁片段存同仁手機 `dzyb_lastBad` 供診斷
+- [x] 3 納入故障追蹤：不適用——累犯摘要追的是自動化排程艦隊，本系統無排程
+- [x] 4 登錄資源：`~/.claude/mala-ops/dispatch-resources.md`「鼎兆元｜電子佈告欄」列（scriptId、部署 ID @17、repo、網址）
+- [x] 5 建 skill 並登錄路由：`~/.claude/skills/dzy-bulletin/SKILL.md`＋CLAUDE.md 路由列＋dispatch-rules 第 42 列＋dispatch-details §42
+- [x] 6 寫一則記憶：主庫 `dzy-bulletin-project.md`（另有 `gate-review-github-issue-fable.md`）＋MEMORY.md 索引
+- [x] 7 進版控：專案 `dzy-bulletin/dzy-bulletin.github.io`、`~/.claude`（mala-playbook）、`~/.agents`（mala-institution v2 教訓）皆已 push；spike 未被正式程式引用
+- [x] 8 回報未完成與等待事項：見 2026-09-29 最後回報
 
 ## spike 資源（④ 結束後清理）
 - spike GAS：scriptId `1DVAHktjmJOHWVDRLYZnPg5OpI3_CLVhd_osLGC9F6KRq2mtPXroU_wPZ`（madesiaosinla），部署 `AKfycbwjSqM-r4kL8Xep7mejf3rG_W09G1dLveC8DcZy25kF0hT_tzykY759gIlySkRkqICr`

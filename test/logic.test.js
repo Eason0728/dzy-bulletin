@@ -85,6 +85,8 @@ eq('post long title', L.postProblem(D({ title: 'x'.repeat(61) })), '標題最多
 eq('post no unit', L.postProblem(D({ units: [] })), '請選擇顯示單位');
 eq('post bad unit only', L.postProblem(D({ units: ['xx'] })), '請選擇顯示單位');
 eq('post exp before pub', L.postProblem(D({ expiresOn: '2026-09-28' })), '到期日不能早於上架日');
+eq('post body too long', L.postProblem(D({ body: 'x'.repeat(5001) })), '內容最多 5000 字（較長的內容請做成附件）');
+eq('post body max ok', L.postProblem(D({ body: 'x'.repeat(5000) })), null);
 eq('post exp same day ok', L.postProblem(D({ expiresOn: '2026-09-29' })), null);
 
 // C15 總部三組

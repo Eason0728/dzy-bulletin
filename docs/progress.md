@@ -54,5 +54,5 @@
 - 部署 ID：`AKfycbzQXAnMnrYGoUEMDzr6XbtsuIDYyGWbGLcFW1xVDpa64NcBrMzI9GaVKJhIlC-WxnGK5g`（@1）。**之後一律 `clasp deploy -i <此 ID>` 更新，不要建新部署**（會換網址）
 - 等 Eason：窗格登入設定→按「從打卡系統同步」做真環境測試
 
-- GitHub：repo `Eason0728/dzy-bulletin`（public），Pages https://eason0728.github.io/dzy-bulletin/（2026-09-29 開）
+- GitHub：repo `dzy-bulletin/dzy-bulletin.github.io`（組織 dzy-bulletin，public），網址 **https://dzy-bulletin.github.io**（2026-09-29 由 Eason0728/dzy-bulletin 轉移改名；舊網址已 404）
 - 打卡同步來源 ID 放 `gas/Config.local.js`（gitignore，只經 clasp 推送）

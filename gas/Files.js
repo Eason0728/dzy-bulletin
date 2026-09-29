@@ -17,9 +17,13 @@ function sigFolder_() { return folderByProp_('SIG_FOLDER_ID', SIG_FOLDER_NAME_, 
 
 function makeFiles_() {
   function err(code, msg) { var e = new Error(msg); e.code = code; return e; }
+  var OK_MIME = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'];
   function ours(id) {
     var f;
     try { f = DriveApp.getFileById(id); } catch (e) { throw err('BAD_REQ', '找不到附件檔案'); }
+    // 只允許 Word／PDF／Excel：擋掉正本試算表、簽名圖、資料夾與任何 Google 文件類型
+    if (OK_MIME.indexOf(f.getMimeType()) < 0 || id === PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID')) throw err('BAD_REQ', '附件格式錯誤');
     var fid = attachFolder_().getId(), ps = f.getParents();
     while (ps.hasNext()) if (ps.next().getId() === fid) return f;
     throw err('BAD_REQ', '附件不屬於佈告欄');

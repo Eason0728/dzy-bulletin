@@ -104,7 +104,7 @@
 - **Eason 要做**：在編輯器跑 `setup()`、在指令碼屬性填 `ADMIN_INIT`。
 - 建 GitHub repo，開啟 Pages。
 - **驗收**：
-  - [ ] `eason0728.github.io/dzy-bulletin` 打開正常，而且預設是 cloud 模式。
+  - [ ] `dzy-bulletin.github.io` 打開正常，而且預設是 cloud 模式。
   - [ ] 用 `?mode=local` 還能切到假資料。
 
 ## Phase 3

@@ -2,7 +2,7 @@
  * 正本在 repo ~/dzy-bulletin/gas/；Logic.js 由 tools/build.sh 從 js/logic.js 產生，不要手改。 */
 'use strict';
 
-var VERSION_ = '0.3.3';
+var VERSION_ = '0.3.4';
 
 function doGet() {
   return json_({ ok: true, data: { app: 'dzy-bulletin', v: VERSION_ } });
@@ -46,7 +46,7 @@ function clockSource_() {
             rows.push({ src: c.src, unit: c.unit, empId: String(r[iE]).trim(), name: String(r[iN]).trim(), active: active });
           });
           counts[c.label] = n; sources.push(c.src);
-        } catch (e) { errors.push(c.label + '：讀取失敗（' + (e && e.message) + '）'); console.error(e); }
+        } catch (e) { errors.push(c.label + '：讀取失敗，請確認打卡試算表還在、名單分頁叫 roster'); console.error(c.label + ': ' + e); }
       });
       return { rows: rows, errors: errors, counts: counts, sources: sources };
     }
@@ -65,16 +65,16 @@ function setup() {
   else { book = SpreadsheetApp.create('鼎兆元｜電子佈告欄'); pr.setProperty('SPREADSHEET_ID', book.getId()); }
   Object.keys(SHEETS_).forEach(function (k) {
     var def = SHEETS_[k], sh = book.getSheetByName(def.name) || book.insertSheet(def.name);
-    sh.getRange(1, 1, sh.getMaxRows(), def.cols.length).setNumberFormat('@');   // 純文字，避免日期被轉型
+    sh.getRange(1, 1, sh.getMaxRows(), def.cols.length).setNumberFormat('@');   // 純文字，避免日期被轉型（之後每次寫入也會對該列再設一次）
     if (sh.getLastRow() === 0) sh.getRange(1, 1, 1, def.head.length).setValues([def.head]).setFontWeight('bold');
     sh.setFrozenRows(1);
   });
   var blank = book.getSheetByName('工作表1') || book.getSheetByName('Sheet1');
   if (blank && book.getSheets().length > 1) book.deleteSheet(blank);
-  // 試算表放進附件資料夾，集中管理
+  // 附件資料夾只放附件與簽名；正本試算表放在雲端硬碟根目錄（舊版曾放進附件資料夾，重跑 setup 會移出）
   var folder = attachFolder_(); sigFolder_();
-  var file = DriveApp.getFileById(book.getId());
-  if (!file.getParents().hasNext() || file.getParents().next().getId() !== folder.getId()) folder.addFile(file);
+  var file = DriveApp.getFileById(book.getId()), ps = file.getParents();
+  while (ps.hasNext()) { if (ps.next().getId() === folder.getId()) { file.moveTo(DriveApp.getRootFolder()); break; } }
   if (!pr.getProperty('TOKEN_SECRET')) pr.setProperty('TOKEN_SECRET', Utilities.getUuid() + Utilities.getUuid());
   if (!pr.getProperty('ADMIN_VER')) pr.setProperty('ADMIN_VER', '1');
   Drive.About.get({ fields: 'user' });   // 觸發 Drive 進階服務授權

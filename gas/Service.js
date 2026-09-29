@@ -132,8 +132,8 @@ function makeService_(L, store, files, auth, clock, clockSrc) {
       var quota = null;
       try { quota = files.quota(); } catch (e) { quota = null; }
       mark();
-      // _t：各階段毫秒（驗證、讀已讀、整理公告與同仁、查空間），診斷慢速用
-      return { today: td, posts: posts, staff: staff, quota: quota, _t: t.slice(1).map(function (x, i) { return x - t[i]; }) };
+      if (typeof Logger !== 'undefined') console.log('adminData ms=' + JSON.stringify(t.slice(1).map(function (x, i) { return x - t[i]; })));   // 診斷只進紀錄（C12）
+      return { today: td, posts: posts, staff: staff, quota: quota };
     },
     receipts: function (q) {
       requireAdmin(q);
@@ -168,20 +168,20 @@ function makeService_(L, store, files, auth, clock, clockSrc) {
         if (!t || !f.id) throw err('BAD_TYPE', '附件格式錯誤');            // 類型一律由副檔名判斷，不信任前端
         return { id: String(f.id), name: String(f.name), type: t, size: Number(f.size) || 0 };
       });
-      var now = iso(), p;
+      var now = iso(), p, removed = [];
       if (d.id) {
         p = findPost(d.id);
         var keep = {}; fl.forEach(function (f) { keep[f.id] = 1; });
-        var removed = (p.files || []).filter(function (f) { return !keep[f.id]; }).map(function (f) { return f.id; });
-        if (removed.length) files.revoke(removed);
+        removed = (p.files || []).filter(function (f) { return !keep[f.id]; }).map(function (f) { return f.id; });
       } else {
         var day = clock.today().replace(/-/g, '');
         p = { id: nextId('P-' + day + '-', store.getPosts(), 3), published: true, offOn: '', createdAt: now };
       }
       p.title = String(d.title).trim(); p.body = String(d.body || ''); p.units = L.normUnits(d.units);
       p.publishOn = d.publishOn; p.expiresOn = d.expiresOn || ''; p.pinned = !!d.pinned; p.files = fl; p.updatedAt = now;
-      if (fl.length) files.share(fl.map(function (f) { return f.id; }));
-      store.savePost(p);
+      if (fl.length) files.share(fl.map(function (f) { return f.id; }));   // 先驗證並分享（不合格的 id 在這裡就被擋，公告不會寫入）
+      store.savePost(p);                                                  // 再寫試算表
+      if (removed.length) files.revoke(removed);                          // 最後才撤銷移除的附件
       log(d.id ? '編輯' : '上架', p.id, p.title);
       return { post: withStatus(p, clock.today()) };
     },
@@ -273,7 +273,7 @@ function makeService_(L, store, files, auth, clock, clockSrc) {
       return { ok: false, code: 'SERVER', message: '系統忙碌，請稍後再試' };
     }
   }
-  return { call: call, WRITE_ACTIONS: ['setPin', 'login', 'ack', 'adminLogin', 'uploadFile', 'savePost', 'setPublished', 'setPinned', 'staffAdd', 'staffDelete', 'staffResetPin', 'changePass', 'syncClock'] };
+  return { call: call, WRITE_ACTIONS: ['setPin', 'login', 'ack', 'adminLogin', 'savePost', 'setPublished', 'setPinned', 'staffAdd', 'staffDelete', 'staffResetPin', 'changePass', 'syncClock'] };   // uploadFile 不碰試算表，不上鎖
 }
 
 if (typeof module !== 'undefined') module.exports = { makeService_: makeService_ };

@@ -14,7 +14,7 @@
 同仁／管理者的手機瀏覽器（含 LINE 內建瀏覽器）
    │  純靜態頁，無框架、無 build step
    ▼
-GitHub Pages   eason0728.github.io/dzy-bulletin
+GitHub Pages   dzy-bulletin.github.io
    │  fetch POST，Content-Type: text/plain（避開 CORS preflight）
    ▼
 Apps Script Web App（madesiaosinla，以擁有者身分執行、任何人可呼叫）
@@ -23,7 +23,7 @@ Apps Script Web App（madesiaosinla，以擁有者身分執行、任何人可呼
    └── 指令碼屬性 ──────────────────── 通行碼雜湊、簽章金鑰、各種 ID
 ```
 
-- **repo**：`Eason0728/dzy-bulletin`，public。GitHub Pages 免費版只能用 public repo，現金帳也是這樣做。
+- **repo**：`dzy-bulletin/dzy-bulletin.github.io`，public。GitHub Pages 免費版只能用 public repo，現金帳也是這樣做。
   - repo 裡**不放任何密碼或金鑰**。通行碼只存在指令碼屬性，而且存的是雜湊值。
 - **MODE 切換**：`js/config.js` 裡設 `MODE: 'local' | 'cloud'`。網址加 `?mode=local` 就會跑內建的假資料後端（就是現在預覽頁那套）。
   - 本機測試和自動化測試一律用 local 模式，不會碰到正式試算表。
@@ -83,11 +83,11 @@ Apps Script Web App（madesiaosinla，以擁有者身分執行、任何人可呼
 - 同一人對同一則只能簽一次，後端會擋重複簽。
 
 ### 分頁 4「操作紀錄」
-時間｜動作（上架／編輯／下架／重新上架／置頂／新增同仁／刪除同仁／重設密碼／變更通行碼）｜對象 id｜摘要。
+時間｜動作（上架／編輯／下架／重新上架／置頂／取消置頂／新增同仁／刪除同仁／重設密碼／變更通行碼／打卡同步）｜對象 id｜摘要。
 通行碼只有一組、分不出是誰操作，所以至少把「做了什麼、什麼時候」留下來。
 
 ### 指令碼屬性（不進 repo）
-`SPREADSHEET_ID`、`FOLDER_ID`、`ADMIN_HASH`、`ADMIN_SALT`、`ADMIN_VER`、`TOKEN_SECRET`（隨機 32 bytes）。
+`SPREADSHEET_ID`、`FOLDER_ID`（附件）、`SIG_FOLDER_ID`（簽名）、`ADMIN_HASH`、`ADMIN_SALT`、`ADMIN_VER`、`ADMIN_FAIL`、`ADMIN_LOCK`、`ADMIN_INIT`（首次登入後自動刪除）、`TOKEN_SECRET`、`DATA_GEN`（讀取快取世代）。打卡同步來源 ID 放 `gas/Config.local.js`（不進 git）。
 
 ## 三、身分與權限
 
@@ -120,7 +120,7 @@ Apps Script Web App（madesiaosinla，以擁有者身分執行、任何人可呼
    - 前端顯示「上傳中 2/5」，並提醒不要關閉頁面。
    - 逾時設 120 秒。實測 20MB 往返 28 秒，手機網路可能更慢。
 3. 剛上傳的檔案：設定為**禁止下載／列印／複製**（`copyRequiresWriterPermission`），但先**不分享**。
-4. 按「上架」或「儲存」時，才把這則公告的附件改成「知道連結者可檢視」。
+4. 按「上架」或「儲存」時，才把這則公告的附件改成「知道連結者可檢視」。分享／撤銷前檢查：檔案必須在附件資料夾內，且 MIME 是 Word／PDF／Excel（擋掉正本試算表、簽名圖、資料夾）。順序是分享 → 寫試算表 → 撤銷移除的附件。
    - 所以上傳後沒有儲存就放棄的檔案，會一直保持私人，外人看不到。
 5. 編輯時移除某個附件：**先關分享，再丟垃圾桶**。實測發現丟進垃圾桶後，有連結的人還是看得到。
 6. 同仁端用 iframe 嵌入 `drive.google.com/file/d/<id>/preview`。
@@ -156,7 +156,7 @@ Apps Script Web App（madesiaosinla，以擁有者身分執行、任何人可呼
 ## 六、已拍板（2026-09-29）
 - 1A：名單姓名遮罩中間字（兩字名遮第二字「陳O」；三字「陳O安」；四字以上保留頭尾、中間全遮「歐OO娜」；逐字元規則見 task.md 共用契約 C3）
 - 2：連錯 3 次鎖到主管重設（取代「5 次鎖 5 分鐘」與「累計 20 次」）
-- 3：網址 `eason0728.github.io/dzy-bulletin`（`/dzy` 已是集團管理系統）
+- 3：網址 `dzy-bulletin.github.io`（`/dzy` 已是集團管理系統）
 
 ### 原始選項（留存）
 
@@ -167,7 +167,7 @@ Apps Script Web App（madesiaosinla，以擁有者身分執行、任何人可呼
    - **A. 要（建議）**：擋住有人每天慢慢試別人的密碼。
    - B. 不要，只保留「連錯 5 次鎖 5 分鐘」。
 3. **網址**：
-   - **A. `eason0728.github.io/dzy-bulletin`（建議）**：跟其他系統同一個網域。
+   - **A. `dzy-bulletin.github.io`（建議）**：跟其他系統同一個網域。
    - B. 你想要別的名稱就告訴我。
 
 ## 七、測試方式（④ 驗收用）

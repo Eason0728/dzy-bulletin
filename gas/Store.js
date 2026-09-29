@@ -26,7 +26,7 @@ function bool_(v) { return v === true || String(v).toUpperCase() === 'TRUE'; }
 
 /* 讀取快取：Apps Script 冷啟動＋開試算表常要數秒。資料讀過就放 CacheService，
  * 鍵名帶「資料世代」DATA_GEN，任何寫入就把世代 +1，舊快取自然失效（不會讀到過期資料）。 */
-var CACHE_TTL_ = 600, CACHE_CHUNK_ = 90000;
+var CACHE_TTL_ = 600, CACHE_CHUNK_ = 30000;   // CacheService 單值上限 100KB 以位元組計，中文一字 3 bytes
 function dataGen_() { return props_().getProperty('DATA_GEN') || '0'; }
 function bumpGen_() { props_().setProperty('DATA_GEN', Date.now() + '-' + Math.floor(Math.random() * 1e6)); }
 function cacheGet_(key) {
@@ -72,8 +72,9 @@ function makeStore_(files) {
       sh.getRange(1, cols.length, sh.getMaxRows(), 1).setNumberFormat('@');
     }
     var vals = [cols.map(function (c) { var v = obj[c]; return v === undefined || v === null ? '' : String(v); })];
-    if (row) sh.getRange(row, 1, 1, cols.length).setValues(vals);
-    else sh.getRange(sh.getLastRow() + 1, 1, 1, cols.length).setValues(vals);
+    var r = sh.getRange(row || sh.getLastRow() + 1, 1, 1, cols.length);
+    r.setNumberFormat('@').setValues(vals);                           // 每列寫入前設純文字：超過 setup 當下的列數也不會把 ISO 時間轉成日期
+    SpreadsheetApp.flush();                                          // 先落地再換世代、再放鎖，避免下一個寫入者算到同一列或快取到舊值
     delete memo[key];
     if (key !== 'log') { bumpGen_(); gen = dataGen_(); memo = {}; }   // 資料變了：快取世代 +1
   }

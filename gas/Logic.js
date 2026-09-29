@@ -32,6 +32,7 @@ var DZYB = (function () {
   var ADMIN_MAX_FAIL = 5;
   var ADMIN_LOCK_MS = 15 * 60 * 1000;
   var SIG_MAX_CHARS = 45000;
+  var BODY_MAX = 5000;              // 試算表單格上限 50,000 字，留足空間
 
   // C2
   function today(now) {
@@ -135,6 +136,7 @@ var DZYB = (function () {
   function postProblem(d) {
     if (!d || !String(d.title || '').trim()) return '請填標題';
     if (String(d.title).trim().length > 60) return '標題最多 60 字';
+    if (String(d.body || '').length > BODY_MAX) return '內容最多 ' + BODY_MAX + ' 字（較長的內容請做成附件）';
     if (!normUnits(d.units).length) return '請選擇顯示單位';
     if (!isDate(d.publishOn)) return '請填上架日';
     if (d.expiresOn && !isDate(d.expiresOn)) return '到期日格式錯誤';
@@ -151,7 +153,7 @@ var DZYB = (function () {
     UNITS: UNITS, UNIT_IDS: UNIT_IDS, UNIT_NAME: UNIT_NAME,
     STAFF_UNITS: STAFF_UNITS, STAFF_UNIT_IDS: STAFF_UNIT_IDS, STAFF_UNIT_NAME: STAFF_UNIT_NAME,
     viewTabs: viewTabs, canSee: canSee, mustSign: mustSign, homeTab: homeTab,
-    MAX_FILES: MAX_FILES, MAX_BYTES: MAX_BYTES, SIG_MAX_CHARS: SIG_MAX_CHARS,
+    MAX_FILES: MAX_FILES, MAX_BYTES: MAX_BYTES, SIG_MAX_CHARS: SIG_MAX_CHARS, BODY_MAX: BODY_MAX,
     STAFF_MAX_FAIL: STAFF_MAX_FAIL, ADMIN_MAX_FAIL: ADMIN_MAX_FAIL, ADMIN_LOCK_MS: ADMIN_LOCK_MS,
     today: today, isDate: isDate, addDays: addDays, normUnits: normUnits, isAllUnits: isAllUnits,
     status: status, sortBoard: sortBoard, sortHistory: sortHistory,

@@ -106,7 +106,7 @@ var Admin = (function () {
     var d = a.draft, all = d.units.length === 3;
     return '<div class="panel">' +
       '<label class="f">標題 *</label><input class="inp" id="fTitle" maxlength="60">' +
-      '<label class="f">內容</label><textarea class="inp" id="fBody"></textarea>' +
+      '<label class="f">內容</label><textarea class="inp" id="fBody" maxlength="' + L.BODY_MAX + '"></textarea>' +
       '<label class="f">顯示單位 *</label><div class="chk"><label><input type="checkbox" id="uAll"' + (all ? ' checked' : '') + '> 全部</label>' +
       L.UNITS.map(function (u) { return '<label><input type="checkbox" class="uOne" value="' + u.id + '"' + (d.units.indexOf(u.id) >= 0 ? ' checked' : '') + '> ' + u.name + '</label>'; }).join('') + '</div>' +
       '<div class="row"><div><label class="f">上架日 *</label><input class="inp" type="date" id="fPub"></div>' +

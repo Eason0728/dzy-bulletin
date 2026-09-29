@@ -1,7 +1,8 @@
 /* 鼎兆元｜電子佈告欄 — /health 燈號判定（#8「監看判定」寫死在這裡；給 #10 的守門與 /health 的 level 共用同一份規則）
  * 輸入：/health 的 { mirror:{ at, ok, sigPending, fails }, backup:{ at, ok }, disk:{ freeMB } }；輸出 { level, why }。
  *   紅：mirror.at 距今 > 6 小時（或從沒跑過）、backup.at 距今 > 26 小時（或從沒跑過）
- *   黃：mirror.at 距今 > 3 小時、mirror 連續失敗 ≥ 2 次、backup.ok=false、diskFreeMB < 5000、mirror.sigPending > 200
+ *   黃：mirror.at 距今 > 3 小時、mirror 連續失敗 ≥ 2 次、backup.ok=false、diskFreeMB < 5000、mirror.sigPending > 200、
+ *       backup.sharedWith > 0（備份資料夾有共用者；備份含密碼雜湊與 TOKEN_SECRET，必須僅 owner——M2 建議、M3 採用）
  *   「/health 打不通或非 200 → 紅」由守門自己判（打不通就拿不到這份）。
  * why 只放固定短句（不帶任何錯誤原文）。純函式，無副作用。 */
 'use strict';
@@ -21,6 +22,7 @@ function judgeHealth(h, nowMs) {
   if (b && b.ok === false) yellow.push('快照失敗');
   if (typeof freeMB === 'number' && freeMB < RULES.diskYellowMB) yellow.push('磁碟剩餘不足 5GB');
   if (m && Number(m.sigPending) > RULES.pendingYellow) yellow.push('待回填簽名超過 200 張');
+  if (b && Number(b.sharedWith) > 0) yellow.push('備份資料夾有共用者');
   return { level: red.length ? 'red' : yellow.length ? 'yellow' : 'green', why: red.concat(yellow) };
 }
 

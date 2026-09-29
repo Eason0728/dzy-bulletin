@@ -4,7 +4,7 @@
  *   保留策略【#8 定案 r2】：本機 DATA_DIR/backups 留 14 天（這裡清）、雲端留 30 天（Apps Script saveBackup_ 清）。不加密（金鑰與備份同生共死）。
  *   不再每天打包簽名圖：簽名圖的異地備份是 mirror.js 的 Drive 回填（driveSigId）。
  * 不經 makeSqliteStore（見 job-common.js）：只開一般連線做 VACUUM INTO，不建表、不動 kv.secret。
- * 結果寫 DATA_DIR/logs/backup-last.json＝{ at, ok, file, sizeKB, diskFreeMB, counts }；每次一行進 logs/daily.log，
+ * 結果寫 DATA_DIR/logs/backup-last.json＝{ at, ok, file, sizeKB, diskFreeMB, counts, sharedWith }；每次一行進 logs/daily.log，
  * 行內的筆數（公告／同仁／已讀／紀錄）就是還原演練要比對的數字（server/restore.js 印同一個格式）。
  * 環境變數：DATA_DIR  BRIDGE_URL  BRIDGE_KEY（server/.env） */
 'use strict';
@@ -58,6 +58,8 @@ async function runDaily(o) {
     if (size > MAX_UPLOAD) throw new Error(`快照 ${Math.round(size / 1048576)}MB 超過上傳上限 14MB，只留本機`);
     const up = await bridge.call('backup', { name: res.file, data: fs.readFileSync(gz).toString('base64') }, 300);
     if (up && up.id) res.driveId = up.id;
+    // 備份資料夾的共用者人數（M2 saveBackup_ 回傳；-1＝讀不到）。備份內含密碼雜湊與 TOKEN_SECRET，必須僅 owner（M6 權限清單）
+    if (up && typeof up.sharedWith === 'number') res.sharedWith = up.sharedWith;
   } catch (e) {
     errs.push(J.errText(e));
     try { fs.unlinkSync(raw); } catch (x) {}               // 快照做到一半：不留未壓縮的暫存檔

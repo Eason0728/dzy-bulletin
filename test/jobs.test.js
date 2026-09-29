@@ -225,7 +225,9 @@ async function main() {
     eq('mirror 連續失敗 1 次不黃、2 次黃', [H(Object.assign({}, okM, { ok: false, fails: 1 }), okB).level, H(Object.assign({}, okM, { ok: false, fails: 2 }), okB).level], ['green', 'yellow']);
     eq('backup.ok=false → yellow；disk < 5000 → yellow；pending > 200 → yellow', [H(okM, { at: ago(1), ok: false }).why, H(okM, okB, 4999).why, H(Object.assign({}, okM, { sigPending: 201 }), okB).why],
       [['快照失敗'], ['磁碟剩餘不足 5GB'], ['待回填簽名超過 200 張']]);
-    eq('從沒跑過 → red', H(null, null).level, 'red'); }
+    eq('從沒跑過 → red', H(null, null).level, 'red');
+    eq('備份資料夾有共用者 → yellow；0／-1（讀不到）／沒回報不判', [H(okM, Object.assign({}, okB, { sharedWith: 1 })).why, H(okM, Object.assign({}, okB, { sharedWith: 0 })).level, H(okM, Object.assign({}, okB, { sharedWith: -1 })).level, H(okM, Object.assign({}, okB, { sharedWith: null })).level],
+      [['備份資料夾有共用者'], 'green', 'green', 'green']); }
 
   // ================= launchd 範本：三個 job、佔位字串、不含金鑰 =================
   { const { execFileSync } = require('child_process');
@@ -281,7 +283,14 @@ async function main() {
     eq('daily.js：ok、備份檔落在獨立備份資料夾、分享「限制」', [r.code, bl.ok, !!FG.drive.files[bl.driveId], FG.drive.files[bl.driveId].parent === bkFolder, FG.drive.files[bl.driveId].sharing], [0, true, true, true, 'PRIVATE']);
     let h = (await request(S.port, 'GET', '/health')).json;
     eq('/health 讀兩個檔：mirror／backup 的 at 與結果檔一致', [h.mirror.at, h.mirror.ok, h.mirror.sigPending, h.mirror.fails, h.backup.at, h.backup.ok], [ml.at, true, 0, 0, bl.at, true]);
+    eq('備份資料夾僅 owner：sharedWith 0 記進結果檔、/health 帶出', [bl.sharedWith, h.backup.sharedWith], [0, 0]);
     eq('/health 兩個 job 剛跑完：沒有紅燈、沒有鏡像／快照相關的黃燈', [h.level !== 'red', h.why.filter((w) => /鏡像|快照|回填/.test(w))], [true, []]);
+
+    FG.drive.folders[bkFolder].editors = [{ email: 'x' }];      // 有人把備份資料夾加了共用者 → 下一次快照回報、/health 黃燈
+    r = await runJob('daily.js', [], JOB);
+    h = (await request(S.port, 'GET', '/health')).json;
+    eq('備份資料夾被加共用者：sharedWith 1、/health 黃燈原因含「備份資料夾有共用者」', [r.code, last(dir, 'backup-last.json').sharedWith, h.backup.sharedWith, h.why.includes('備份資料夾有共用者'), h.level === 'red' ? 'red' : 'not-red'], [0, 1, 1, true, 'not-red']);
+    delete FG.drive.folders[bkFolder].editors;
 
     // 驗收 1：BRIDGE_URL 改錯 → *-last.json ok:false 帶時間戳；/health 仍 200、同仁照樣能簽名
     r = await runJob('mirror.js', [], BAD);

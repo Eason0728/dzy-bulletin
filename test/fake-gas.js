@@ -49,7 +49,8 @@ function makeFakeGas() {
       createFolder: (name) => folderObj(newFolder(name, id)),
       createFile: (blob) => fileObj(newFile(blob, id)),
       getFiles: () => iter(Object.keys(drive.files).filter((k) => drive.files[k].parent === id && !drive.files[k].trashed).map(fileObj)),
-      getSharingAccess: () => f.sharing, setSharing: (a) => { f.sharing = a; }
+      getSharingAccess: () => f.sharing, setSharing: (a) => { f.sharing = a; },
+      getEditors: () => (f.editors || []), getViewers: () => []
     };
   }
   function newFolder(name, parent) { const id = 'D' + (++drive.seq); drive.folders[id] = { name, parent, sharing: 'PRIVATE' }; return id; }

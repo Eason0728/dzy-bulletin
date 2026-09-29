@@ -12,4 +12,4 @@ e2e/artifacts/
 __pycache__/
 
 # Mac mini 伺服器設定（含 BRIDGE_KEY，絕不進 git；見 server/DEPLOY.md）
-server/.env
+server/.env*

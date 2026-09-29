@@ -6,4 +6,7 @@ cd "$(dirname "$0")/.."
 for f in gas/*.js js/*.js; do node --check "$f"; done
 for t in test/*.test.js; do node "$t"; done
 grep -n "VERSION" js/config.js gas/Code.js | grep -o "'[0-9.]*'" | sort -u | awk 'END{ if (NR!=1) { print "✗ 前後端版本號不一致"; exit 1 } else print "版本號一致" }'
+V=$(grep -o "VERSION: '[0-9.]*'" js/config.js | grep -o "[0-9.]*[0-9]")
+sed -i '' -E "s/\?v=[0-9.]+\"/?v=$V\"/g" index.html
+echo "index.html 快取版本號：$V（$(grep -c "?v=$V" index.html) 處）"
 echo "build OK"

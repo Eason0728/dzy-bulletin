@@ -3,7 +3,14 @@
 var API = (function () {
   function timeoutOf(action) { return CFG.TIMEOUT[action] || CFG.TIMEOUT._default; }
 
+  var RETRY = { roster: 1, board: 1, history: 1, adminData: 1, receipts: 1 };   // 唯讀動作逾時自動重試一次
   function call(action, payload) {
+    return once(action, payload).then(function (r) {
+      if (!r.ok && r.code === 'NET' && RETRY[action] && CFG.MODE === 'cloud') return once(action, payload);
+      return r;
+    });
+  }
+  function once(action, payload) {
     var req = Object.assign({}, payload || {}, { action: action });
     if (CFG.MODE === 'local') return window.DZYB_MOCK.call(action, req);
     var ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;

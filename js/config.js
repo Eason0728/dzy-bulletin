@@ -2,10 +2,10 @@
 'use strict';
 var CFG = (function () {
   var c = {
-    VERSION: '0.2.0',
+    VERSION: '0.2.3',
     GAS_URL: 'https://script.google.com/macros/s/AKfycbzQXAnMnrYGoUEMDzr6XbtsuIDYyGWbGLcFW1xVDpa64NcBrMzI9GaVKJhIlC-WxnGK5g/exec',
     MODE: 'cloud',
-    TIMEOUT: { _default: 20000, uploadFile: 120000, adminData: 40000, savePost: 40000 }
+    TIMEOUT: { _default: 30000, uploadFile: 120000, adminData: 40000, savePost: 40000 }
   };
   try {
     var m = new URLSearchParams(location.search).get('mode');

@@ -38,15 +38,24 @@ var Staff = (function () {
     var lock = force === true;
     UI.sheet('<div class="bar"><b>請選擇你是誰</b>' + (lock ? '' : '<button data-close>取消</button>') + '</div><div class="body"><div class="loading">載入名單中</div></div>', lock);
     API.call('roster').then(function (r) {
-      if (!r.ok) { UI.sheet('<div class="bar"><b>請選擇你是誰</b></div><div class="body"><div class="errbox"></div><button class="btn primary" id="rt">重試</button></div>', true); $('sheet').querySelector('.errbox').textContent = r.message; $('rt').onclick = function () { picker(force, unit); }; return; }
+      if (!r.ok) {
+        var es = UI.sheet('<div class="bar"><b>請選擇你是誰</b></div><div class="body"><div class="errbox"></div><button class="btn primary" id="rt">重試</button>' +
+          '<button class="btn ghost" id="toAdmin" style="margin-top:8px">⚙ 主管設定</button></div>', true);
+        es.querySelector('.errbox').textContent = r.message;
+        es.querySelector('#rt').onclick = function () { picker(force, unit); };
+        es.querySelector('#toAdmin').onclick = function () { Admin.open(); };
+        return;
+      }
       var people = r.data, cur = unit || (me() && me().unit) || v.unit || 'mala';
       function draw() {
         var list = people.filter(function (s) { return s.unit === cur; });
         var s = UI.sheet('<div class="bar"><b>請選擇你是誰</b>' + (lock ? '' : '<button data-close>取消</button>') + '</div><div class="body">' +
           '<div class="hint" style="margin:0 0 10px">選自己的名字並輸入 4 位數密碼（第一次使用會請你設定）。這支手機會記住你，按「我已閱讀」時會請你手寫簽名。</div>' +
           '<div class="seg">' + L.UNITS.map(function (u) { return '<button data-pu="' + u.id + '" class="' + (u.id === cur ? 'on' : '') + '">' + u.name + '</button>'; }).join('') + '</div>' +
-          '<div class="picklist">' + (list.map(function (p) { return '<button data-pick="' + esc(p.id) + '">' + esc(p.name) + (p.locked ? ' 🔒' : '') + '</button>'; }).join('') || '<div class="hint">這個單位還沒有同仁名單</div>') + '</div>' +
-          '<div class="hint" style="margin-top:14px">找不到自己的名字？請洽主管在「設定 → 同仁名單」新增。</div></div>', lock);
+          '<div class="picklist">' + (list.map(function (p) { return '<button data-pick="' + esc(p.id) + '">' + esc(p.name) + (p.locked ? ' 🔒' : '') + '</button>'; }).join('') || '<div class="hint" style="grid-column:1/-1">這個單位還沒有同仁名單</div>') + '</div>' +
+          '<div class="hint" style="margin-top:14px">找不到自己的名字？請洽主管在「設定 → 同仁名單」新增。</div>' +
+          '<button class="btn ghost" id="toAdmin" style="margin-top:6px">⚙ 主管設定</button></div>', lock);
+        s.querySelector('#toAdmin').onclick = function () { Admin.open(); };
         s.querySelectorAll('[data-pu]').forEach(function (b) { b.onclick = function () { cur = b.dataset.pu; draw(); }; });
         s.querySelectorAll('[data-pick]').forEach(function (b) {
           b.onclick = function () { pinForm(people.filter(function (p) { return p.id === b.dataset.pick; })[0], function () { draw(); }); };

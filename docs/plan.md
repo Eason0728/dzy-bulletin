@@ -56,8 +56,8 @@
    - 後端用 `Utilities.computeHmacSha256Signature`。
    - node 測試用 `crypto.createHmac` 包成同一個介面，兩邊輸出要一致，有測試對照。
 3. **LockService**：所有寫入動作包在 `withLock_()` 裡，等待上限 20 秒。
-4. **快取**：`board` 回應用 `CacheService` 快取 60 秒，任何公告或已讀的寫入就清掉快取。這是為了早上同仁同時打開時不要重複讀試算表。
-5. **逾時**：一般 20 秒，`uploadFile` 120 秒，`adminData` 40 秒。
+4. **快取**：Store 讀取的分頁資料放 `CacheService` 10 分鐘，鍵名帶資料世代 `DATA_GEN`（指令碼屬性），任何寫入就更新世代，舊快取自然失效。快取命中時連試算表都不用開。
+5. **逾時**：一般 30 秒，`uploadFile` 120 秒，`adminData`／`savePost` 40 秒；唯讀動作（roster、board、history、adminData、receipts）逾時自動重試一次。（2026-09-29 實測 Apps Script 冷啟動偶爾 18～25 秒，由 20 秒放寬）
 6. **XSS**：所有使用者輸入的文字（標題、內容、姓名、檔名）一律用 `textContent` 或 `esc()` 輸出。這是從打卡系統店內公告沿用的規矩。
 
 ## 風險與停損

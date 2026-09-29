@@ -24,16 +24,45 @@ function cellStr_(v) {
 }
 function bool_(v) { return v === true || String(v).toUpperCase() === 'TRUE'; }
 
+/* 讀取快取：Apps Script 冷啟動＋開試算表常要數秒。資料讀過就放 CacheService，
+ * 鍵名帶「資料世代」DATA_GEN，任何寫入就把世代 +1，舊快取自然失效（不會讀到過期資料）。 */
+var CACHE_TTL_ = 600, CACHE_CHUNK_ = 90000;
+function dataGen_() { return props_().getProperty('DATA_GEN') || '0'; }
+function bumpGen_() { props_().setProperty('DATA_GEN', Date.now() + '-' + Math.floor(Math.random() * 1e6)); }
+function cacheGet_(key) {
+  try {
+    var c = CacheService.getScriptCache(), head = c.get(key + ':n');
+    if (!head) return null;
+    var n = Number(head), keys = [];
+    for (var i = 0; i < n; i++) keys.push(key + ':' + i);
+    var parts = c.getAll(keys), s = '';
+    for (var j = 0; j < n; j++) { if (parts[key + ':' + j] == null) return null; s += parts[key + ':' + j]; }
+    return JSON.parse(s);
+  } catch (e) { return null; }
+}
+function cachePut_(key, obj) {
+  try {
+    var s = JSON.stringify(obj), o = {}, n = Math.ceil(s.length / CACHE_CHUNK_) || 1;
+    if (n > 50) return;                                     // 太大就不快取（CacheService 單次上限）
+    for (var i = 0; i < n; i++) o[key + ':' + i] = s.slice(i * CACHE_CHUNK_, (i + 1) * CACHE_CHUNK_);
+    o[key + ':n'] = String(n);
+    CacheService.getScriptCache().putAll(o, CACHE_TTL_);
+  } catch (e) {}
+}
+
 function makeStore_(files) {
-  var book = ss_(), memo = {};
-  function sheet(key) { return book.getSheetByName(SHEETS_[key].name); }
+  var book = null, memo = {}, gen = dataGen_();
+  function sheet(key) { if (!book) book = ss_(); return book.getSheetByName(SHEETS_[key].name); }
   function rows(key) {
     if (memo[key]) return memo[key];
+    var ck = 'rows:' + key + ':' + gen, hit = cacheGet_(ck);
+    if (hit) { memo[key] = hit; return hit; }
     var sh = sheet(key), n = sh.getLastRow() - 1, cols = SHEETS_[key].cols;
     var vals = n > 0 ? sh.getRange(2, 1, n, cols.length).getValues() : [];
     memo[key] = vals.map(function (r, i) {
       var o = { _row: i + 2 }; cols.forEach(function (c, j) { o[c] = cellStr_(r[j]); }); return o;
     });
+    cachePut_(ck, memo[key]);
     return memo[key];
   }
   function write(key, obj, row) {
@@ -42,6 +71,7 @@ function makeStore_(files) {
     if (row) sh.getRange(row, 1, 1, cols.length).setValues(vals);
     else sh.getRange(sh.getLastRow() + 1, 1, 1, cols.length).setValues(vals);
     delete memo[key];
+    if (key !== 'log') { bumpGen_(); gen = dataGen_(); memo = {}; }   // 資料變了：快取世代 +1
   }
   function upsert(key, obj) {
     var hit = rows(key).filter(function (r) { return r.id === obj.id; })[0];

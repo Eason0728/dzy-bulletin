@@ -87,7 +87,10 @@ var Admin = (function () {
   function receiptsHTML(id) {
     var rows = a.receipts[id];
     if (!rows) return '<div class="loading" style="padding:10px 0">載入回條中</div>';
-    return '<div class="names">' + (rows.map(function (r) {
+    var pendN = rows.filter(function (r) { return !r.read && r.active !== false && r.inTarget !== false; }).length;
+    var sorted = rows.slice().sort(function (x, y) { return Number(!!x.read) - Number(!!y.read); });   // 未簽名排前面
+    return '<div class="acts" style="margin-top:8px"><button class="btn primary small" data-cp="' + esc(id) + '">📋 複製未簽名名單（' + pendN + ' 人）</button></div>' +
+      '<div class="names">' + (sorted.map(function (r) {
       return '<span class="' + (r.read ? '' : 'no') + '">' + (r.read ? '✓' : '✗') + ' ' + esc(r.name) + '<small style="opacity:.6"> ' + (L.STAFF_UNIT_NAME[r.unit] || '') +
         (!r.active ? '（已刪除）' : r.inTarget === false ? '（已不在公告單位）' : '') + (r.read ? ' ' + esc(UI.fmtTime(r.at)) : '') + '</small>' +
         (r.sig ? '<br><img src="' + esc(r.sig) + '" style="height:40px;background:#fff;border-radius:4px;margin-top:3px">' : '') + '</span>';
@@ -210,6 +213,20 @@ var Admin = (function () {
       '<div class="hint">總部鼎兆元看得到全部公告、只簽「全部」；總部墨竹亭／小辛辣只看得到並簽自己品牌的公告。名單頁只顯示遮罩姓名（例：陳O安）。應讀人數＝公告單位內目前名單上的同仁；刪除同仁後，他的簽名紀錄保留，但不再計入人數。</div>';
   }
 
+  /* ---------- 複製文字（clipboard 不可用時退回手動複製） ---------- */
+  function copyText(t) {
+    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(t).then(function () { return true; }, function () { return legacyCopy(t); });
+    return Promise.resolve(legacyCopy(t));
+  }
+  function legacyCopy(t) {
+    try { var ta = document.createElement('textarea'); ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select(); var ok = document.execCommand('copy'); ta.remove(); return ok; } catch (e) { return false; }
+  }
+  function showText(t) {
+    var s = UI.sheet('<div class="bar"><b>請手動複製</b><button id="stBack">返回</button></div><div class="body"><div class="hint" style="margin:0 0 8px">這支手機不支援自動複製，請長按下方文字全選後複製。</div><textarea class="inp" style="min-height:180px" readonly></textarea></div>');
+    s.querySelector('textarea').value = t; s.querySelector('textarea').select();
+    s.querySelector('#stBack').onclick = function () { render(); };
+  }
+
   /* ---------- 事件 ---------- */
   function act(btn, action, payload, okMsg, confirmMsg) {
     if (confirmMsg && !confirm(confirmMsg)) return;
@@ -224,6 +241,12 @@ var Admin = (function () {
   function bind(s) {
     var find = function (id) { return a.data.posts.filter(function (p) { return p.id === id; })[0]; };
     s.querySelectorAll('[data-af]').forEach(function (b) { b.onclick = function () { a.filter = b.dataset.af; a.expand = null; render(); }; });
+    s.querySelectorAll('[data-cp]').forEach(function (b) {
+      b.onclick = function () {
+        var p = find(b.dataset.cp), text = L.unsignedText(p.title, a.receipts[p.id] || []);
+        copyText(text).then(function (ok) { if (ok) UI.toast('已複製，可以貼到 LINE 群組'); else showText(text); });
+      };
+    });
     s.querySelectorAll('[data-rx]').forEach(function (b) {
       b.onclick = function () {
         var id = b.dataset.rx; a.expand = a.expand === id ? null : id; render();

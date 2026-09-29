@@ -110,6 +110,18 @@ eq('mustSign hq-mala mzt', L.mustSign('hq-mala', MZT), false);
 eq('homeTab', [L.homeTab('cf'), L.homeTab('hq-mala'), L.homeTab('hq-dzy')], ['cf', 'mala', 'mzt']);
 eq('staff unit names', L.STAFF_UNIT_IDS.map(k => L.STAFF_UNIT_NAME[k]), ['墨竹亭', '小辛辣', '央廚', '總部鼎兆元', '總部墨竹亭', '總部小辛辣']);
 
+// 未簽名名單文字
+const RR = [
+  { name: '甲', unit: 'mala', read: false, active: true, inTarget: true },
+  { name: '乙', unit: 'mzt', read: false, active: true, inTarget: true },
+  { name: '丙', unit: 'mala', read: true, active: true, inTarget: true },
+  { name: '丁', unit: 'mala', read: false, active: false, inTarget: false },
+  { name: '戊', unit: 'hq-dzy', read: false, active: true, inTarget: true },
+  { name: '己', unit: 'mala', read: false, active: true, inTarget: true },
+];
+eq('unsignedText grouped', L.unsignedText('SOP', RR), '「SOP」尚未簽名（4 人）\n墨竹亭：乙\n小辛辣：甲、己\n總部鼎兆元：戊\n請盡快到電子佈告欄閱讀並簽名，謝謝！');
+eq('unsignedText all signed', L.unsignedText('SOP', [{ name: '丙', unit: 'mala', read: true, active: true }]), '「SOP」全部已簽名 ✅');
+
 // 格式
 eq('fmtMD', L.fmtMD('2026-09-05'), '9/5');
 eq('fmtYM', L.fmtYM('2026-09'), '2026 年 9 月');

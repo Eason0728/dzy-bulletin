@@ -145,6 +145,17 @@ var DZYB = (function () {
     return null;
   }
 
+  // 未簽名名單文字（主管複製貼到 LINE 催簽）：只列在職且屬於公告對象、還沒簽的人，依單位分組
+  function unsignedText(title, rows) {
+    var pend = (rows || []).filter(function (r) { return !r.read && r.active !== false && r.inTarget !== false; });
+    if (!pend.length) return '「' + title + '」全部已簽名 ✅';
+    var parts = STAFF_UNIT_IDS.map(function (u) {
+      var ns = pend.filter(function (r) { return r.unit === u; }).map(function (r) { return r.name; });
+      return ns.length ? STAFF_UNIT_NAME[u] + '：' + ns.join('、') : null;
+    }).filter(Boolean);
+    return '「' + title + '」尚未簽名（' + pend.length + ' 人）\n' + parts.join('\n') + '\n請盡快到電子佈告欄閱讀並簽名，謝謝！';
+  }
+
   function fmtMD(d) { if (!d) return ''; var p = d.split('-'); return (+p[1]) + '/' + (+p[2]); }
   function fmtYM(m) { var p = m.split('-'); return p[0] + ' 年 ' + (+p[1]) + ' 月'; }
   function fmtSize(b) { return b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB'; }
@@ -159,7 +170,7 @@ var DZYB = (function () {
     status: status, sortBoard: sortBoard, sortHistory: sortHistory,
     maskName: maskName, pinProblem: pinProblem,
     fileExt: fileExt, fileType: fileType, fileMime: fileMime, checkFiles: checkFiles, postProblem: postProblem,
-    fmtMD: fmtMD, fmtYM: fmtYM, fmtSize: fmtSize
+    fmtMD: fmtMD, fmtYM: fmtYM, fmtSize: fmtSize, unsignedText: unsignedText
   };
 })();
 

@@ -63,11 +63,14 @@ function config(env) {
     REQUEST_TIMEOUT_MS: (Number(env.REQUEST_TIMEOUT_S) > 0 ? Number(env.REQUEST_TIMEOUT_S) : 180) * 1000
   };
 }
+// 兩個路徑是否指同一個資料夾：存在就取真實路徑（解開符號連結），macOS APFS 預設不分大小寫，所以一律小寫比對（第 2 輪建議 3）
+function realOrResolved(p) { try { return fs.realpathSync(p); } catch (e) { return path.resolve(p); } }
+function samePath(a, b) { return realOrResolved(a).toLowerCase() === realOrResolved(b).toLowerCase(); }
 // E2E 模式的保險（/__seed 可無金鑰清空全部資料）：回傳拒絕啟動的理由，沒問題回空字串
 function e2eProblem(cfg, env) {
   if (!cfg.E2E) return '';
   if (cfg.ALLOW.some((o) => PROD_ORIGIN.test(o))) return 'E2E 測試模式不能搭配正式網域的 ALLOW_ORIGIN（/__seed 可無金鑰清空全部資料），拒絕啟動';
-  if (!cfg.DATA_DIR_SET || cfg.DATA_DIR === path.resolve(defaultDataDir(env))) return 'E2E 測試模式必須用 DATA_DIR 指定一個測試用資料夾（不可是正式資料夾 ~/dzy-bulletin-data），拒絕啟動';
+  if (!cfg.DATA_DIR_SET || samePath(cfg.DATA_DIR, defaultDataDir(env))) return 'E2E 測試模式必須用 DATA_DIR 指定一個測試用資料夾（不可是正式資料夾 ~/dzy-bulletin-data），拒絕啟動';
   if (cfg.BRIDGE_URL || cfg.BRIDGE_KEY) return 'E2E 測試模式不能設 BRIDGE_URL／BRIDGE_KEY（測試一律用假橋接；有真金鑰代表這是正式環境），拒絕啟動';
   return '';
 }
@@ -145,7 +148,8 @@ function makeApp(cfg) {
         return { out, revoke };
       }
       try { await pre.need(); }
-      catch (e) {   // 橋接錯誤只回伺服器自己的錯誤碼（絕不回 AUTH，否則前端會把主管登出）；原文只進 stderr（S3）
+      catch (e) {   // 業務錯誤（BAD_REQ 等）照原樣回；其餘只回伺服器自己的錯誤碼（絕不回 AUTH，否則前端會把主管登出），原文只進 stderr（S3）
+        if (e && e.business) return { out: { ok: false, code: e.code, message: e.message }, revoke: [] };
         const code = e && e.code === 'BRIDGE_TIMEOUT' ? 'BRIDGE_TIMEOUT' : 'BRIDGE';
         console.error(ts() + ' 橋接失敗 ' + action + '：' + (e && (e.detail || e.message)));
         return { out: { ok: false, code, message: BRIDGE_MSG[code] }, revoke: [] };

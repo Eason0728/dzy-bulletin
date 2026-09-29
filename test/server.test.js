@@ -104,7 +104,10 @@ async function main() {
     eq('E2E without DATA_DIR refuses to start', [r1.code, /DATA_DIR/.test(r1.stderr || '')], [1, true]);
     const r2 = await start({ E2E: '1', HOME: home, DATA_DIR: path.join(home, 'dzy-bulletin-data') });
     const r3 = await start({ E2E: '1', HOME: home, DATA_DIR: '~/dzy-bulletin-data/' });
-    eq('E2E with default DATA_DIR refuses to start', [r2.code, r3.code, fs.existsSync(path.join(home, 'dzy-bulletin-data'))], [1, 1, false]);
+    const r3b = await start({ E2E: '1', HOME: home, DATA_DIR: path.join(home, 'DZY-Bulletin-Data') });   // APFS 不分大小寫
+    fs.mkdirSync(path.join(home, 'dzy-bulletin-data')); fs.symlinkSync(path.join(home, 'dzy-bulletin-data'), path.join(home, 'alias'));
+    const r3c = await start({ E2E: '1', HOME: home, DATA_DIR: path.join(home, 'alias') });                  // 符號連結
+    eq('E2E with default DATA_DIR refuses to start', [r2.code, r3.code, r3b.code, r3c.code, fs.readdirSync(path.join(home, 'dzy-bulletin-data'))], [1, 1, 1, 1, []]);
     const r4 = await start({ E2E: '1', BRIDGE_KEY: 'k' });
     const r5 = await start({ E2E: '1', BRIDGE_URL: 'https://example.invalid/exec' });
     eq('E2E with real bridge settings refuses to start', [r4.code, r5.code, /BRIDGE/.test(r4.stderr || '')], [1, 1, true]); }
@@ -261,6 +264,19 @@ async function main() {
     eq('same post id through A→B→B', [ra.json.ok, rb.json.data.post.id === ra.json.data.post.id, rc.json.data.post.id === ra.json.data.post.id], [true, true, true]);
     eq('resend: share 1/1/0', [s1 - s0, s2 - s1, s3 - s2], [1, 1, 0]);
     eq('resend: no extra log, updatedAt unchanged', [dbq(B.dir, 'SELECT COUNT(*) AS n FROM log')[0].n - logs, rc.json.data.post.updatedAt === rb.json.data.post.updatedAt], [0, true]); }
+  // 第 2 輪應修-1（repro2 NA）：kv 有一筆壞掉的 req 紀錄時用同一個 reqId 存公告 → 當作新請求、真的存進去，絕不回 ok:true 卻沒寫入
+  { const { at: atB } = await login(B);
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(path.join(B.dir, 'bulletin.db')); db.prepare("INSERT INTO kv (k, v) VALUES ('req:rid-bad', '{exp: 99999999999999, v: 1}')").run(); db.close();
+    const r = await api(B, 'savePost', { atoken: atB, reqId: 'rid-bad', post: { title: '會不見的公告', units: ['mala'], publishOn: today(), files: [] } });
+    const rows = dbq(B.dir, "SELECT COUNT(*) AS n FROM posts WHERE json LIKE '%會不見的公告%'")[0].n;
+    eq('corrupt req row: ok:true only if really saved', [r.json.ok, rows], [true, 1]);
+    eq('corrupt req row: other writes still work', (await api(B, 'savePost', { atoken: atB, reqId: 'rid-2', post: { title: '之後', units: ['mala'], publishOn: today(), files: [] } })).json.ok, true); }
+  // 第 2 輪應修-2：Apps Script 回的業務錯誤（Files.js 的 BAD_REQ）照原 code／message 回
+  { const { at: atB } = await login(B);
+    const r = await api(B, 'savePost', { atoken: atB, post: { title: '失效附件', units: ['mala'], publishOn: today(), files: [{ id: 'F-GONE', name: 'x.pdf' }] } });
+    eq('bridge business error passthrough (BAD_REQ)', [r.json.code, r.json.message], ['BAD_REQ', '找不到附件檔案']);
+    eq('business error: post not saved', dbq(B.dir, "SELECT COUNT(*) AS n FROM posts WHERE json LIKE '%失效附件%'")[0].n, 0); }
   B.stop();
 
   // ---- 真橋接（async fetch）對本機假 Apps Script：302 轉址、錯誤碼、逾時 ----
@@ -271,14 +287,17 @@ async function main() {
       const op = new URL(req.url, 'http://x').searchParams.get('op');
       if (op === 'slow') return;                                              // 永不回應 → 逾時
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(op === 'bad' ? { ok: false, code: 'BAD_REQ', message: '不行' } : { ok: true, data: { op, method: req.method } }));
+      res.end(JSON.stringify(op === 'bad' ? { ok: false, code: 'BAD_REQ', message: '不行' } : op === 'authbad' ? { ok: false, code: 'AUTH', message: '橋接金鑰錯誤' }
+        : { ok: true, data: { op, method: req.method } }));
     });
     await new Promise((ok) => gas.listen(0, '127.0.0.1', ok));
     const br = makeBridge('http://127.0.0.1:' + gas.address().port + '/exec', 'k');
     const r = await br.call('quota', { x: 1 });
     eq('real bridge follows 302 (POST→GET like curl -L)', [r, got.key, got.x], [{ op: 'quota', method: 'GET' }, 'k', 1]);
-    let e1 = null; try { await br.call('bad'); } catch (e) { e1 = [e.code, e.message]; eq('bridge detail has original', /BAD_REQ 不行/.test(e.detail), true); }
-    eq('real bridge error mapped to BRIDGE (detail kept for log)', e1, ['BRIDGE', 'Google 雲端暫時連不上，請稍後再試']);
+    let e1 = null; try { await br.call('bad'); } catch (e) { e1 = [e.code, e.message, !!e.business]; }
+    eq('real bridge business error kept (BAD_REQ)', e1, ['BAD_REQ', '不行', true]);
+    let e1b = null; try { await br.call('authbad'); } catch (e) { e1b = [e.code, e.message, /AUTH 橋接金鑰錯誤/.test(e.detail)]; }
+    eq('real bridge AUTH mapped to BRIDGE (detail kept for log)', e1b, ['BRIDGE', 'Google 雲端暫時連不上，請稍後再試', true]);
     const t0 = Date.now(); let e2 = null; try { await br.call('slow', {}, 0.3); } catch (e) { e2 = e.code; }
     eq('real bridge timeout via AbortSignal', [e2, Date.now() - t0 < 2000], ['BRIDGE_TIMEOUT', true]);
     let e3 = null; try { await makeBridge('', '').call('quota'); } catch (e) { e3 = e.code; }
@@ -290,10 +309,17 @@ async function main() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dzyb-st-')); tmps.push(dir);
     const st = makeSqliteStore(dir); let seen = 'none';   // id 給物件 → node:sqlite 丟帶 code 的 ERR_INVALID_ARG_TYPE
     const origErr = console.error; console.error = () => {};
-    st.tx(() => { st.savePost({ id: 'P-X', title: 'x' }); try { st.savePost({ id: { bad: 1 }, title: 'z' }); } catch (e) { seen = [e.code, e.message]; } return 1; });
+    let txErr = null;   // 模擬 Service 自己吞掉 store 錯誤、回 ok:true：tx 仍要 ROLLBACK 並丟出例外（index.js 轉成 SERVER）
+    try { st.tx(() => { st.savePost({ id: 'P-X', title: 'x' }); try { st.savePost({ id: { bad: 1 }, title: 'z' }); } catch (e) { seen = [e.code, e.message]; } return { ok: true }; }); }
+    catch (e) { txErr = e.message; }
     console.error = origErr;
     eq('store error has no code', seen, [undefined, '資料層錯誤']);
+    eq('tx with swallowed store error throws (never ok:true)', /ROLLBACK/.test(txErr || ''), true);
     eq('tx rolled back after store error', st.getPosts().length, 0);
+    st.kvSet('req:bad5', '{exp: 99999999999999, v: 1}'); st.kvSet('req:garbage', 'not json at all');
+    eq('purgeReqs clears malformed req rows instead of failing', [st.purgeReqs(Date.now()), st.kvGet('req:bad5'), st.kvGet('req:garbage')], [2, null, null]);
+    st.kvSet('req:bad6', '{exp: 99999999999999, v: 1}');
+    eq('getReq treats malformed row as missing and deletes it', [st.getReq('bad6'), st.kvGet('req:bad6')], [null, null]);
     st.tx(() => { st.savePost({ id: 'P-Y', title: 'y' }); return 1; });
     eq('next tx commits normally', st.getPosts().map((p) => p.id), ['P-Y']);
     st.close(); }

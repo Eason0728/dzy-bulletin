@@ -5,8 +5,11 @@
  * fetch 跟隨 Apps Script 的 302 時 POST 會轉成 GET，與原本 curl -L 行為相同（Apps Script 就是這樣回結果），不是 bug。 */
 'use strict';
 
-// 橋接錯誤一律對應成伺服器自己的錯誤碼（BRIDGE／BRIDGE_TIMEOUT）與固定中文句子；Apps Script 回的 code／message 只進 stderr。
-// 絕不能原樣回傳：金鑰設錯時 Apps Script 回 AUTH，前端會把主管登出、重登又被登出（#12 審查 S3）。
+// 橋接錯誤：網路錯誤、逾時、AUTH（金鑰設錯）與其他非業務錯誤一律對應成伺服器自己的錯誤碼（BRIDGE／BRIDGE_TIMEOUT）與固定中文句子，
+// 原文只進 stderr——金鑰設錯時 Apps Script 回 AUTH，原樣回傳會讓前端把主管登出、重登又被登出（#12 審查 S3）。
+// 業務錯誤（gas/Files.js 自己寫的 BAD_REQ／BAD_TYPE／TOO_BIG，固定中文、不含路徑）照原 code／message 回，與 GAS 版一致（第 2 輪應修-2）。
+const BUSINESS = ['BAD_REQ', 'BAD_TYPE', 'TOO_BIG'];
+function businessErr(code, message) { const e = new Error(String(message || '').slice(0, 200)); e.code = code; e.business = true; return e; }
 const BRIDGE_MSG = { BRIDGE: 'Google 雲端暫時連不上，請稍後再試', BRIDGE_TIMEOUT: '連線 Google 逾時，請稍後再試' };
 function bridgeErr(code, detail) { const e = new Error(BRIDGE_MSG[code]); e.code = code; e.detail = detail || ''; return e; }
 
@@ -25,7 +28,10 @@ function makeBridge(url, key) {
     }
     let j;
     try { j = JSON.parse(text); } catch (e) { throw bridgeErr('BRIDGE', op + ': 回應不是 JSON'); }
-    if (!j.ok) throw bridgeErr('BRIDGE', op + ': ' + (j.code || '') + ' ' + (j.message || ''));
+    if (!j.ok) {
+      if (BUSINESS.indexOf(j.code) >= 0 && j.message) throw businessErr(j.code, j.message);
+      throw bridgeErr('BRIDGE', op + ': ' + (j.code || '') + ' ' + (j.message || ''));
+    }
     return j.data;
   }
   return {
@@ -58,7 +64,7 @@ function makeFakeBridge(delayMs, failAll) {
     call: async () => { throw new Error('fake'); },
     files: {
       upload: op('upload', (name, mime, b64) => { const id = 'F-' + (++seq); blobs[id] = 'data:' + mime + ';base64,' + b64; return { id, name, type: typeOf(name), size: Math.floor(b64.length * 3 / 4) }; }),
-      share: op('share', () => {}),
+      share: op('share', (ids) => { if (ids.indexOf('F-GONE') >= 0) { const e = new Error('找不到附件檔案'); e.code = 'BAD_REQ'; e.business = true; throw e; } }),   // F-GONE＝模擬 Drive 上已刪除的附件
       revoke: op('revoke', (ids) => ids.forEach((i) => delete blobs[i])),
       quota: op('quota', () => ({ limit: 16106127360, usage: 7935000000 }))
     },

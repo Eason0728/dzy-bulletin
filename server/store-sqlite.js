@@ -26,7 +26,8 @@ function makeSqliteStore(dir) {
   const kvSet = db.prepare('INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v');
   const kvDel = db.prepare('DELETE FROM kv WHERE k = ?');
   // req:* 的過期只在被讀到時才刪 → 每次寫入交易順手清（#6 審查發現 5）
-  const reqPurge = db.prepare("DELETE FROM kv WHERE k LIKE 'req:%' AND json_extract(v, '$.exp') < ?");
+  // 壞掉的紀錄（非標準 JSON）一併清掉，不然 json_extract 丟錯會讓每個寫入交易都失敗（#12 第 2 輪建議 4）；CASE 保證先驗再取
+  const reqPurge = db.prepare("DELETE FROM kv WHERE k LIKE 'req:%' AND CASE WHEN json_valid(v) THEN json_extract(v, '$.exp') < ? ELSE 1 END");
   const get = (k) => { const r = kvGet.get(k); return r ? r.v : null; };
   const set = (k, v) => kvSet.run(k, String(v));
   const upsertPost = db.prepare('INSERT INTO posts (id, json) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET json = excluded.json');
@@ -81,7 +82,8 @@ function makeSqliteStore(dir) {
     secret: () => get('secret'),
     getReq: (rid) => {
       const v = get('req:' + rid); if (!v) return null;
-      const o = JSON.parse(v); if (o.exp < Date.now()) { kvDel.run('req:' + rid); return null; }
+      let o = null; try { o = JSON.parse(v); } catch (e) {}
+      if (!o || typeof o !== 'object' || !(o.exp >= Date.now())) { kvDel.run('req:' + rid); return null; }   // 過期或壞紀錄：當作不存在並刪掉
       return o.v;
     },
     putReq: (rid, v) => { set('req:' + rid, JSON.stringify({ v, exp: Date.now() + 6 * 3600e3 })); },
@@ -89,8 +91,9 @@ function makeSqliteStore(dir) {
     kvGet: get,
     kvSet: set,
 
-    // 一個寫入請求一筆交易（Service 的寫入全部成功或全部不寫）。Service 會把錯誤轉成回應、不往外丟，
-    // 所以資料層自己記「這筆交易裡有 store 動作失敗」（failed），有就 ROLLBACK，不把前半段寫入 COMMIT（#12 審查 S2）。
+    // 一個寫入請求一筆交易（Service 的寫入全部成功或全部不寫）。Service 會把錯誤轉成回應、不往外丟（有些地方還會吞掉），
+    // 所以資料層自己記「這筆交易裡有 store 動作失敗」（failed）：有就 ROLLBACK 並丟出例外，
+    // 呼叫端（index.js）一律回 SERVER——就算 Service 自己吞掉錯誤回了 ok:true，也不能讓「已儲存」送出去（#12 S2、第 2 輪應修-1）。
     // 只包同步的程式碼：橋接（await）一律在 tx 外做完，寫鎖不會被 Google 佔住。
     // 註：BEGIN IMMEDIATE 遇到 daily.js 持有寫鎖時會同步等最多 busy_timeout（5 秒），這段期間事件迴圈停住；
     //     daily.js 只寫少量欄位、一天一次，量很小，接受。
@@ -99,9 +102,9 @@ function makeSqliteStore(dir) {
       state.failed = false;
       try {
         const r = fn();
-        if (state.failed) { db.exec('ROLLBACK'); return r; }
+        if (state.failed) { db.exec('ROLLBACK'); throw new Error('交易中資料層出錯，已 ROLLBACK'); }
         db.exec('COMMIT'); return r;
-      } catch (e) { try { db.exec('ROLLBACK'); } catch (x) {} throw e; }
+      } catch (e) { if (db.isTransaction) { try { db.exec('ROLLBACK'); } catch (x) {} } throw e; }
       finally { state.failed = false; }
     },
     // 搬遷／鏡像

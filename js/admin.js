@@ -1,4 +1,4 @@
-/* 設定面板：管理通行碼、公告管理、新增／編輯（含附件上傳）、已讀回條、同仁名單、變更通行碼 */
+/* 設定面板：管理通行碼登入、公告管理、新增／編輯（含附件上傳）、已讀回條、同仁名單（通行碼只能由 Eason 在指令碼屬性更換） */
 'use strict';
 var Admin = (function () {
   var L = DZYB, esc = UI.esc;
@@ -141,10 +141,12 @@ var Admin = (function () {
     if (q('fCancel')) q('fCancel').onclick = function () { a.edit = null; a.draft = null; a.files = []; a.tab = 'posts'; render(); };
     q('fSave').onclick = function () {
       var post = Object.assign({ id: a.edit || undefined, files: a.files }, d);
+      if (!a.reqId) a.reqId = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);   // 同一次儲存（含重送）用同一個 reqId
       var bad = L.postProblem(post); if (bad) { q('fErr').textContent = bad; return; }
       var done = UI.busy(q('fSave'), '儲存中…');
-      API.admin('savePost', { post: post }).then(function (r) {
+      API.admin('savePost', { post: post, reqId: a.reqId }).then(function (r) {
         done();
+        if (r.ok) a.reqId = null;
         if (!r.ok) { if (r.code !== 'AUTH') q('fErr').textContent = r.message; return; }
         var st = r.data.post.status.state;
         UI.toast(a.edit ? '已儲存' : st === 'plan' ? '已排定，' + L.fmtMD(r.data.post.publishOn) + ' 上架' : '已上架');

@@ -28,7 +28,10 @@ function bool_(v) { return v === true || String(v).toUpperCase() === 'TRUE'; }
  * 鍵名帶「資料世代」DATA_GEN，任何寫入就把世代 +1，舊快取自然失效（不會讀到過期資料）。 */
 var CACHE_TTL_ = 600, CACHE_CHUNK_ = 30000;   // CacheService 單值上限 100KB 以位元組計，中文一字 3 bytes
 function dataGen_() { return props_().getProperty('DATA_GEN') || '0'; }
-function bumpGen_() { props_().setProperty('DATA_GEN', Date.now() + '-' + Math.floor(Math.random() * 1e6)); }
+function bumpGen_() {
+  var v = Date.now() + '-' + Math.floor(Math.random() * 1e6);
+  try { props_().setProperty('DATA_GEN', v); } catch (e) { Utilities.sleep(200); props_().setProperty('DATA_GEN', v); }   // 失敗重試一次
+}
 function cacheGet_(key) {
   try {
     var c = CacheService.getScriptCache(), head = c.get(key + ':n');
@@ -51,10 +54,11 @@ function cachePut_(key, obj) {
 }
 
 function makeStore_(files) {
-  var book = null, memo = {}, gen = dataGen_();
+  var book = null, memo = {}, gen = null;                              // gen 惰性讀取：寫入動作在鎖內才第一次讀
   function sheet(key) { if (!book) book = ss_(); return book.getSheetByName(SHEETS_[key].name); }
   function rows(key) {
     if (memo[key]) return memo[key];
+    if (gen === null) gen = dataGen_();
     var ck = 'rows:' + key + ':' + gen, hit = cacheGet_(ck);
     if (hit) { memo[key] = hit; return hit; }
     var sh = sheet(key), n = sh.getLastRow() - 1, cols = SHEETS_[key].cols;
@@ -72,11 +76,20 @@ function makeStore_(files) {
       sh.getRange(1, cols.length, sh.getMaxRows(), 1).setNumberFormat('@');
     }
     var vals = [cols.map(function (c) { var v = obj[c]; return v === undefined || v === null ? '' : String(v); })];
-    var r = sh.getRange(row || sh.getLastRow() + 1, 1, 1, cols.length);
+    var target = row || sh.getLastRow() + 1;
+    if (target > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), 200);   // 超過現有列數先加列（getRange 越界會丟例外）
+    var r = sh.getRange(target, 1, 1, cols.length);
     r.setNumberFormat('@').setValues(vals);                           // 每列寫入前設純文字：超過 setup 當下的列數也不會把 ISO 時間轉成日期
     SpreadsheetApp.flush();                                          // 先落地再換世代、再放鎖，避免下一個寫入者算到同一列或快取到舊值
-    delete memo[key];
-    if (key !== 'log') { bumpGen_(); gen = dataGen_(); memo = {}; }   // 資料變了：快取世代 +1
+    if (key === 'log') return;
+    // 就地更新本次請求的 memo（不整表重讀：批次同步數十人時才不會越來越慢）
+    if (memo[key]) {
+      var o = { _row: target }; cols.forEach(function (c, j) { o[c] = vals[0][j]; });
+      var i = memo[key].findIndex(function (x) { return x._row === target; });
+      if (i >= 0) memo[key][i] = o; else memo[key].push(o);
+    }
+    bumpGen_(); gen = dataGen_();                                    // 資料變了：快取世代換新
+    if (memo[key]) cachePut_('rows:' + key + ':' + gen, memo[key]);
   }
   function upsert(key, obj) {
     var hit = rows(key).filter(function (r) { return r.id === obj.id; })[0];
@@ -123,6 +136,8 @@ function makeStore_(files) {
       return out;
     },
     addLog: function (e) { write('log', e, null); },
+    getReq: function (rid) { try { return CacheService.getScriptCache().get('req:' + rid); } catch (e) { return null; } },
+    putReq: function (rid, id) { try { CacheService.getScriptCache().put('req:' + rid, id, 21600); } catch (e) {} },
     getAdmin: function () {
       var p = props_().getProperties();
       return { hash: p.ADMIN_HASH || '', salt: p.ADMIN_SALT || '', init: p.ADMIN_INIT || '', ver: Number(p.ADMIN_VER) || 1,

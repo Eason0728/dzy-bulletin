@@ -101,7 +101,9 @@ var DZYB_MOCK = (function () {
     addLog: function (e) { load().log.push(e); save(); },
     getAdmin: function () { return clone(load().admin); },
     setAdmin: function (a) { load().admin = clone(a); save(); },
-    secret: function () { return load().secret; }
+    secret: function () { return load().secret; },
+    getReq: function (rid) { return (load().reqs || {})[rid] || null; },
+    putReq: function (rid, id) { var d = load(); (d.reqs = d.reqs || {})[rid] = id; save(); }
   };
   var files = {
     upload: function (name, mime, b64) {

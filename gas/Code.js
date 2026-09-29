@@ -2,7 +2,8 @@
  * 正本在 repo ~/dzy-bulletin/gas/；Logic.js 由 tools/build.sh 從 js/logic.js 產生，不要手改。 */
 'use strict';
 
-var VERSION_ = '0.3.7';
+var WRITE_ACTIONS_ = ['setPin', 'login', 'ack', 'adminLogin', 'savePost', 'setPublished', 'setPinned', 'staffAdd', 'staffDelete', 'staffResetPin', 'syncClock'];   // 必須與 Service.WRITE_ACTIONS 一致（test 檢查）
+var VERSION_ = '0.3.8';
 
 function doGet() {
   return json_({ ok: true, data: { app: 'dzy-bulletin', v: VERSION_ } });
@@ -14,13 +15,16 @@ function doPost(e) {
   catch (x) { return json_({ ok: false, code: 'BAD_REQ', message: '格式錯誤' }); }
   var action = String(req.action || '');
   try {
-    var files = makeFiles_();
-    var svc = makeService_(DZYB, makeStore_(files), files, makeAuth_(gasCrypto_(), DZYB),
-      { nowMs: function () { return Date.now(); }, today: function () { return DZYB.today(); } }, clockSource_());
-    if (svc.WRITE_ACTIONS.indexOf(action) < 0) return json_(svc.call(action, req));
+    // 寫入動作：先拿鎖、再建 store（store 的快取世代在鎖內才讀，避免用到鎖外的舊快照）
+    var build = function () {
+      var files = makeFiles_();
+      return makeService_(DZYB, makeStore_(files), files, makeAuth_(gasCrypto_(), DZYB),
+        { nowMs: function () { return Date.now(); }, today: function () { return DZYB.today(); } }, clockSource_());
+    };
+    if (WRITE_ACTIONS_.indexOf(action) < 0) return json_(build().call(action, req));
     var lock = LockService.getScriptLock();
     if (!lock.tryLock(20000)) return json_({ ok: false, code: 'SERVER', message: '同時操作的人太多，請稍後再試' });
-    try { return json_(svc.call(action, req)); } finally { lock.releaseLock(); }
+    try { return json_(build().call(action, req)); } finally { lock.releaseLock(); }
   } catch (x) {
     console.error(action + ': ' + (x && x.stack || x));
     return json_({ ok: false, code: 'SERVER', message: '系統忙碌，請稍後再試' });

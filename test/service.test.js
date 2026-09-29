@@ -93,6 +93,10 @@ const f1 = r.data;
   C('savePost', { atoken: rr, post: Object.assign({}, p0, { units: ['cf'] }) });
   const row = C('receipts', { atoken: rr, postId: 'P-20260925-001' }).data.rows.find(x => x.staffId === 'S-001');
   eq('out of scope reader', [row.active, row.inTarget, row.read], [true, false, true]); }
+{ const ad0 = C('adminLogin', { pass: '1234' }).data.atoken, body = { title: '冪等測試', units: ['cf'], publishOn: DZYB.today(), files: [] };
+  const n0 = C('adminData', { atoken: ad0 }).data.posts.length;
+  const p1 = C('savePost', { atoken: ad0, post: body, reqId: 'rid-1' }).data.post.id, p2 = C('savePost', { atoken: ad0, post: body, reqId: 'rid-1' }).data.post.id;
+  eq('savePost reqId idempotent', [p1 === p2, C('adminData', { atoken: ad0 }).data.posts.length - n0], [true, 1]); }
 eq('savePost bad file type', C('savePost', { atoken: at, post: { title: 't', units: ['mala'], publishOn: DZYB.today(), files: [{ id: 'x', name: 'evil.exe', type: 'pdf', size: 1 }] } }).code, 'BAD_TYPE');
 eq('savePost invalid', call('savePost', { atoken: at, post: { title: '', units: ['mala'], publishOn: '2026-09-29' } }).code, 'BAD_REQ');
 r = C('savePost', { atoken: at, post: { title: '測試公告', body: 'x', units: ['cf', 'mzt', 'mala'], publishOn: DZYB.today(), expiresOn: '', pinned: true, files: [f1] } });
@@ -125,6 +129,8 @@ eq('deleted not counted', C('adminData', { atoken: at }).data.posts.find(p => p.
 // 更換通行碼：只能經由 ADMIN_INIT（網頁沒有 changePass）
 eq('changePass removed', C('changePass', { atoken: at, oldPass: '1234', newPass: '5678' }).code, 'BAD_REQ');
 M.setAdminInit('5678');
+eq('pending ADMIN_INIT kills old atoken', C('adminData', { atoken: at }).code, 'AUTH');
+eq('old pass rejected while pending', C('adminLogin', { pass: '1234' }).code, 'AUTH');
 r = C('adminLogin', { pass: '5678' });
 eq('ADMIN_INIT replaces pass', r.ok, true);
 eq('old atoken dead after replace', C('adminData', { atoken: at }).code, 'AUTH');
@@ -168,6 +174,9 @@ eq('ADMIN_INIT consumed', C('adminLogin', { pass: '5678' }).ok, true);
   eq('roster has no src leak', Object.keys(C('roster').data[0]).includes('src'), false);
 }
 eq('unknown action', C('hack', {}).code, 'BAD_REQ');
+{ const code = require('fs').readFileSync(__dirname + '/../gas/Code.js', 'utf8'); const m = /var WRITE_ACTIONS_ = (\[[^\]]*\])/.exec(code);
+  const svcW = require('../gas/Service.js').makeService_(DZYB, {}, {}, {}, {}).WRITE_ACTIONS;
+  eq('Code.js WRITE_ACTIONS_ matches Service', JSON.stringify(eval(m[1]).sort()), JSON.stringify(svcW.slice().sort())); }
 eq('all 17 actions covered', seen.size, 17);
 
 console.log(`service: ${pass} passed, ${fail} failed`);

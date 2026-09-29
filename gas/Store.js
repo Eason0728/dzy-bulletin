@@ -94,7 +94,8 @@ function makeStore_(files) {
   // 寫回既有列之前，確認那一列的 id 還是它（有人手動刪列／排序過試算表時，快取裡的列號會錯）；對不上就重讀試算表
   function upsert(key, obj) {
     var hit = rows(key).filter(function (r) { return r.id === obj.id; })[0];
-    if (hit && String(sheet(key).getRange(hit._row, 1).getValue()) !== String(obj.id)) {
+    var sh0 = hit && sheet(key);
+    if (hit && (hit._row > sh0.getLastRow() || String(sh0.getRange(hit._row, 1).getValue()) !== String(obj.id))) {   // 列號超出現有資料也視為過期
       hit = rows(key, true).filter(function (r) { return r.id === obj.id; })[0];
     }
     write(key, obj, hit ? hit._row : null);

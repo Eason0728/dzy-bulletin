@@ -1,6 +1,7 @@
 /* 鼎兆元｜電子佈告欄 — Mac mini 伺服器的資料層（Service.js 的 store 介面，SQLite＋簽名圖存硬碟）
  * 與 gas/Store.js 同一套介面：getPosts savePost getStaff saveStaff getReads addRead getSigs addLog getAdmin setAdmin secret getReq putReq
- * 另有 tx(fn)：整個請求包成一筆交易；dump()／load()：搬遷與鏡像用。 */
+ * 另有 tx(fn)：一個寫入請求包成一筆交易（只有 Service.WRITE_ACTIONS 會用）；purgeReqs()：清過期的冪等紀錄；
+ * kvGet／kvSet：伺服器自用的小快取（例如雲端空間）；dump()／load()：搬遷與鏡像用。 */
 'use strict';
 const { DatabaseSync } = require('node:sqlite');
 const fs = require('fs');
@@ -12,6 +13,7 @@ function makeSqliteStore(dir) {
   fs.mkdirSync(sigDir, { recursive: true });
   const db = new DatabaseSync(path.join(dir, 'bulletin.db'));
   db.exec(`
+    PRAGMA busy_timeout = 5000;
     PRAGMA journal_mode = WAL;
     CREATE TABLE IF NOT EXISTS posts (id TEXT PRIMARY KEY, json TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS staff (id TEXT PRIMARY KEY, json TEXT NOT NULL);
@@ -23,6 +25,8 @@ function makeSqliteStore(dir) {
   const kvGet = db.prepare('SELECT v FROM kv WHERE k = ?');
   const kvSet = db.prepare('INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v');
   const kvDel = db.prepare('DELETE FROM kv WHERE k = ?');
+  // req:* 的過期只在被讀到時才刪 → 每次寫入交易順手清（#6 審查發現 5）
+  const reqPurge = db.prepare("DELETE FROM kv WHERE k LIKE 'req:%' AND json_extract(v, '$.exp') < ?");
   const get = (k) => { const r = kvGet.get(k); return r ? r.v : null; };
   const set = (k, v) => kvSet.run(k, String(v));
   const upsertPost = db.prepare('INSERT INTO posts (id, json) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET json = excluded.json');
@@ -79,8 +83,12 @@ function makeSqliteStore(dir) {
       return o.v;
     },
     putReq: (rid, v) => { set('req:' + rid, JSON.stringify({ v, exp: Date.now() + 6 * 3600e3 })); },
+    purgeReqs: (nowMs) => Number(reqPurge.run(nowMs || Date.now()).changes),
+    kvGet: get,
+    kvSet: set,
 
-    // 整個請求一筆交易（Service 的寫入全部成功或全部不寫；Service 自己會把錯誤轉成回應，所以一律 COMMIT）
+    // 一個寫入請求一筆交易（Service 的寫入全部成功或全部不寫；Service 自己會把錯誤轉成回應，所以一律 COMMIT）
+    // 只包同步的程式碼：橋接（await）一律在 tx 外做完，寫鎖不會被 Google 佔住。
     tx: (fn) => {
       db.exec('BEGIN IMMEDIATE');
       try { const r = fn(); db.exec('COMMIT'); return r; }

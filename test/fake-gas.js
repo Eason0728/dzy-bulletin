@@ -5,7 +5,9 @@ const fs = require('fs'), vm = require('vm'), path = require('path'), http = req
 
 function makeFakeGas() {
   const props = {}, cache = {};
-  const st = { lockFree: true, throwOnWrite: null, hits: {}, failNext: null };   // failNext：下一次呼叫此 op 時 Web App 回 500 HTML（模擬 Google 當掉）
+  // failNext：下一次呼叫此 op 時 Web App 回 500 HTML（模擬 Google 當掉）；
+  // failCreate(name, k)：Drive createFile 丟錯（k＝這次呼叫第幾張，從 0 起算）→ 驗 saveSigs 逐張 null 契約（#14 S4）
+  const st = { lockFree: true, throwOnWrite: null, hits: {}, failNext: null, failCreate: null, createSeq: 0 };
   function makeSheet(name, maxRows) {
     const sh = { name, data: [], max: maxRows || 1000, frozen: 0 };
     const cell = (r, c) => ((sh.data[r - 1] || [])[c - 1] ?? '');
@@ -47,7 +49,7 @@ function makeFakeGas() {
       getId: () => id, getName: () => f.name, isTrashed: () => !!f.trashed,
       getParents: () => iter(f.parent ? [folderObj(f.parent)] : []),
       createFolder: (name) => folderObj(newFolder(name, id)),
-      createFile: (blob) => fileObj(newFile(blob, id)),
+      createFile: (blob) => { const k = st.createSeq++; if (st.failCreate && st.failCreate(blob.name, k)) throw new Error('模擬 Drive 寫入失敗：' + blob.name); return fileObj(newFile(blob, id)); },
       getFiles: () => iter(Object.keys(drive.files).filter((k) => drive.files[k].parent === id && !drive.files[k].trashed).map(fileObj)),
       getSharingAccess: () => f.sharing, setSharing: (a) => { f.sharing = a; },
       getEditors: () => (f.editors || []), getViewers: () => []
@@ -107,7 +109,7 @@ function makeFakeGas() {
     let b = ''; req.on('data', (c) => { b += c; });
     req.on('end', () => {
       let op = ''; try { op = JSON.parse(b).op || ''; } catch (e) {}
-      st.hits[op] = (st.hits[op] || 0) + 1;
+      st.hits[op] = (st.hits[op] || 0) + 1; st.createSeq = 0;
       if (st.failNext && st.failNext === op) { st.failNext = null; res.writeHead(500, { 'Content-Type': 'text/html' }); return res.end('<html>Google 暫時錯誤</html>'); }
       const out = G.doPost({ postData: { contents: b } }).getContent();
       res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(out);

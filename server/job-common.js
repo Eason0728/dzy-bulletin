@@ -45,9 +45,10 @@ function taipeiStamp(d) {
 }
 
 function logsDir(dir) { const d = path.join(dir, 'logs'); fs.mkdirSync(d, { recursive: true }); return d; }
+// 紀錄只寫進 logs/*.log；終端機手動執行時才同時印出（launchd 下 stdout 另有 *.out.log，不重複一份）
 function logLine(dir, file, s) {
   const line = new Date().toISOString() + ' ' + s;
-  console.log(line);
+  if (process.stdout.isTTY) console.log(line);
   fs.appendFileSync(path.join(logsDir(dir), file), line + '\n');
 }
 function readLast(dir, file) { try { return JSON.parse(fs.readFileSync(path.join(dir, 'logs', file), 'utf8')); } catch (e) { return null; } }
@@ -57,8 +58,27 @@ function writeLast(dir, file, obj) {
   fs.writeFileSync(tmp, JSON.stringify(obj));
   fs.renameSync(tmp, p);
 }
+// 工作鎖（logs/<name>.lock，內容＝PID）：同一個 DATA_DIR 同時只有一個持有者。
+// PID 已不在、或鎖檔超過 maxAgeMs（預設 6 小時；防 PID 被別的程序重用後永遠跳過）就當作殘留、清掉重拿。
+// 拿到回傳釋放函式，拿不到回傳 null。mirror.js／daily.js 各拿自己的鎖；restore.js 兩把都拿，換檔期間背景工作不會開庫。
+function takeLock(dir, name, maxAgeMs) {
+  const f = path.join(dir, 'logs', name + '.lock');
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  for (let i = 0; i < 2; i++) {
+    try { fs.writeFileSync(f, String(process.pid), { flag: 'wx' }); return () => { try { if (fs.readFileSync(f, 'utf8') === String(process.pid)) fs.unlinkSync(f); } catch (e) {} }; }
+    catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      let pid = 0, age = 0;
+      try { pid = Number(fs.readFileSync(f, 'utf8')) || 0; age = Date.now() - fs.statSync(f).mtimeMs; } catch (x) { continue; }
+      let alive = false; try { if (pid) { process.kill(pid, 0); alive = true; } } catch (x) { alive = x.code === 'EPERM'; }
+      if (alive && age < (maxAgeMs || 6 * 3600e3)) return null;
+      try { fs.unlinkSync(f); } catch (x) {}
+    }
+  }
+  return null;
+}
 function diskFreeMB(dir) { try { const s = fs.statfsSync(dir); return Math.floor(s.bavail * s.bsize / 1048576); } catch (e) { return null; } }
 // 錯誤只留代碼與短句（結果檔是本機檔，/health 不會帶出，但也不要把整個 stack 寫進去）
 const errText = (e) => String((e && (e.code ? e.code + ' ' : '') + (e.detail || e.message)) || e).slice(0, 300);
 
-module.exports = { BUSY_MS, loadEnv, dataDir, openDb, rows, counts, countText, taipeiStamp, logLine, readLast, writeLast, diskFreeMB, errText };
+module.exports = { BUSY_MS, loadEnv, dataDir, openDb, rows, counts, countText, taipeiStamp, logLine, readLast, writeLast, takeLock, diskFreeMB, errText };

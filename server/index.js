@@ -210,12 +210,15 @@ function makeApp(cfg) {
   function logLine(action, ms, out) {   // 每請求一行：時間 action 毫秒 ok/code（不記參數，供 #5 的伺服器端 p95）
     console.log(ts() + ' ' + (/^[A-Za-z]{1,32}$/.test(action) ? action : '-') + ' ' + ms + 'ms ' + (out.ok ? 'ok' : String(out.code)));
   }
+  // 結果檔不存在＝還沒跑過（null）；存在但讀不到／JSON 壞掉＝at:null（燈號寫「結果檔讀不到」，不誤報成「沒有紀錄」）
   function job(file, pick) {
-    try { return pick(JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'logs', file), 'utf8'))); } catch (e) { return null; }
+    let raw;
+    try { raw = fs.readFileSync(path.join(DATA_DIR, 'logs', file), 'utf8'); } catch (e) { return e.code === 'ENOENT' ? null : pick({}); }
+    try { return pick(JSON.parse(raw) || {}); } catch (e) { return pick({}); }
   }
   // 兩個背景工作各自的結果檔（server/mirror.js、server/daily.js）只挑狀態欄位帶出，錯誤原文不外露（#6 審查發現 3）。
   // mirror-last.json 的待回填筆數欄位叫 pending（#8），對外沿用 #6 的 sigPending；fails＝連續失敗次數（「連續 2 次 → 黃」用）；
-  // backup.sharedWith＝備份資料夾共用者人數（>0 → 黃；null＝還沒回報、-1＝讀不到，都不判）。
+  // mirror.missing／bad＝本機缺圖／壞圖筆數（>0 → 黃）；backup.sharedWith＝備份資料夾共用者人數（>0 或 -1 讀不到 → 黃；null＝還沒回報）。
   // level／why：#8 監看判定（server/health-rules.js），守門可以直接看燈號，也可以自己拿 at 重算。
   function health() {
     let freeMB = null;
@@ -224,7 +227,7 @@ function makeApp(cfg) {
     const h = {
       ok: true, v: VERSION, uptime: Math.round(process.uptime()), e2e: E2E,
       bridge: (cfg.BRIDGE_URL && cfg.BRIDGE_KEY && !E2E) ? 'configured' : 'missing',
-      mirror: job('mirror-last.json', (j) => ({ at: j.at || null, ok: !!j.ok, sigPending: num(j.pending !== undefined ? j.pending : j.sigPending), fails: num(j.fails) || 0 })),
+      mirror: job('mirror-last.json', (j) => ({ at: j.at || null, ok: !!j.ok, sigPending: num(j.pending !== undefined ? j.pending : j.sigPending), missing: num(j.missing) || 0, bad: num(j.bad) || 0, fails: num(j.fails) || 0 })),
       backup: job('backup-last.json', (j) => ({ at: j.at || null, ok: !!j.ok, sharedWith: num(j.sharedWith) })),
       disk: { freeMB }
     };

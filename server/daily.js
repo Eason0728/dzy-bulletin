@@ -40,9 +40,11 @@ async function runDaily(o) {
   const raw = path.join(bkDir, base), gz = raw + '.gz';
   const res = { at: new Date().toISOString(), ok: false, file: null, sizeKB: null, diskFreeMB: null };
   const errs = [];
+  const release = J.takeLock(dir, 'daily');                // 正在還原（restore.js 拿著這把鎖）或另一輪還在跑：跳過
+  if (!release) { J.logLine(dir, 'daily.log', '另一輪快照還在跑（或正在還原），這次跳過'); return Object.assign(res, { ok: true, skipped: true }); }
   try {
     try { fs.unlinkSync(raw); } catch (e) {}
-    const db = J.openDb(dir);
+    const db = J.openDb(dir, { readOnly: true });            // VACUUM INTO 只需要讀
     try { db.exec(`VACUUM INTO '${raw.replace(/'/g, "''")}'`); } finally { db.close(); }   // 一致性快照（WAL 裡已提交的也在內）
     const snap = new DatabaseSync(raw, { readOnly: true });
     try {
@@ -50,7 +52,8 @@ async function runDaily(o) {
       if (Object.values(chk)[0] !== 'ok') throw new Error('快照檢查失敗');
       res.counts = J.counts(snap);
     } finally { snap.close(); }
-    fs.writeFileSync(gz, zlib.gzipSync(fs.readFileSync(raw), { level: 9 }));
+    fs.writeFileSync(gz + '.tmp', zlib.gzipSync(fs.readFileSync(raw), { level: 9 }));   // 先寫暫存再改名：寫一半的檔不會頂著快照檔名留 14 天
+    fs.renameSync(gz + '.tmp', gz);
     fs.unlinkSync(raw);
     const size = fs.statSync(gz).size;
     res.file = path.basename(gz); res.sizeKB = Math.ceil(size / 1024);
@@ -62,9 +65,10 @@ async function runDaily(o) {
     if (up && typeof up.sharedWith === 'number') res.sharedWith = up.sharedWith;
   } catch (e) {
     errs.push(J.errText(e));
-    try { fs.unlinkSync(raw); } catch (x) {}               // 快照做到一半：不留未壓縮的暫存檔
+    [raw, gz + '.tmp'].forEach((f) => { try { fs.unlinkSync(f); } catch (x) {} });   // 快照做到一半：不留暫存檔
   }
   try { res.removed = pruneLocal(bkDir, KEEP_LOCAL_DAYS, Date.now()); } catch (e) { errs.push('本機清理：' + J.errText(e)); }   // 上傳失敗也照樣清本機舊檔
+  release();
   res.diskFreeMB = J.diskFreeMB(dir);
   res.ok = errs.length === 0;
   if (!res.ok) res.error = errs.join('；');

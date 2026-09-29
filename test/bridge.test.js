@@ -151,6 +151,11 @@ const srv = http.createServer((req, res) => {
   eq('AUTH 訊息不透露是哪一種錯', (await raw({ action: 'bridge', op: 'quota' })).message, '橋接金鑰錯誤');
   eq('未知 op → BAD_REQ', (await raw({ action: 'bridge', key: KEY, op: 'nope' })).code, 'BAD_REQ');
   eq('金鑰錯時連 op 未知也只回 AUTH（先驗金鑰）', (await raw({ action: 'bridge', key: 'bad', op: 'nope' })).code, 'AUTH');
+  // #12 第 3 輪：bridge.js 只放行 BAD_REQ／BAD_TYPE／TOO_BIG 當業務錯誤，金鑰問題若回 BAD_REQ 會直接顯示給主管 → 一律 AUTH、且先於任何參數檢查
+  eq('金鑰錯＋參數也錯（sigs 沒給 put/get、backup 空內容、upload 空檔）→ 仍是 AUTH 不是 BAD_REQ',
+    [(await raw({ action: 'bridge', key: 'bad', op: 'sigs' })).code, (await raw({ action: 'bridge', op: 'backup' })).code, (await raw({ action: 'bridge', key: 'x'.repeat(31), op: 'upload' })).code], ['AUTH', 'AUTH', 'AUTH']);
+  const biz = async (p) => { try { await p; return 'OK'; } catch (e) { return [e.code, !!e.business]; } };
+  eq('bridge.js：金鑰錯 → BRIDGE、不是業務錯誤（不會把 AUTH／BAD_REQ 原文顯示給主管）', [await biz(makeBridge(URL0, 'z'.repeat(40)).call('sigs', {})), await biz(makeBridge(URL0, 'short').files.upload('a.pdf', 'application/pdf', ''))], [['BRIDGE', false], ['BRIDGE', false]]);
   eq('bridge.js 客戶端：quota 通', await B.files.quota(), { limit: 100, usage: 40 });
   eq('bridge.js 客戶端：金鑰錯 → 伺服器自己的 BRIDGE 碼（不原樣回 AUTH）', await codeOf(makeBridge(URL0, 'z'.repeat(40)).files.quota()), 'BRIDGE|AUTH');
 
@@ -199,6 +204,10 @@ const srv = http.createServer((req, res) => {
   props.PRIMARY = 'gas';
   eq('PRIMARY=gas：mirror → AUTH（raw）', (await raw({ action: 'bridge', key: KEY, op: 'mirror', data: mirrorData })).code, 'AUTH');
   eq('PRIMARY=gas：mirror → bridge.js 拿到 BRIDGE（AUTH 在 detail）', await codeOf(B.call('mirror', { data: mirrorData })), 'BRIDGE|AUTH');
+  props.EXPORT_ONCE = '1';
+  eq('PRIMARY=gas：export → AUTH（raw）；bridge.js 拿到 BRIDGE、不是業務錯誤', [(await raw({ action: 'bridge', key: KEY, op: 'export' })).code, await biz(B.call('export', {})), await biz(B.call('mirror', { data: mirrorData }))], ['AUTH', ['BRIDGE', false], ['BRIDGE', false]]);
+  eq('PRIMARY=gas 拒絕 export 時 EXPORT_ONCE 不被消耗', props.EXPORT_ONCE, '1');
+  delete props.EXPORT_ONCE;
   delete props.PRIMARY;
   eq('PRIMARY 未設定：mirror → AUTH', (await raw({ action: 'bridge', key: KEY, op: 'mirror', data: mirrorData })).code, 'AUTH');
   eq('mirror 被拒後四分頁沒動', snapshot(), sheetsBefore);

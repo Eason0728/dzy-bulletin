@@ -3,7 +3,7 @@
 - 分級：完整
 - 分級依據：排程=否 發訊息=否 外部後台=是 被看到=是 寫正式資料=是
 - 現在在：④（①｜②｜③-需求｜③-規格｜③-方案｜④｜⑤｜結案）
-- 等 Eason：正式 GAS 跑 setup() 授權＋填 ADMIN_INIT
+- 等 Eason：窗格登入設定→按「從打卡系統同步」做真環境測試
 
 ## Eason 已定案（2026-09-29）
 1. 獨立網址（不併入 dzy、不擴充打卡店內公告）
@@ -24,6 +24,8 @@
 - 記憶庫、skill 清單、dispatch-resources 無同名佈告欄系統
 
 ## 關卡紀錄
+> 2026-09-29 起階段關改用 GitHub issue（Eason 指定）：審查員＝fresh-context **Fable**，每輪讀整串 issue、對抗性驗證每條、**直接改寫 issue 本文**，不另開 issue、不再寫 docs/gate/rN.md。Phase 1 彙整於 #1（已關），Phase 2 於 #2。
+
 | 日期 | 關 | 對象 | 結果 | 第幾次 | 證據 |
 |---|---|---|---|---|---|
 | 2026-09-29 | 預覽自測 | preview/index.html 同仁端＋管理端全流程 | 通過（修 2 bug：日期少一天、他單位紅點） | 1 | 內建瀏覽器 JS 點擊驗證，errs=[] |
@@ -50,4 +52,7 @@
 ## 正式資源（2026-09-29 建立）
 - 正式 GAS：scriptId `13cscE_m0bv7mI4ArvR-EbTTc-bca27coHFxf-cRjjxXN15fvNOqm8RuL`（madesiaosinla），rootDir `gas/`
 - 部署 ID：`AKfycbzQXAnMnrYGoUEMDzr6XbtsuIDYyGWbGLcFW1xVDpa64NcBrMzI9GaVKJhIlC-WxnGK5g`（@1）。**之後一律 `clasp deploy -i <此 ID>` 更新，不要建新部署**（會換網址）
-- 等 Eason：正式 GAS 跑 setup() 授權＋填 ADMIN_INIT
+- 等 Eason：窗格登入設定→按「從打卡系統同步」做真環境測試
+
+- GitHub：repo `Eason0728/dzy-bulletin`（public），Pages https://eason0728.github.io/dzy-bulletin/（2026-09-29 開）
+- 打卡同步來源 ID 放 `gas/Config.local.js`（gitignore，只經 clasp 推送）

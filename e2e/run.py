@@ -395,6 +395,8 @@ def main():
             click('#resetDemo', '重置假資料'); pg.wait_for_selector('[data-pu]', timeout=8000); scan('重置後')
             check('B 重置假資料後回到選名字', '請選擇你是誰' in text('.sheet .bar'))
 
+        try: moved_check(b)
+        except Exception as e: check('M 後端搬家檢查執行中斷（可能是重載迴圈）', False, repr(e))
         check('Z 全程沒有頁面錯誤（pageerror）', not errs, errs)
         b.close()
 
@@ -406,6 +408,49 @@ def main():
     bad = [r for r in results if not r[1]]
     print(f'\n共 {len(results)} 項檢查，通過 {len(results) - len(bad)}，失敗 {len(bad)}｜種子 {SEED}' + ('' if not bad else f'（重現：E2E_SEED={SEED} python3 e2e/run.py）'))
     sys.exit(1 if bad else 0)
+
+
+def moved_check(b):
+    """#7 後端搬家：舊後端回 MOVED → 自動重載；持續 MOVED 時 5 分鐘內只重載 1 次，之後停在提示。
+    假後端（Playwright 攔截）：名單正常、其餘動作一律 MOVED——等同 PRIMARY=mini 的 GAS、或 GitHub Pages 快取還給舊網址。"""
+    import re
+    print('— 後端搬家（MOVED）—')
+    fake = 'http://127.0.0.1:9/'
+    ctx = b.new_context(viewport={'width': 390, 'height': 844}, locale='zh-TW', timezone_id='Asia/Taipei')
+    pg = ctx.new_page()
+    errs, calls, loads = [], [], [0]
+    pg.on('pageerror', lambda e: errs.append(str(e)))
+    pg.on('load', lambda _: loads.__setitem__(0, loads[0] + 1))
+    def handle(route):
+        a = json.loads(route.request.post_data or '{}').get('action'); calls.append(a)
+        body = ({'ok': True, 'data': [{'id': 'S-001', 'name': '陳O安', 'unit': 'mala', 'store': '', 'hasPin': True, 'locked': False}]} if a == 'roster'
+                else {'ok': False, 'code': 'MOVED', 'message': '系統已搬家，請重新整理'})
+        route.fulfill(status=200, content_type='application/json', headers={'Access-Control-Allow-Origin': '*'}, body=json.dumps(body, ensure_ascii=False))
+    pg.route(re.compile(r'^http://127\.0\.0\.1:9/'), handle)
+    def wait_loads(n, ms=6000):
+        t = time.time()
+        while loads[0] < n and time.time() - t < ms / 1000: pg.wait_for_timeout(100)
+        return loads[0]
+    def try_login():
+        pg.wait_for_selector('[data-pu]', timeout=8000); pg.wait_for_timeout(300)
+        pg.click('[data-pu="mala"]'); pg.click('[data-pick="S-001"]'); pg.fill('#pv', '2580'); pg.click('#pfGo')
+    pg.goto(BASE + '/?mode=cloud&api=' + fake); wait_loads(1)
+    pg.evaluate("localStorage.setItem('dzyb_lastBad', 'x')")
+    try_login()
+    n1 = wait_loads(2)
+    check('M 收到 MOVED 自動重載一次', n1 == 2 and 'login' in calls, f'載入 {n1} 次、呼叫 {calls}')
+    check('M 重載前清掉 lastBad、記下重載時間', pg.evaluate("[localStorage.getItem('dzyb_lastBad'), !!sessionStorage.getItem('dzyb_movedReloadAt')]") == [None, True])
+    try_login(); pg.wait_for_selector('#pfErr:not(:empty)', timeout=8000); pg.wait_for_timeout(1500)
+    msg = pg.inner_text('#pfErr')
+    check('M 5 分鐘內再收到 MOVED 不再重載、停在提示文字', loads[0] == 2 and msg == '系統搬家中，約 10 分鐘後請重新整理', f'載入 {loads[0]} 次、提示「{msg}」')
+    pg.click('#pfGo'); pg.wait_for_timeout(1500)
+    check('M 持續 MOVED：連按多次仍只重載過 1 次', loads[0] == 2 and calls.count('login') >= 3, f'載入 {loads[0]} 次、login {calls.count("login")} 次')
+    pg.screenshot(path=os.path.join(ART, 'M01-搬家提示.png'))
+    pg.evaluate("sessionStorage.setItem('dzyb_movedReloadAt', String(Date.now() - 5 * 60 * 1000 - 1000))")   # 上次重載是 5 分鐘前
+    pg.fill('#pv', '2580'); pg.click('#pfGo')
+    check('M 超過 5 分鐘後再收到 MOVED 可以再自動重載一次', wait_loads(3) == 3, f'載入 {loads[0]} 次')
+    check('M 全程沒有頁面錯誤（pageerror）', not errs, errs)
+    ctx.close()
 
 
 KEY_OF = 'e => {' + _KEY_LOGIC + '}'   # 與 clickmap 共用同一段 key 規則，不另抄

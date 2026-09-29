@@ -76,6 +76,17 @@ function writeSnap_(staffRows) {
   if (last > rows.length) sh.getRange(rows.length + 1, 1, last - rows.length, def.cols.length).clearContent();
 }
 
+/* 鏡像用：四分頁、暫存與舊分頁的後綴；mirrorRows_ 把 Mac mini 的資料轉成各分頁欄位（純函式，node 測試直接驗） */
+var MIRROR_KEYS_ = ['posts', 'staff', 'reads', 'log'], MIRROR_TMP_ = '__鏡像中', MIRROR_OLD_ = '__上一輪';
+function mirrorRows_(d, fromPost) {
+  return {
+    posts: d.posts.map(fromPost),
+    staff: d.staff.map(function (s) { var o = Object.assign({}, s); o.active = s.active ? 'TRUE' : 'FALSE'; return o; }),
+    reads: d.reads.map(function (r) { return { postId: r.postId, staffId: r.staffId, name: r.name, unit: r.unit, at: r.at, sigId: r.driveSigId || '' }; }),
+    log: d.log.map(function (e) { return { at: e.at, action: e.action, target: e.target || '', summary: e.summary || '' }; })
+  };
+}
+
 function makeStore_(files) {
   var book = null, memo = {}, gen = null, snapDirty = false;                              // gen 惰性讀取：寫入動作在鎖內才第一次讀
   function sheet(key) { if (!book) book = ss_(); return book.getSheetByName(SHEETS_[key].name); }
@@ -179,6 +190,45 @@ function makeStore_(files) {
       if (!a.init) pr.deleteProperty('ADMIN_INIT');          // 初始通行碼轉成雜湊後刪除原文
     },
     secret: function () { return props_().getProperty('TOKEN_SECRET'); },
+    // 搬遷匯出（橋接 export）：一律直接讀試算表、不走 10 分鐘快取（fresh），呼叫端必須在 ScriptLock 內（#7）
+    dump: function () {
+      MIRROR_KEYS_.forEach(function (k) { rows(k, true); });
+      return { posts: this.getPosts(), staff: this.getStaff(), reads: this.getReads(),
+        log: rows('log').filter(function (r) { return r.at || r.action; }).map(function (r) { return { at: r.at, action: r.action, target: r.target, summary: r.summary }; }) };
+    },
+    // 鏡像（橋接 mirror，PRIMARY=mini 時每小時一次）：Mac mini 的正本整份覆寫回四分頁（給人看＋回退到 GAS 用）。
+    // 先寫到暫存分頁「<名稱>__鏡像中」，四份都寫完、筆數核對過才換名：中途逾時（6 分鐘上限）或丟錯時，正式四分頁仍是上一輪的完整資料（#7、#8）。
+    // 已讀的「簽名檔 id」只寫 driveSigId（Drive 檔案 id），還沒回填的留空——Mac mini 的本機檔名寫進來，回退後 readSig(id) 會全部失敗（#7）。
+    mirror: function (d) {
+      d = d || {};
+      MIRROR_KEYS_.forEach(function (k) { if (!Array.isArray(d[k])) { var e = new Error('鏡像資料缺 ' + k); e.code = 'BAD_REQ'; throw e; } });   // 缺一份就拒絕，不可把正式分頁清空
+      if (!book) book = ss_();
+      var objs = mirrorRows_(d, fromPost), counts = {};
+      MIRROR_KEYS_.forEach(function (k) {                                   // 清掉上一輪失敗留下的暫存／舊分頁
+        [MIRROR_TMP_, MIRROR_OLD_].forEach(function (sfx) { var x = book.getSheetByName(SHEETS_[k].name + sfx); if (x) book.deleteSheet(x); });
+      });
+      MIRROR_KEYS_.forEach(function (k) {
+        var def = SHEETS_[k], sh = book.insertSheet(def.name + MIRROR_TMP_, book.getSheets().length);
+        var vals = [def.head].concat(objs[k].map(function (o) { return def.cols.map(function (c) { var v = o[c]; return v === undefined || v === null ? '' : String(v); }); }));
+        if (vals.length > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), vals.length - sh.getMaxRows() + 100);
+        sh.getRange(1, 1, vals.length, def.cols.length).setNumberFormat('@').setValues(vals);
+        sh.getRange(1, 1, 1, def.cols.length).setFontWeight('bold'); sh.setFrozenRows(1);
+        counts[k] = vals.length - 1;
+      });
+      SpreadsheetApp.flush();
+      MIRROR_KEYS_.forEach(function (k) {                                   // 筆數核對：少一列就不換名
+        if (book.getSheetByName(SHEETS_[k].name + MIRROR_TMP_).getLastRow() !== counts[k] + 1) throw new Error('鏡像筆數不符：' + k);
+      });
+      // 換名：只剩幾個快速動作。正式分頁先改名成「__上一輪」、暫存分頁改成正式名稱，最後才刪舊的
+      MIRROR_KEYS_.forEach(function (k) {
+        var def = SHEETS_[k], cur = book.getSheetByName(def.name);
+        if (cur) cur.setName(def.name + MIRROR_OLD_);
+        book.getSheetByName(def.name + MIRROR_TMP_).setName(def.name);
+      });
+      MIRROR_KEYS_.forEach(function (k) { var x = book.getSheetByName(SHEETS_[k].name + MIRROR_OLD_); if (x) book.deleteSheet(x); });
+      SpreadsheetApp.flush(); bumpGen_(); gen = null; memo = {};
+      return counts;
+    },
     // 請求結束：有同仁異動才重寫名單快照；快照失敗只記紀錄，不影響已成功的寫入
     endRequest: function () {
       if (!snapDirty) return; snapDirty = false;

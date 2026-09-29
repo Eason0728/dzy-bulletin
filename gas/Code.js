@@ -4,6 +4,12 @@
 
 var WRITE_ACTIONS_ = ['setPin', 'login', 'ack', 'adminLogin', 'savePost', 'setPublished', 'setPinned', 'staffAdd', 'staffDelete', 'staffResetPin', 'syncClock', 'staffSetStore'];   // 必須與 Service.WRITE_ACTIONS 一致（test 檢查）
 var VERSION_ = '0.5.4';
+// 後端搬 Mac mini（#5、#7）：指令碼屬性 PRIMARY＝gas（現況）／mini（已切到 Mac mini）。
+// mini 時寫入一律回 MOVED、讀取照常：還沒重新整理的舊頁面能看、不能寫（避免切換期雙寫）。uploadFile 也擋（與 Mac mini 的 READONLY 同步，免得留孤兒附件）。
+var MOVED_ = { ok: false, code: 'MOVED', message: '系統已搬家，請重新整理' };
+function movedGate_(action, primary) {
+  return primary === 'mini' && (WRITE_ACTIONS_.indexOf(action) >= 0 || action === 'uploadFile') ? MOVED_ : null;
+}
 
 function doGet() {
   return json_({ ok: true, data: { app: 'dzy-bulletin', v: VERSION_ } });
@@ -14,7 +20,10 @@ function doPost(e) {
   try { req = JSON.parse(e && e.postData ? e.postData.contents : '{}'); }
   catch (x) { return json_({ ok: false, code: 'BAD_REQ', message: '格式錯誤' }); }
   var action = String(req.action || '');
+  if (action === 'bridge') return json_(bridge_(req));            // Mac mini 伺服器專用（需 BRIDGE_KEY）；bridge_ 自己有 try
   try {
+    var moved = movedGate_(action, PropertiesService.getScriptProperties().getProperty('PRIMARY'));
+    if (moved) return json_(moved);
     // 寫入動作：先拿鎖、再建 store（store 的快取世代在鎖內才讀，避免用到鎖外的舊快照）
     var build = function () {
       var files = makeFiles_();
@@ -63,6 +72,109 @@ function clockSource_() {
       return { rows: rows, errors: errors, counts: counts, sources: sources };
     }
   };
+}
+
+/* ===== Google 橋接：只有持有 BRIDGE_KEY 的 Mac mini 伺服器能呼叫（2026-09-30 後端搬 Mac mini，#7） =====
+ * 附件（Drive）、打卡名單、簽名圖、搬遷匯出、鏡像與備份。BRIDGE_KEY 由 Eason 自己產生、親手貼進指令碼屬性與 Mac mini server/.env
+ * （Claude 不經手、不印出）。op 名稱與參數格式必須與 server/bridge.js 一致。
+ * bridgeCore_ 只靠注入的 d 碰外界（屬性、Drive、試算表、鎖），node 測試直接餵假的 d（test/bridge.test.js）。 */
+var BRIDGE_KEY_MIN_ = 32, SIGS_MAX_ = 20;
+function bridgeCore_(req, d) {
+  var key = d.prop('BRIDGE_KEY');
+  if (!key || String(key).length < BRIDGE_KEY_MIN_ || !d.safeEq(String(req.key || ''), String(key))) return { ok: false, code: 'AUTH', message: '橋接金鑰錯誤' };
+  var op = String(req.op || ''), mini = d.prop('PRIMARY') === 'mini';
+  var ok = function (x) { return { ok: true, data: x }; };
+  var bad = function (m) { return { ok: false, code: 'BAD_REQ', message: m }; };
+  var deny = { ok: false, code: 'AUTH', message: '目前不接受這個橋接動作' };
+  var locked = function (ms, fn) {                                   // 拿不到鎖就回忙碌，不排隊
+    var release = d.lock(ms);
+    if (!release) return { ok: false, code: 'SERVER', message: '忙碌中' };
+    try { return fn(); } finally { release(); }
+  };
+  try {
+    if (op === 'upload') return ok(d.files().upload(String(req.name || ''), String(req.mime || ''), String(req.data || '')));
+    if (op === 'share') { d.files().share(Array.isArray(req.ids) ? req.ids.map(String) : []); return ok({}); }
+    if (op === 'revoke') { d.files().revoke(Array.isArray(req.ids) ? req.ids.map(String) : []); return ok({}); }
+    if (op === 'quota') return ok(d.files().quota());
+    if (op === 'clock') return ok(d.clock());
+    if (op === 'sig') return ok(d.files().readSig(String(req.id || '')));
+    // 批次簽名圖（一次最多 20 張，一次橋接呼叫）：put＝上傳到簽名資料夾、依序回傳 Drive id（M3 回填 driveSigId）；
+    // get＝依 Drive id 讀回 data URL，讀不到的給 null（M5 搬遷批次下載）。兩者擇一。
+    if (op === 'sigs') {
+      var put = req.put, get = req.get;
+      if (Array.isArray(put) === Array.isArray(get)) return bad('sigs 需要 put 或 get 其中一個');
+      var list = put || get;
+      if (!list.length || list.length > SIGS_MAX_) return bad('sigs 一次 1～' + SIGS_MAX_ + ' 張');
+      var fs = d.files();
+      if (put) return ok({ ids: put.map(function (x) { return fs.saveSig(String(x && x.data || ''), String(x && x.name || 'sig').replace(/[^\w.-]/g, '_')); }) });
+      var out = {};
+      get.forEach(function (id) { id = String(id); try { out[id] = fs.readSig(id); } catch (e) { out[id] = null; } });
+      return ok({ sigs: out });
+    }
+    // 搬遷匯出：交出全部密碼雜湊＋TOKEN_SECRET，不能是常駐能力 → 只在 PRIMARY=mini 且 EXPORT_ONCE=1 時接受，成功一次就刪掉 EXPORT_ONCE。
+    // 在 ScriptLock 內、fresh 讀試算表（不走快取），匯出當下沒有寫入能插進來。
+    if (op === 'export') {
+      if (!mini) return deny;
+      return locked(30000, function () {
+        if (d.prop('EXPORT_ONCE') !== '1') return deny;             // 鎖內再讀一次：兩個 export 同時進來只有一個成功
+        var secret = d.prop('TOKEN_SECRET') || '', admin = { hash: d.prop('ADMIN_HASH') || '', salt: d.prop('ADMIN_SALT') || '',
+          ver: Number(d.prop('ADMIN_VER')) || 1, fail: 0, lockUntil: 0 };
+        // 缺 secret 或管理雜湊，搬過去後所有人都要重新登入／主管進不去 → 直接拒絕，EXPORT_ONCE 保留（migrate.js 另有同一道檢查，#10）
+        if (!secret || !admin.hash) return { ok: false, code: 'SERVER', message: '缺 TOKEN_SECRET 或 ADMIN_HASH，拒絕匯出' };
+        var data = d.store().dump();
+        data.admin = admin; data.secret = secret;
+        d.delProp('EXPORT_ONCE');
+        return ok(data);
+      });
+    }
+    // 鏡像只在 PRIMARY=mini 時接受：回退到 GAS 後，Mac mini 的每小時鏡像（launchd 忘了關）也蓋不掉 GAS 的新資料（唯一硬保險）
+    if (op === 'mirror') {
+      if (!mini) return deny;
+      return locked(30000, function () { return ok({ counts: d.store().mirror(req.data) }); });
+    }
+    if (op === 'backup') return ok(d.backup(String(req.name || ''), String(req.data || '')));
+    return bad('未知的橋接動作');
+  } catch (e) {
+    console.error('bridge ' + op + ': ' + (e && e.stack || e));        // 只記 op，不記 req（內含金鑰）
+    return { ok: false, code: e && e.code || 'SERVER', message: e && e.code ? e.message : 'Google 橋接出錯' };
+  }
+}
+function bridge_(req) {
+  var pr = PropertiesService.getScriptProperties(), files = null, store = null;
+  return bridgeCore_(req, {
+    prop: function (k) { return pr.getProperty(k); },
+    delProp: function (k) { pr.deleteProperty(k); },
+    safeEq: makeAuth_(gasCrypto_(), DZYB).safeEq,
+    files: function () { return files || (files = makeFiles_()); },
+    store: function () { return store || (store = makeStore_(files || (files = makeFiles_()))); },
+    lock: function (ms) { var l = LockService.getScriptLock(); return l.tryLock(ms) ? function () { l.releaseLock(); } : null; },
+    clock: function () { var cs = clockSource_(); return cs ? cs.read() : { rows: [], errors: ['未設定打卡來源'], sources: [], counts: {} }; },
+    backup: saveBackup_
+  });
+}
+
+// 每日 DB 快照：獨立的「鼎兆元｜電子佈告欄備份」資料夾（雲端硬碟根目錄、不分享、僅 owner），保留 30 天。
+// 不得放在附件資料夾底下：附件資料夾有 share／ours 邏輯，且會被人打開翻（#7）。
+var BACKUP_FOLDER_NAME_ = '鼎兆元｜電子佈告欄備份', BACKUP_KEEP_DAYS_ = 30;
+function backupFolder_() {
+  var fo = folderByProp_('BACKUP_FOLDER_ID', BACKUP_FOLDER_NAME_, null), aid = attachFolder_().getId(), ps = fo.getParents();
+  while (ps.hasNext()) {
+    if (ps.next().getId() === aid) {                                // 舊草稿曾建在附件資料夾下 → 改建新的獨立資料夾
+      PropertiesService.getScriptProperties().deleteProperty('BACKUP_FOLDER_ID');
+      fo = folderByProp_('BACKUP_FOLDER_ID', BACKUP_FOLDER_NAME_, null); break;
+    }
+  }
+  if (fo.getSharingAccess() !== DriveApp.Access.PRIVATE) fo.setSharing(DriveApp.Access.PRIVATE, DriveApp.Permission.NONE);
+  return fo;
+}
+function saveBackup_(name, b64) {
+  if (!name || !b64) { var e = new Error('備份檔名或內容是空的'); e.code = 'BAD_REQ'; throw e; }
+  var fo = backupFolder_();
+  var f = fo.createFile(Utilities.newBlob(Utilities.base64Decode(b64), 'application/gzip', name.replace(/[^\w.-]/g, '_')));
+  f.setSharing(DriveApp.Access.PRIVATE, DriveApp.Permission.NONE);   // 分享狀態明確設成「限制」
+  var cut = Date.now() - BACKUP_KEEP_DAYS_ * 86400e3, it = fo.getFiles(), trashed = 0;
+  while (it.hasNext()) { var x = it.next(); if (x.getId() !== f.getId() && x.getDateCreated().getTime() < cut) { x.setTrashed(true); trashed++; } }
+  return { id: f.getId(), size: f.getSize(), trashed: trashed };
 }
 
 function json_(o) {

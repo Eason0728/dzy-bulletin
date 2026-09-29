@@ -88,7 +88,7 @@ Apps Script Web App（madesiaosinla，以擁有者身分執行、任何人可呼
 通行碼只有一組、分不出是誰操作，所以至少把「做了什麼、什麼時候」留下來。
 
 ### 指令碼屬性（不進 repo）
-`SPREADSHEET_ID`、`FOLDER_ID`（附件）、`SIG_FOLDER_ID`（簽名）、`ADMIN_HASH`、`ADMIN_SALT`、`ADMIN_VER`、`ADMIN_FAIL`、`ADMIN_LOCK`、`ADMIN_INIT`（首次登入後自動刪除）、`TOKEN_SECRET`、`DATA_GEN`（讀取快取世代）。打卡同步來源 ID 放 `gas/Config.local.js`（不進 git）。
+`SPREADSHEET_ID`、`FOLDER_ID`（附件）、`SIG_FOLDER_ID`（簽名）、`ADMIN_HASH`、`ADMIN_SALT`、`ADMIN_VER`、`ADMIN_FAIL`、`ADMIN_LOCK`、`ADMIN_INIT`（首次登入後自動刪除）、`TOKEN_SECRET`、`DATA_GEN`（讀取快取世代）、`SNAP_SS_ID`（公開名單試算表）。打卡同步來源 ID 放 `gas/Config.local.js`（不進 git）。
 
 ## 三、身分與權限
 
@@ -139,7 +139,7 @@ Apps Script Web App（madesiaosinla，以擁有者身分執行、任何人可呼
 | `history` | 同仁憑證 | — | `{today, posts:[已下架], myReads:{postId: 簽名時間}}` |
 | `ack` | 同仁憑證 | `postId, sig` | `{at}`；已經簽過回 code＝`ALREADY` |
 | `adminLogin` | — | `pass` | `{atoken, data}`（data 同 `adminData`） |
-| `adminData` | 管理憑證 | — | `{today, posts:[每則含 status、readCount、targetCount], staff:[{id,name(全名),unit,hasPin,locked}], quota:{limit,usage}\|null}` |
+| `adminData` | 管理憑證 | — | `{today, posts:[每則含 status、readCount、targetCount], staff:[{id,name(全名),unit,store,hasPin,locked}], quota:{limit,usage}\|null}` |
 | `receipts` | 管理憑證 | `postId` | `{rows:[{staffId, name, unit, active, inTarget, read, at, sig}]}`（應讀名單＋不在應讀名單但簽過的人；`active`＝同仁是否在職，`inTarget`＝是否屬於公告目前的單位；簽名圖只在展開時才載入） |
 | `uploadFile` | 管理憑證 | `name, data(base64)`（類型與 MIME 一律由後端依副檔名判斷） | `{id, name, type, size}` |
 | `savePost` | 管理憑證 | `post:{id?, title, body, units, publishOn, expiresOn, pinned, files}`, `reqId`（冪等鍵，綁一份草稿：同 reqId＋同內容指紋＝重送，回傳第一次結果；同 reqId 但內容不同＝改為編輯第一次建立的那則；6 小時內有效） | `{post}` |
@@ -182,4 +182,5 @@ Apps Script Web App（madesiaosinla，以擁有者身分執行、任何人可呼
 - 同仁表有異動的請求，在結束時（`store.endRequest`）重寫一次快照；失敗只記紀錄，不影響已成功的寫入。
 - 發布：公開名單試算表「檔案 → 共用 → 發布到網路 → 整份文件／CSV」，網址填入 `js/config.js` 的 `ROSTER_CSV`。Google 約 5 分鐘更新一次發布內容；前端以本機變化與後端結果補正。
 - 驗收：發布網址內容只有上述 6 欄，不含任何姓名全文、雜湊或 salt。
+- **復原**：公開名單試算表被刪或打不開 → 執行紀錄會出現「名單快照寫入失敗」；到指令碼屬性刪掉 `SNAP_SS_ID`，下一次同仁異動（例如按打卡同步）會自動重建，重新發布後把新網址填進 `ROSTER_CSV`。發布網址失效時前端會自動改用本機快取與後端名單，只是變慢。
 

@@ -44,6 +44,11 @@ var Staff = (function () {
   function cachedRoster() { try { return JSON.parse(UI.store.get('roster')) || null; } catch (e) { return null; } }
   // 本機名單快取跟著這支手機上發生的變化即時更新（避免剛設好密碼、登出後又被要求設密碼）
   function patches() { try { return JSON.parse(UI.store.get('rosterPatch')) || {}; } catch (e) { return {}; } }
+  function prunePatches(before) {
+    var ps = patches(), keep = {}, lim = Math.max(before, Date.now() - 86400e3);
+    Object.keys(ps).forEach(function (k) { if (ps[k].at > lim) keep[k] = ps[k]; });
+    UI.store.set('rosterPatch', JSON.stringify(keep));
+  }
   function patchRoster(id, patch) {
     var l = cachedRoster();
     if (l) { l.forEach(function (s) { if (s.id === id) Object.assign(s, patch); }); UI.store.set('roster', JSON.stringify(l)); }
@@ -109,7 +114,7 @@ var Staff = (function () {
           done = true;
           pinForm(people.filter(function (p) { return p.id === b.dataset.pick; })[0], function () {
             // 回到名單時，合併這支手機剛發生的變化（被鎖、設好密碼），避免期間抵達的名單把它蓋掉
-            applyPatches(people, 0);
+            applyPatches(people, people._srcAt || 0);                        // 只套用比目前名單來源更新的本機變化（不會卡在已被重設的鎖定）
             done = false; draw();
           });
         };
@@ -119,7 +124,8 @@ var Staff = (function () {
     function got(list, src) {
       if (!list || !list.length && src !== 'api') return;
       if (src === 'csv') applyPatches(list, Date.now() - 10 * 60e3);   // 快照最多晚約 5～10 分鐘
-      if (src === 'api') applyPatches(list, reqAt);                     // 後端回應若在本機變化之前送出，也以本機變化為準
+      if (src === 'api') { applyPatches(list, reqAt); prunePatches(reqAt); }   // 後端回應若在本機變化之前送出，以本機變化為準；之前的變化已被後端涵蓋，清掉
+      list._srcAt = src === 'api' ? reqAt : src === 'csv' ? Date.now() - 10 * 60e3 : 0;
       people = list; if (src === 'api') UI.store.set('roster', JSON.stringify(list));
       if (!done) draw();
     }

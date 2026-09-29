@@ -185,9 +185,18 @@ async def main(base, brk):
         await q('[data-del="S-003"]').click(); await wait(500)
         check('B17 刪除同仁', '黃俊宇' not in await txt('.sheet'))
 
+        await q('[data-rp="S-013"]').click(); await wait(600)   # 本機上被鎖過的測試員甲，由主管重設
         await close_sheet()
         cards = await pg.locator('.card h3').all_inner_texts()
         check('B18 關閉設定後同仁端看到新公告（排定的看不到）', '【E2E】員工健檢通知' in cards and '【E2E】下週排定' not in cards, cards)
+        await q('#chgMe').click(); await pg.wait_for_selector('[data-pu]'); await wait(600)
+        await q('[data-pu="mala"]').click(); await wait(200)
+        await q('[data-pick="S-013"]').click(); await wait(400)
+        check('B19 被鎖過的人重設後，同一支手機點名字進入設定密碼（不卡已鎖定）', '設定個人密碼' in await txt('.sheet .bar'), await txt('.sheet .bar'))
+        await q('#pfBack').click(); await wait(300)
+        nm = await pg.locator('[data-pick="S-013"]').inner_text()
+        await q('[data-pick="S-013"]').click(); await wait(300)
+        check('B20 返回名單後不會又標回鎖定、再點仍是設定密碼', '🔒' not in nm and '設定個人密碼' in await txt('.sheet .bar'), f'{nm} / {await txt(".sheet .bar")}')
         check('Z1 全程沒有頁面錯誤（pageerror）', not errs, errs)
         await b.close()
 

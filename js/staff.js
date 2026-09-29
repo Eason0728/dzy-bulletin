@@ -3,7 +3,7 @@
 var Staff = (function () {
   var L = DZYB, $ = UI.$, esc = UI.esc;
   var FORGOT = '請主管到「設定 → 同仁名單」按「重設密碼」，你下次選名字時就能設定新密碼。';
-  var v = { tab: 'board', unit: null, month: null, board: null, hist: null, loading: false, error: null };
+  var v = { tab: 'board', unit: null, month: null, board: null, hist: null, loading: false, refreshing: false, error: null };
 
   function me() { try { return JSON.parse(UI.store.get('me')); } catch (e) { return null; } }
   function loggedIn() { return !!(UI.store.get('token') && me()); }
@@ -20,7 +20,7 @@ var Staff = (function () {
     $('openAdmin').onclick = function () { Admin.open(); };
     if (loggedIn()) loadBoard(); else picker(true);
   }
-  function clearMe() { UI.store.del('token'); UI.store.del('me'); renderMe(); $('app').innerHTML = ''; }
+  function clearMe() { UI.store.del('token'); UI.store.del('me'); UI.store.del('board'); renderMe(); $('app').innerHTML = ''; }
   function logout(msg) { clearMe(); v.board = v.hist = null; if (msg) UI.toast(msg); picker(true); }
   function onSheetClosed() {
     if (!loggedIn()) setTimeout(function () { picker(true); }, 0);
@@ -125,16 +125,24 @@ var Staff = (function () {
   function enter(d) {
     UI.store.set('token', d.token); UI.store.set('me', JSON.stringify(d.me));
     v.unit = L.homeTab(d.me.unit); v.tab = 'board'; v.board = v.hist = null;
-    UI.closeSheet(); UI.toast('你好，' + d.me.name); loadBoard();
+    UI.closeSheet(); UI.toast('你好，' + d.me.name);
+    if (d.board) { v.board = d.board; cacheBoard(d.board); renderMe(); render(); }   // 登入回應已含公告，不用再等一次
+    else loadBoard();
   }
+  // 上次的公告存在這支手機：再次打開時先顯示，背景更新（Apps Script 回應常要數秒到數十秒）
+  function cacheBoard(b) { UI.store.set('board', JSON.stringify({ id: b.me.id, b: b })); }
+  function cachedBoard() { try { var c = JSON.parse(UI.store.get('board')); var m = me(); return c && m && c.id === m.id ? c.b : null; } catch (e) { return null; } }
 
   /* ---------- 公告與歷史 ---------- */
   function loadBoard() {
-    renderMe(); v.loading = true; v.error = null; render();
+    renderMe(); v.error = null;
+    var cached = !v.board && cachedBoard();
+    if (cached) { v.board = cached; v.refreshing = true; v.loading = false; } else v.loading = !v.board;
+    render();
     API.staff('board').then(function (r) {
-      v.loading = false;
-      if (!r.ok) { if (r.code !== 'AUTH') { v.error = r.message; render(); } return; }
-      v.board = r.data; UI.store.set('me', JSON.stringify(r.data.me)); renderMe();
+      v.loading = false; v.refreshing = false;
+      if (!r.ok) { if (r.code !== 'AUTH') { if (v.board) UI.toast('更新失敗，顯示的是上次的內容'); else v.error = r.message; render(); } return; }
+      v.board = r.data; cacheBoard(r.data); UI.store.set('me', JSON.stringify(r.data.me)); renderMe();
       if (!v.unit) v.unit = L.homeTab(r.data.me.unit);
       render();
     });
@@ -165,6 +173,7 @@ var Staff = (function () {
         var n = (v.tab === 'board' && u.id === home) ? unread(u.id) : 0;
         return '<button data-unit="' + u.id + '" class="' + (v.unit === u.id ? 'on' : '') + '">' + u.name + (n ? '<span class="n">' + n + '</span>' : '') + '</button>';
       }).join('') + '</div>';
+    if (v.refreshing) h += '<div class="hint" style="text-align:center">更新中…</div>';
     if (v.loading) h += '<div class="loading">載入中</div>';
     else if (v.error) h += '<div class="errbox" id="errMsg"></div><button class="btn ghost" id="retry">重試</button>';
     else if (v.tab === 'board' && v.board) {

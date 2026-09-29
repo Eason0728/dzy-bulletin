@@ -28,6 +28,7 @@ eq('setPin weak', call('setPin', { staffId: 'S-013', pin: '1234' }).code, 'WEAK_
 eq('setPin bad', call('setPin', { staffId: 'S-013', pin: '12' }).code, 'BAD_REQ');
 r = call('setPin', { staffId: 'S-013', pin: '2580' });
 eq('setPin ok', [r.ok, r.data.me], [true, { id: 'S-013', name: '測試員甲', unit: 'mala' }]);
+eq('setPin returns board', Array.isArray(r.data.board.posts) && r.data.board.me.id === 'S-013', true);
 const tok = r.data.token;
 eq('setPin again', call('setPin', { staffId: 'S-013', pin: '1357' }).code, 'HAS_PIN');
 
@@ -63,6 +64,7 @@ eq('existing token still valid while locked', C('board', { token: tok }).ok, tru
 eq('admin wrong', call('adminLogin', { pass: 'nope' }).code, 'AUTH');
 r = C('adminLogin', { pass: '1234' });
 eq('admin ok (init)', r.ok, true);
+eq('adminLogin returns data', Array.isArray(r.data.data.posts) && Array.isArray(r.data.data.staff), true);
 let at = r.data.atoken;
 eq('adminData no token', call('adminData', {}).code, 'AUTH');
 r = call('adminData', { atoken: at });

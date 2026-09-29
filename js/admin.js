@@ -18,7 +18,7 @@ var Admin = (function () {
       var done = UI.busy(go, '驗證中…');
       API.call('adminLogin', { pass: s.querySelector('#pc').value }).then(function (r) {
         done();
-        if (r.ok) { UI.store.set('atoken', r.data.atoken); a.tab = 'posts'; load(); }
+        if (r.ok) { UI.store.set('atoken', r.data.atoken); a.tab = 'posts'; if (r.data.data) { a.data = r.data.data; render(); } else load(); }   // 登入回應已含設定頁資料
         else s.querySelector('#pcErr').textContent = r.message;
       });
     };

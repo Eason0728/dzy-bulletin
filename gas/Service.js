@@ -50,6 +50,13 @@ function makeService_(L, store, files, auth, clock, clockSrc) {
     return prefix + s;
   }
 
+  function boardFor(s) {
+    var td = clock.today();
+    var posts = store.getPosts().map(function (p) { return withStatus(p, td); })
+      .filter(function (p) { return p.status.state === 'on' && L.canSee(s.unit, p); }).sort(L.sortBoard);
+    return { today: td, me: me(s), posts: posts, myReads: myReadAt(s.id) };
+  }
+
   var H = {
     roster: function () {
       return store.getStaff().filter(function (s) { return s.active; }).map(function (s) {
@@ -63,7 +70,7 @@ function makeService_(L, store, files, auth, clock, clockSrc) {
       if (bad) throw err(bad, bad === 'WEAK_PIN' ? '太好猜了（如 1111、1234），請換一組' : '請輸入 4 位數字');
       s.salt = auth.newSalt(); s.pinHash = auth.hashPin(s.salt, q.pin); s.pinVer = (Number(s.pinVer) || 0) + 1; s.fail = 0;
       store.saveStaff(s);
-      return { token: auth.makeStaffToken(store.secret(), s.id, s.pinVer), me: me(s) };
+      return { token: auth.makeStaffToken(store.secret(), s.id, s.pinVer), me: me(s), board: boardFor(s) };
     },
     login: function (q) {
       var s = findStaff(q.staffId);
@@ -74,14 +81,9 @@ function makeService_(L, store, files, auth, clock, clockSrc) {
         var e = err(r.code, r.code === 'LOCKED' ? '密碼錯誤太多次，已鎖定' : '密碼錯誤（還可以試 ' + r.left + ' 次）');
         e.left = r.left; throw e;
       }
-      return { token: auth.makeStaffToken(store.secret(), s.id, s.pinVer), me: me(s) };
+      return { token: auth.makeStaffToken(store.secret(), s.id, s.pinVer), me: me(s), board: boardFor(s) };
     },
-    board: function (q) {
-      var s = staffOf(q), td = clock.today();
-      var posts = store.getPosts().map(function (p) { return withStatus(p, td); })
-        .filter(function (p) { return p.status.state === 'on' && L.canSee(s.unit, p); }).sort(L.sortBoard);
-      return { today: td, me: me(s), posts: posts, myReads: myReadAt(s.id) };
-    },
+    board: function (q) { return boardFor(staffOf(q)); },
     history: function (q) {
       var s = staffOf(q), td = clock.today();
       var posts = store.getPosts().filter(function (p) { return L.status(p, td).state === 'off' && L.canSee(s.unit, p); })
@@ -116,7 +118,8 @@ function makeService_(L, store, files, auth, clock, clockSrc) {
         var e = err(r.code, r.code === 'ADMIN_LOCKED' ? '錯誤太多次，請 15 分鐘後再試' : '通行碼錯誤');
         e.until = r.until; throw e;
       }
-      return { atoken: auth.makeAdminToken(store.secret(), a.ver, clock.nowMs() + 12 * 3600e3) };
+      var atoken = auth.makeAdminToken(store.secret(), a.ver, clock.nowMs() + 12 * 3600e3);
+      return { atoken: atoken, data: H.adminData({ atoken: atoken }) };   // 一併回傳設定頁資料，少一次往返
     },
     adminData: function (q) {
       var t = [clock.nowMs()], mark = function () { t.push(clock.nowMs()); };

@@ -2,7 +2,7 @@
  * 正本在 repo ~/dzy-bulletin/gas/；Logic.js 由 tools/build.sh 從 js/logic.js 產生，不要手改。 */
 'use strict';
 
-var VERSION_ = '0.3.6';
+var VERSION_ = '0.3.7';
 
 function doGet() {
   return json_({ ok: true, data: { app: 'dzy-bulletin', v: VERSION_ } });

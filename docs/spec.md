@@ -132,12 +132,12 @@ Apps Script Web App（madesiaosinla，以擁有者身分執行、任何人可呼
 | action | 需要 | 參數 | 回傳 data |
 |---|---|---|---|
 | `roster` | — | — | `[{id, name(遮罩), unit, hasPin, locked}]`（只列在職） |
-| `setPin` | — | `staffId, pin` | `{token, me}` |
-| `login` | — | `staffId, pin` | `{token, me}`；錯誤時 code＝`BAD_PIN`（附剩餘次數）／`LOCKED`（需主管重設） |
+| `setPin` | — | `staffId, pin` | `{token, me, board}`（board 同 `board` 回傳，登入少一次往返） |
+| `login` | — | `staffId, pin` | `{token, me, board}`；錯誤時 code＝`BAD_PIN`（附剩餘次數）／`LOCKED`（需主管重設） |
 | `board` | 同仁憑證 | — | `{today, me, posts:[上架中，三個單位全部], myReads:{postId: 簽名時間}}` |
 | `history` | 同仁憑證 | — | `{today, posts:[已下架], myReads:{postId: 簽名時間}}` |
 | `ack` | 同仁憑證 | `postId, sig` | `{at}`；已經簽過回 code＝`ALREADY` |
-| `adminLogin` | — | `pass` | `{atoken}` |
+| `adminLogin` | — | `pass` | `{atoken, data}`（data 同 `adminData`） |
 | `adminData` | 管理憑證 | — | `{today, posts:[每則含 status、readCount、targetCount], staff:[{id,name(全名),unit,hasPin,locked}], quota:{limit,usage}\|null}` |
 | `receipts` | 管理憑證 | `postId` | `{rows:[{staffId, name, unit, active, inTarget, read, at, sig}]}`（應讀名單＋不在應讀名單但簽過的人；`active`＝同仁是否在職，`inTarget`＝是否屬於公告目前的單位；簽名圖只在展開時才載入） |
 | `uploadFile` | 管理憑證 | `name, data(base64)`（類型與 MIME 一律由後端依副檔名判斷） | `{id, name, type, size}` |

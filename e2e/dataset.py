@@ -11,6 +11,7 @@ UNITS = ['mzt', 'mala', 'cf']                       # C1：公告單位，順序
 UNIT_NAME = {'mzt': '墨竹亭', 'mala': '小辛辣', 'cf': '央廚'}
 STAFF_UNITS = UNITS + ['hq-dzy', 'hq-mzt', 'hq-mala']  # C15
 STAFF_UNIT_NAME = dict(UNIT_NAME, **{'hq-dzy': '總部鼎兆元', 'hq-mzt': '總部墨竹亭', 'hq-mala': '總部小辛辣'})
+STORES = {'mzt': ['光復', '金山', '六張犁']}   # C16
 HQ_BRAND = {'hq-mzt': 'mzt', 'hq-mala': 'mala'}
 
 SURNAMES = list('陳林黃張李王吳劉蔡楊許鄭謝郭洪曾邱廖賴周徐蘇葉莊呂江何蕭羅高潘簡朱鍾游彭詹胡施沈余盧梁趙顏柯翁魏孫戴')
@@ -53,7 +54,8 @@ def make(seed, today):
     for u in STAFF_UNITS:
         for _ in range(counts[u]):
             n += 1
-            staff.append({'id': 'S-%03d' % n, 'name': name(), 'unit': u, 'pin': rand_pin(rng), 'fail': 0})
+            staff.append({'id': 'S-%03d' % n, 'name': name(), 'unit': u, 'pin': rand_pin(rng), 'fail': 0,
+                          'store': rng.choice(STORES[u] + [''] if rng.random() < 0.15 else STORES[u]) if u in STORES else ''})
     # 分層：約 1/5 沒設密碼、1 人被鎖定（連錯 3 次）
     firsts = {u: next(x['id'] for x in staff if x['unit'] == u) for u in STAFF_UNITS}   # 每個單位第一位保證有密碼（登入流程要用）
     for s in rng.sample([x for x in staff if x['id'] not in firsts.values()], max(1, len(staff) // 5)):
@@ -102,10 +104,10 @@ def make(seed, today):
     clock = []
     for src, unit in (('gf', 'mala'), ('cf', 'cf'), ('js', 'mzt')):
         for s in [x for x in staff if x['unit'] == unit][:rng.randint(0, 2)]:
-            clock.append({'src': src, 'unit': unit, 'empId': src.upper() + s['id'][-3:], 'name': s['name'], 'active': True})
+            clock.append({'src': src, 'unit': unit, 'store': '金山' if src == 'js' else '', 'empId': src.upper() + s['id'][-3:], 'name': s['name'], 'active': True})
         for i in range(rng.randint(1, 3)):
-            clock.append({'src': src, 'unit': unit, 'empId': src.upper() + 'N%d' % i, 'name': name(), 'active': True})
-        clock.append({'src': src, 'unit': unit, 'empId': src.upper() + 'X', 'name': name(), 'active': False})
+            clock.append({'src': src, 'unit': unit, 'store': '金山' if src == 'js' else '', 'empId': src.upper() + 'N%d' % i, 'name': name(), 'active': True})
+        clock.append({'src': src, 'unit': unit, 'store': '金山' if src == 'js' else '', 'empId': src.upper() + 'X', 'name': name(), 'active': False})
 
     admin_pass = 'E2E' + ''.join(rng.choice('abcdefghjk23456789') for _ in range(6))
     data = {'staff': staff, 'posts': posts, 'reads': reads, 'clock': clock, 'adminPass': admin_pass}

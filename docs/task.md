@@ -21,6 +21,7 @@
 | C12 | API 回傳 | 成功 `{ok:true,data}`；失敗 `{ok:false,code,message}`。code 只能用：`BAD_REQ` `AUTH` `BAD_PIN` `LOCKED` `WEAK_PIN` `HAS_PIN` `ALREADY` `NOT_FOUND` `TOO_BIG` `BAD_TYPE` `ADMIN_LOCKED` `SERVER`（前端另有 `NET`＝網路逾時；`checkFiles` 的 `TOO_MANY` 是前端內部碼，不作為 API code） | — |
 | C13 | localStorage 鍵 | 前綴一律用 `dzyb_`（同一個 github.io 網域的其他系統共用 localStorage，不准沒有前綴）：`dzyb_token`、`dzyb_atoken`、`dzyb_mock_db` | — |
 | C15 | 同仁所屬（2026-09-29 Eason 追加總部） | 名單單位 `mzt` `mala` `cf` `hq-dzy`（總部鼎兆元）`hq-mzt`（總部墨竹亭）`hq-mala`（總部小辛辣）；公告單位仍只有前三個。**看得到**：所有人三個分頁都能看（2026-09-29 Eason 改：原為 `hq-mzt`／`hq-mala` 只看自己品牌）。**要簽**：門市＝公告含自己單位；`hq-mzt`／`hq-mala`＝含該品牌；`hq-dzy`＝只簽三單位全選（「全部」）的公告。函式：`viewTabs` `canSee` `mustSign` `homeTab` | 總部墨竹亭看得到三個分頁；只需簽含墨竹亭的公告 |
+| C16 | 門市 | `STORES = { mzt: ['光復','金山','六張犁'] }`；同仁 `store` 欄；只有墨竹亭分門市；名單快照分頁欄位 `id,name,unit,store,hasPin,locked`（name 已遮罩、hasPin／locked 為 Y 或空白） | — |
 | C14 | 連錯鎖定 | 同仁連錯 3 次 → 鎖到主管重設；管理通行碼連錯 5 次 → 鎖 15 分鐘 | — |
 
 ## Phase 1

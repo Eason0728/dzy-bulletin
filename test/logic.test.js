@@ -122,6 +122,9 @@ const RR = [
 eq('unsignedText grouped', L.unsignedText('SOP', RR), '「SOP」尚未簽名（4 人）\n墨竹亭：乙\n小辛辣：甲、己\n總部鼎兆元：戊\n請盡快到電子佈告欄閱讀並簽名，謝謝！');
 eq('unsignedText all signed', L.unsignedText('SOP', [{ name: '丙', unit: 'mala', read: true, active: true }]), '「SOP」全部已簽名 ✅');
 
+eq('STORES mzt', L.STORES.mzt, ['光復', '金山', '六張犁']);
+eq('STORES mala none', L.STORES.mala, undefined);
+
 // 格式
 eq('fmtMD', L.fmtMD('2026-09-05'), '9/5');
 eq('fmtYM', L.fmtYM('2026-09'), '2026 年 9 月');

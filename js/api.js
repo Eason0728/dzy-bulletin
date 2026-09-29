@@ -3,7 +3,7 @@
 var API = (function () {
   function timeoutOf(action) { return CFG.TIMEOUT[action] || CFG.TIMEOUT._default; }
 
-  var RETRY = { roster: 1, board: 1, history: 1, adminData: 1, receipts: 1 };   // 可安全重試的唯讀動作
+  var RETRY = { roster: 1, board: 1, history: 1, adminData: 1, receipts: 1, login: 1, setPin: 1 };   // 可安全重試：唯讀動作＋登入（設密碼重試若已成功會回 HAS_PIN，畫面改走登入）
   function call(action, payload) {
     return once(action, payload).then(function (r) {
       // 唯讀動作：逾時（NET）或 Google 回錯誤網頁（BAD_RESP，多見於冷啟動）都自動重試一次

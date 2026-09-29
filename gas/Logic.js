@@ -25,6 +25,8 @@ var DZYB = (function () {
   var STAFF_UNIT_NAME = {};
   STAFF_UNITS.forEach(function (u) { STAFF_UNIT_NAME[u.id] = u.name; });
   var HQ_BRAND = { 'hq-mzt': 'mzt', 'hq-mala': 'mala' };
+  // C16 門市（選名字時先選門市再出名字；2026-09-30 Eason 指定只有墨竹亭分門市）
+  var STORES = { mzt: ['光復', '金山', '六張犁'] };
 
   var MAX_FILES = 5;
   var MAX_BYTES = 20 * 1024 * 1024;
@@ -162,7 +164,7 @@ var DZYB = (function () {
 
   return {
     UNITS: UNITS, UNIT_IDS: UNIT_IDS, UNIT_NAME: UNIT_NAME,
-    STAFF_UNITS: STAFF_UNITS, STAFF_UNIT_IDS: STAFF_UNIT_IDS, STAFF_UNIT_NAME: STAFF_UNIT_NAME,
+    STAFF_UNITS: STAFF_UNITS, STAFF_UNIT_IDS: STAFF_UNIT_IDS, STAFF_UNIT_NAME: STAFF_UNIT_NAME, STORES: STORES,
     viewTabs: viewTabs, canSee: canSee, mustSign: mustSign, homeTab: homeTab,
     MAX_FILES: MAX_FILES, MAX_BYTES: MAX_BYTES, SIG_MAX_CHARS: SIG_MAX_CHARS, BODY_MAX: BODY_MAX,
     STAFF_MAX_FAIL: STAFF_MAX_FAIL, ADMIN_MAX_FAIL: ADMIN_MAX_FAIL, ADMIN_LOCK_MS: ADMIN_LOCK_MS,

@@ -28,7 +28,7 @@ var DZYB_MOCK = (function () {
     var staff = d.staff.map(function (x) {
       var salt = x.pin ? 'e2e-' + x.id : '';
       return { id: x.id, name: x.name, unit: x.unit, salt: salt, pinHash: x.pin ? auth.hashPin(salt, x.pin) : '',
-        pinVer: 1, fail: x.fail || 0, active: true, createdAt: '2026-01-01T00:00:00.000Z', deletedAt: '', src: x.src || '' };
+        pinVer: 1, fail: x.fail || 0, active: true, createdAt: '2026-01-01T00:00:00.000Z', deletedAt: '', src: x.src || '', store: x.store || '' };
     });
     var posts = d.posts.map(function (p) {
       return { id: p.id, title: p.title, body: p.body || '', units: p.units, publishOn: p.publishOn, expiresOn: p.expiresOn || '',
@@ -49,14 +49,14 @@ var DZYB_MOCK = (function () {
     var salt = 'seed';
     var staff = [
       ['S-001', '陳大安', 'mala'], ['S-002', '林雅婷', 'mala'], ['S-003', '黃俊宇', 'mala'], ['S-004', '張詩涵', 'mala'],
-      ['S-005', '李志豪', 'mzt'], ['S-006', '王淑芳', 'mzt'], ['S-007', '吳家翔', 'mzt'], ['S-008', '劉怡君', 'mzt'],
+      ['S-005', '李志豪', 'mzt', '光復'], ['S-006', '王淑芳', 'mzt', '金山'], ['S-007', '吳家翔', 'mzt', '金山'], ['S-008', '劉怡君', 'mzt', '六張犁'],
       ['S-009', '蔡明哲', 'cf'], ['S-010', '楊佩琪', 'cf'], ['S-011', '許文傑', 'cf'], ['S-012', '鄭宜萱', 'cf'],
-      ['S-013', '測試員甲', 'mala'], ['S-014', '測試員乙', 'mzt'], ['S-015', '測試員丙', 'cf'],
+      ['S-013', '測試員甲', 'mala'], ['S-014', '測試員乙', 'mzt', '光復'], ['S-015', '測試員丙', 'cf'],
       ['S-016', '周總經理', 'hq-dzy'], ['S-017', '孫品牌經理', 'hq-mzt'], ['S-018', '趙營運督導', 'hq-mala']
     ].map(function (r) {
       var test = r[1].indexOf('測試員') === 0;
       return { id: r[0], name: r[1], unit: r[2], salt: test ? '' : salt, pinHash: test ? '' : auth.hashPin(salt, '0000'),
-        pinVer: 1, fail: 0, active: true, createdAt: '2026-09-01T00:00:00.000Z', deletedAt: '' };
+        pinVer: 1, fail: 0, active: true, createdAt: '2026-09-01T00:00:00.000Z', deletedAt: '', src: '', store: r[3] || '' };
     });
     var F = function (id, name, mb) { return { id: id, name: name, type: L.fileType(name), size: Math.round(mb * 1048576) }; };
     var P = function (o) {
@@ -143,7 +143,7 @@ var DZYB_MOCK = (function () {
     { src: 'gf', unit: 'mala', empId: 'A03', name: '已離職員工', active: false },
     { src: 'cf', unit: 'cf', empId: 'CF01', name: '蔡明哲', active: true },
     { src: 'cf', unit: 'cf', empId: 'CF09', name: '央廚新人', active: true },
-    { src: 'js', unit: 'mzt', empId: 'J01', name: '金山新人', active: true }
+    { src: 'js', unit: 'mzt', store: '金山', empId: 'J01', name: '金山新人', active: true }
   ];
   if (G.__E2E_DATA && G.__E2E_DATA.clock) CLOCK = G.__E2E_DATA.clock;
   var clockSrc = { read: function () {

@@ -79,19 +79,28 @@ def main():
         def picker_names(grp):
             return pg.evaluate("[...document.querySelectorAll('[data-pick]')].map(b => b.innerText.replace(/\\s+/g, ' ').trim())")
 
-        def expect_picker(grp):
+        def store_of(s): return s.get('store') if s.get('store') in D.STORES.get(s['unit'], []) else '未分店'
+        def expect_stores(grp):
+            lst = [s for s in W.active_staff() if s['unit'] == grp]
+            names = D.STORES[grp] + (['未分店'] if any(store_of(s) == '未分店' for s in lst) else [])
+            return ['%s %d 人' % (n, sum(1 for s in lst if store_of(s) == n)) for n in names]
+        def expect_picker(grp, store=None):
             out = []
             for s in W.active_staff():
                 g = 'hq' if s['unit'].startswith('hq-') else s['unit']
                 if g != grp: continue
+                if store and store_of(s) != store: continue
                 t = D.mask(s['name']) + (' 🔒' if s.get('fail', 0) >= 3 else '')
                 if grp == 'hq': t += ' ' + D.STAFF_UNIT_NAME[s['unit']].replace('總部', '')
                 out.append(t)
             return out
 
-        def login(sid, pin=None):
-            s = W.staff[sid]; grp = 'hq' if s['unit'].startswith('hq-') else s['unit']
+        def open_group(s):
+            grp = 'hq' if s['unit'].startswith('hq-') else s['unit']
             click(f'[data-pu="{grp}"]', '切換名單分組')
+            if grp in D.STORES: click(f'[data-ps="{store_of(s)}"]', '選門市')
+        def login(sid, pin=None):
+            s = W.staff[sid]; open_group(s)
             click(f'[data-pick="{sid}"]', '點名字進入密碼畫面')
             pg.fill('#pv', pin or s['pin']); click('#pfGo', '輸入密碼登入')
             pg.wait_for_selector('#app .card, #app .empty', timeout=8000); wait(400)
@@ -99,26 +108,33 @@ def main():
         # =============== 階段 A ===============
         print('— 階段 A：今天 —')
         pg.goto(BASE + '/?mode=local'); pg.evaluate('localStorage.clear()'); pg.goto(BASE + '/?mode=local')
-        pg.wait_for_selector('[data-pick]'); scan('選名字'); shot('A01-選名字')
+        pg.wait_for_selector('[data-pu]'); scan('選名字'); shot('A01-選名字')
         check('A 頁尾有版本號與教學連結', 'v' in text('#foot') and '使用教學' in text('#foot'))
         for grp in ['mzt', 'mala', 'cf', 'hq']:
             click(f'[data-pu="{grp}"]', f'名單分組 {grp}'); scan('選名字-' + grp)
-            check(f'A 名單分組 {grp} 遮罩姓名與順序', picker_names(grp) == expect_picker(grp), f'{picker_names(grp)} vs {expect_picker(grp)}')
+            if grp in D.STORES:
+                got = pg.evaluate("[...document.querySelectorAll('[data-ps]')].map(b => b.innerText.replace(/\\s+/g, ' ').trim())")
+                check('A 墨竹亭先顯示門市與各店人數', got == expect_stores(grp), f'{got} vs {expect_stores(grp)}')
+                check('A 墨竹亭未選門市前不列名字', pg.locator('[data-pick]').count() == 0)
+                for st in [x.split(' ')[0] for x in expect_stores(grp)]:
+                    click(f'[data-ps="{st}"]', '選門市'); scan('選名字-門市')
+                    check(f'A 墨竹亭 {st} 遮罩姓名與順序', picker_names(grp) == expect_picker(grp, st), f'{picker_names(grp)} vs {expect_picker(grp, st)}')
+                    click('#backStore', '換門市')
+            else:
+                check(f'A 名單分組 {grp} 遮罩姓名與順序', picker_names(grp) == expect_picker(grp), f'{picker_names(grp)} vs {expect_picker(grp)}')
         click('#toAdmin', '⚙ 主管設定入口'); scan('主管登入'); check('A 主管設定入口開啟通行碼畫面', pg.locator('#pc').count() == 1)
-        click('[data-close]', '取消'); pg.wait_for_selector('[data-pick]'); wait(300)
+        click('[data-close]', '取消'); pg.wait_for_selector('[data-pu]'); wait(300)
         check('A 取消主管設定後回到選名字（未登入）', '請選擇你是誰' in text('.sheet .bar'))
-        click('#testMe', '本機測試員按鈕（無測試員時仍回到選名字）'); pg.wait_for_selector('[data-pick]'); scan('選名字')
+        click('#testMe', '本機測試員按鈕（無測試員時仍回到選名字）'); pg.wait_for_selector('[data-pu]'); scan('選名字')
         check('A 測試員按鈕後仍在選名字', '請選擇你是誰' in text('.sheet .bar'))
 
         locked = next(s for s in W.active_staff() if s.get('fail', 0) >= 3)
-        grp = 'hq' if locked['unit'].startswith('hq-') else locked['unit']
-        click(f'[data-pu="{grp}"]'); click(f'[data-pick="{locked["id"]}"]', '點鎖定者'); scan('已鎖定')
+        open_group(locked); click(f'[data-pick="{locked["id"]}"]', '點鎖定者'); scan('已鎖定')
         check('A 鎖定者顯示忘記密碼說明', '已鎖定' in text('.sheet') and '重設密碼' in text('.sheet'))
         click('#pfBack2', '我知道了→回名單'); click(f'[data-pick="{locked["id"]}"]'); click('#pfBack', '返回→回名單')
 
         nopin = next(s for s in W.active_staff() if not s['pin'])
-        grp = 'hq' if nopin['unit'].startswith('hq-') else nopin['unit']
-        click(f'[data-pu="{grp}"]'); click(f'[data-pick="{nopin["id"]}"]', '點未設密碼者'); scan('設定密碼')
+        open_group(nopin); click(f'[data-pick="{nopin["id"]}"]', '點未設密碼者'); scan('設定密碼')
         check('A 未設密碼者進入設定密碼', '設定個人密碼' in text('.sheet .bar'))
         pg.fill('#p1', '1234'); pg.fill('#p2', '1234'); click('#pfGo')
         check('A 弱密碼被擋', '太好猜' in text('#pfErr'))
@@ -182,7 +198,7 @@ def main():
         pg.go_back(); pg.wait_for_selector('#app .card, #app .empty', timeout=8000); wait(400)
 
         # 總部兩種身分
-        click('#chgMe', '不是我→登出'); pg.wait_for_selector('[data-pick]')
+        click('#chgMe', '不是我→登出'); pg.wait_for_selector('[data-pu]')
         hqb = data['firsts'][random.Random(SEED).choice(['hq-mzt', 'hq-mala'])]
         grp = 'hq'; click('[data-pu="hq"]'); click(f'[data-pick="{hqb}"]')
         scan('輸入密碼'); pg.fill('#pv', '0000' if W.staff[hqb]['pin'] != '0000' else '1357'); click('#pfGo')
@@ -192,7 +208,7 @@ def main():
         click('#fgBack', '返回密碼'); click('#pfForgot'); click('#fgOk', '我知道了→回名單')
         login(hqb); W.staff[hqb]['fail'] = 0
         verify_board(hqb, td, f'A {D.STAFF_UNIT_NAME[W.staff[hqb]["unit"]]}')
-        click('#chgMe'); pg.wait_for_selector('[data-pick]')
+        click('#chgMe'); pg.wait_for_selector('[data-pu]')
         dzy = data['firsts']['hq-dzy']; login(dzy)
         verify_board(dzy, td, 'A 總部鼎兆元')
 
@@ -294,9 +310,21 @@ def main():
         def exp_counts(): return ['%s %d 人' % (D.STAFF_UNIT_NAME[u], sum(1 for s in W.active_staff() if s['unit'] == u)) for u in D.STAFF_UNITS]
         check('A 各單位人數', panel_counts() == exp_counts(), f'{panel_counts()} vs {exp_counts()}')
         nn = '帶入新人%d' % (SEED % 100); nu = r2.choice(D.STAFF_UNITS)
-        pg.fill('#sName', nn); pg.select_option('#sUnit', nu); cm.mark('#sUnit', '選單位'); click('#sAdd', '新增同仁')
-        W.staff['NEW'] = {'id': 'NEW', 'name': nn, 'unit': nu, 'pin': None, 'active': True, 'fail': 0}
+        pg.fill('#sName', 'X' + nn); pg.select_option('#sUnit', 'mzt'); pg.dispatch_event('#sUnit', 'change'); cm.mark('#sUnit', '選單位')
+        scan('設定-同仁-墨竹亭'); check('A 選墨竹亭時出現門市選單', pg.locator('#sStore').is_visible())
+        click('#sAdd'); check('A 墨竹亭沒選門市被擋', '請選擇門市' in text('#sErr'))
+        pg.select_option('#sStore', D.STORES['mzt'][0]); cm.mark('#sStore', '選門市')
+        pg.select_option('#sUnit', nu); pg.dispatch_event('#sUnit', 'change'); pg.fill('#sName', nn)
+        nst = r2.choice(D.STORES['mzt']) if nu in D.STORES else ''
+        if nst: pg.select_option('#sStore', nst); cm.mark('#sStore', '選門市')
+        click('#sAdd', '新增同仁')
+        W.staff['NEW'] = {'id': 'NEW', 'name': nn, 'unit': nu, 'pin': None, 'active': True, 'fail': 0, 'store': nst}
         check('A 新增後各單位人數', panel_counts() == exp_counts(), f'{panel_counts()} vs {exp_counts()}')
+        mv = r2.choice([s for s in W.active_staff() if s['unit'] == 'mzt' and s['id'] != 'NEW'])
+        to = r2.choice([x for x in D.STORES['mzt'] if x != mv.get('store')])
+        cm.mark(pg.locator(f'[data-st="{mv["id"]}"]').evaluate(KEY_OF), '換門市'); pg.select_option(f'[data-st="{mv["id"]}"]', to); wait(700)
+        W.staff[mv['id']]['store'] = to
+        check('A 換門市後顯示新門市', pg.locator(f'[data-st="{mv["id"]}"]').input_value() == to)
         cand = [s for s in W.active_staff() if s['pin'] and s['id'] not in (dzy, 'NEW')]
         rs = r2.choice(cand)
         click(f'[data-rp="{rs["id"]}"]', '重設密碼'); W.staff[rs['id']]['pin'] = None
@@ -314,7 +342,7 @@ def main():
             elif gone: gone['src'] = 1
             else:
                 added.append('%s（%s）' % (row['name'], D.STAFF_UNIT_NAME[row['unit']]))
-                W.staff['SYNC%d' % len(added)] = {'id': 'x', 'name': row['name'], 'unit': row['unit'], 'pin': None, 'active': True, 'fail': 0, 'src': 1}
+                W.staff['SYNC%d' % len(added)] = {'id': 'x', 'name': row['name'], 'unit': row['unit'], 'pin': None, 'active': True, 'fail': 0, 'src': 1, 'store': row.get('store', '')}
         click('#syncBtn', '從打卡系統同步'); wait(600)
         s1 = text('.upbar')
         check('A 打卡同步新增名單與對應數', ('新增 %d 人' % len(added)) in s1 and all(a in s1 for a in added) and (adopted == 0 or ('對應既有名單 %d 人' % adopted) in s1), f'{s1} / 預期新增 {added}、對應 {adopted}')

@@ -5,8 +5,10 @@
 var SHEETS_ = {
   posts: { name: '公告', cols: ['id', 'title', 'body', 'units', 'publishOn', 'expiresOn', 'pinned', 'published', 'offOn', 'files', 'createdAt', 'updatedAt'],
     head: ['id', '標題', '內容', '單位', '上架日', '到期日', '置頂', '上架中', '手動下架日', '附件', '建立時間', '最後修改時間'] },
-  staff: { name: '同仁', cols: ['id', 'name', 'unit', 'pinHash', 'salt', 'pinVer', 'fail', 'active', 'createdAt', 'deletedAt', 'src'],
-    head: ['id', '姓名', '單位', '密碼雜湊', 'salt', '密碼版本', '連續錯誤次數', '在職', '建立時間', '刪除時間', '來源（打卡系統）'] },
+  staff: { name: '同仁', cols: ['id', 'name', 'unit', 'pinHash', 'salt', 'pinVer', 'fail', 'active', 'createdAt', 'deletedAt', 'src', 'store'],
+    head: ['id', '姓名', '單位', '密碼雜湊', 'salt', '密碼版本', '連續錯誤次數', '在職', '建立時間', '刪除時間', '來源（打卡系統）', '門市'] },
+  // 名單快照：只有遮罩姓名等公開欄位，由 Eason「發布到網路」成 CSV，選名字畫面直接讀（不經 Apps Script，快很多）
+  snap: { name: '名單快照', cols: ['id', 'name', 'unit', 'store', 'hasPin', 'locked'], head: ['id', 'name', 'unit', 'store', 'hasPin', 'locked'] },
   reads: { name: '已讀', cols: ['postId', 'staffId', 'name', 'unit', 'at', 'sigId'],
     head: ['公告 id', '同仁 id', '姓名', '單位', '簽名時間', '簽名檔 id'] },
   log: { name: '操作紀錄', cols: ['at', 'action', 'target', 'summary'], head: ['時間', '動作', '對象', '摘要'] }
@@ -53,6 +55,17 @@ function cachePut_(key, obj) {
   } catch (e) {}
 }
 
+// 名單快照整張重寫（同仁表每次寫入後）；只放公開欄位
+function writeSnap_(bk, staffRows) {
+  var def = SHEETS_.snap, sh = bk.getSheetByName(def.name) || bk.insertSheet(def.name);
+  var rows = [def.head].concat(staffRows.filter(function (r) { return r.id && bool_(r.active); }).map(function (r) {
+    return [r.id, DZYB.maskName(r.name), r.unit, r.store || '', r.pinHash ? 'Y' : '', (Number(r.fail) || 0) >= DZYB.STAFF_MAX_FAIL ? 'Y' : ''];
+  }));
+  if (rows.length > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), rows.length - sh.getMaxRows() + 50);
+  sh.clearContents();
+  sh.getRange(1, 1, rows.length, def.cols.length).setNumberFormat('@').setValues(rows);
+}
+
 function makeStore_(files) {
   var book = null, memo = {}, gen = null;                              // gen 惰性讀取：寫入動作在鎖內才第一次讀
   function sheet(key) { if (!book) book = ss_(); return book.getSheetByName(SHEETS_[key].name); }
@@ -90,6 +103,7 @@ function makeStore_(files) {
     }
     bumpGen_(); gen = dataGen_();                                    // 資料變了：快取世代換新
     if (memo[key]) cachePut_('rows:' + key + ':' + gen, memo[key]);
+    if (key === 'staff' && memo[key]) writeSnap_(book || ss_(), memo[key]);
   }
   // 寫回既有列之前，確認那一列的 id 還是它（有人手動刪列／排序過試算表時，快取裡的列號會錯）；對不上就重讀試算表
   function upsert(key, obj) {
@@ -114,7 +128,7 @@ function makeStore_(files) {
   }
   function toStaff(r) {
     return { id: r.id, name: r.name, unit: r.unit, pinHash: r.pinHash, salt: r.salt, pinVer: Number(r.pinVer) || 0,
-      fail: Number(r.fail) || 0, active: bool_(r.active), createdAt: r.createdAt, deletedAt: r.deletedAt, src: r.src || '' };
+      fail: Number(r.fail) || 0, active: bool_(r.active), createdAt: r.createdAt, deletedAt: r.deletedAt, src: r.src || '', store: r.store || '' };
   }
 
   return {

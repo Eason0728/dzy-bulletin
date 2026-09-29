@@ -199,14 +199,17 @@ var Admin = (function () {
     return '<div class="panel"><h4>從打卡系統同步</h4><div class="hint" style="margin:0 0 8px">讀取小辛辣光復店、央廚、墨竹亭金山店打卡系統的在職名單，自動加入缺少的同仁（只讀取，不會改動打卡系統）。其他門市與總部請手動新增。</div>' +
       '<button class="btn ghost" id="syncBtn">↻ 從打卡系統同步</button>' + syHTML + '</div>' +
       '<div class="panel"><h4>新增同仁</h4><div class="row"><input class="inp" id="sName" placeholder="姓名（全名）" maxlength="20">' +
-      '<select class="inp" id="sUnit">' + L.STAFF_UNITS.map(function (u) { return '<option value="' + u.id + '">' + u.name + '</option>'; }).join('') + '</select></div>' +
+      '<select class="inp" id="sUnit">' + L.STAFF_UNITS.map(function (u) { return '<option value="' + u.id + '">' + u.name + '</option>'; }).join('') + '</select>' +
+      '<select class="inp" id="sStore" hidden><option value="">選門市</option>' + L.STORES.mzt.map(function (x) { return '<option>' + x + '</option>'; }).join('') + '</select></div>' +
       '<div class="err" id="sErr"></div><div style="height:10px"></div><button class="btn primary" id="sAdd">新增</button></div>' +
       L.STAFF_UNITS.map(function (u) {
         var ppl = st.filter(function (s) { return s.unit === u.id; });
         return '<div class="panel"><h4><span class="tag ' + (u.id.indexOf('hq-') === 0 ? 'hq' : u.id) + '">' + u.name + '</span> ' + ppl.length + ' 人</h4>' + (ppl.map(function (s) {
-          return '<div class="arow" style="display:flex;align-items:center;gap:8px;padding:8px 0"><span style="flex:1">' + esc(s.name) + ' <small style="color:var(--sub)">' +
+          var stSel = L.STORES[s.unit] ? '<select class="inp stSel" data-st="' + esc(s.id) + '" style="width:auto;padding:4px 6px">' + (L.STORES[s.unit].indexOf(s.store) < 0 ? '<option value="">未分店</option>' : '') +
+            L.STORES[s.unit].map(function (x) { return '<option' + (x === s.store ? ' selected' : '') + '>' + x + '</option>'; }).join('') + '</select>' : '';
+          return '<div class="arow" style="display:flex;align-items:center;gap:8px;padding:8px 0;flex-wrap:wrap"><span style="flex:1">' + esc(s.name) + ' <small style="color:var(--sub)">' +
             (s.locked ? '<span class="lockmark">🔒 已鎖定</span>' : s.hasPin ? '已設密碼' : '未設密碼') + '</small></span>' +
-            (s.hasPin ? '<button class="btn ghost small" data-rp="' + esc(s.id) + '">重設密碼</button>' : '') +
+            stSel + (s.hasPin ? '<button class="btn ghost small" data-rp="' + esc(s.id) + '">重設密碼</button>' : '') +
             '<button class="btn ghost small" data-del="' + esc(s.id) + '">刪除</button></div>';
         }).join('') || '<div class="hint">尚無同仁</div>') + '</div>';
       }).join('') +
@@ -265,10 +268,21 @@ var Admin = (function () {
     s.querySelectorAll('[data-ed]').forEach(function (b) { b.onclick = function () { startEdit(find(b.dataset.ed)); render(); }; });
     if (a.tab === 'new') bindForm(s);
     var q = function (id) { return s.querySelector('#' + id); };
+    if (q('sUnit')) q('sUnit').onchange = function () { q('sStore').hidden = !L.STORES[q('sUnit').value]; };
+    s.querySelectorAll('[data-st]').forEach(function (sel) {
+      sel.onchange = function () {
+        var st = a.data.staff.filter(function (x) { return x.id === sel.dataset.st; })[0];
+        API.admin('staffSetStore', { staffId: st.id, store: sel.value }).then(function (r) {
+          if (!r.ok) { if (r.code !== 'AUTH') UI.toast(r.message); return; }
+          UI.toast(st.name + ' 改到 ' + sel.value); a.dirty = true; load(true);
+        });
+      };
+    });
     if (q('sAdd')) q('sAdd').onclick = function () {
       var name = q('sName').value.trim(); if (!name) { q('sErr').textContent = '請填姓名'; return; }
+      if (L.STORES[q('sUnit').value] && !q('sStore').value) { q('sErr').textContent = '請選擇門市'; return; }
       var done = UI.busy(q('sAdd'), '新增中…');
-      API.admin('staffAdd', { name: name, unit: q('sUnit').value }).then(function (r) {
+      API.admin('staffAdd', { name: name, unit: q('sUnit').value, store: q('sStore').value }).then(function (r) {
         done(); if (!r.ok) { if (r.code !== 'AUTH') q('sErr').textContent = r.message; return; }
         UI.toast('已新增 ' + name); a.dirty = true; load(true);
       });

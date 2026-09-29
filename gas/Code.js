@@ -2,8 +2,8 @@
  * 正本在 repo ~/dzy-bulletin/gas/；Logic.js 由 tools/build.sh 從 js/logic.js 產生，不要手改。 */
 'use strict';
 
-var WRITE_ACTIONS_ = ['setPin', 'login', 'ack', 'adminLogin', 'savePost', 'setPublished', 'setPinned', 'staffAdd', 'staffDelete', 'staffResetPin', 'syncClock'];   // 必須與 Service.WRITE_ACTIONS 一致（test 檢查）
-var VERSION_ = '0.4.5';
+var WRITE_ACTIONS_ = ['setPin', 'login', 'ack', 'adminLogin', 'savePost', 'setPublished', 'setPinned', 'staffAdd', 'staffDelete', 'staffResetPin', 'syncClock', 'staffSetStore'];   // 必須與 Service.WRITE_ACTIONS 一致（test 檢查）
+var VERSION_ = '0.5.0';
 
 function doGet() {
   return json_({ ok: true, data: { app: 'dzy-bulletin', v: VERSION_ } });
@@ -21,6 +21,14 @@ function doPost(e) {
       return makeService_(DZYB, makeStore_(files), files, makeAuth_(gasCrypto_(), DZYB),
         { nowMs: function () { return Date.now(); }, today: function () { return DZYB.today(); } }, clockSource_());
     };
+    if (action === 'roster') {                                    // 名單結果快取：命中時連 store／service 都不建（世代換了自動失效）
+      var ck = 'roster:' + (PropertiesService.getScriptProperties().getProperty('DATA_GEN') || '0'), hit = null;
+      try { hit = CacheService.getScriptCache().get(ck); } catch (x) {}
+      if (hit) return ContentService.createTextOutput(hit).setMimeType(ContentService.MimeType.JSON);
+      var out = JSON.stringify(build().call(action, req));
+      try { if (out.length < 90000 && out.indexOf('"ok":true') === 1) CacheService.getScriptCache().put(ck, out, 600); } catch (x) {}
+      return ContentService.createTextOutput(out).setMimeType(ContentService.MimeType.JSON);
+    }
     if (WRITE_ACTIONS_.indexOf(action) < 0) return json_(build().call(action, req));
     var lock = LockService.getScriptLock();
     if (!lock.tryLock(20000)) return json_({ ok: false, code: 'SERVER', message: '同時操作的人太多，請稍後再試' });
@@ -47,7 +55,7 @@ function clockSource_() {
             var active = (r[iA] === true || String(r[iA]).toUpperCase() === 'TRUE') && !(iR >= 0 && String(r[iR]).trim());
             if (!String(r[iE]).trim()) return;
             if (active) n++;
-            rows.push({ src: c.src, unit: c.unit, empId: String(r[iE]).trim(), name: String(r[iN]).trim(), active: active });
+            rows.push({ src: c.src, unit: c.unit, store: c.store || '', empId: String(r[iE]).trim(), name: String(r[iN]).trim(), active: active });
           });
           counts[c.label] = n; sources.push(c.src);
         } catch (e) { errors.push(c.label + '：讀取失敗，請確認打卡試算表還在、名單分頁叫 roster'); console.error(c.label + ': ' + e); }

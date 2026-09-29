@@ -21,8 +21,11 @@ var Staff = (function () {
     $('openAdmin').onclick = function () { Admin.open(); };
     if (loggedIn()) loadBoard(); else picker(true);
   }
-  function clearMe() { UI.store.del('token'); UI.store.del('me'); UI.store.del('board'); renderMe(); $('app').innerHTML = ''; }
-  function logout(msg) { clearMe(); v.board = v.hist = null; if (msg) UI.toast(msg); picker(true); }
+  function clearMe() { UI.store.del('token'); UI.store.del('me'); UI.store.del('board'); renderMe(); $('app').innerHTML = ''; }   // 名單快取（roster）保留：換人時秒開
+  function logout(msg) {
+    var m = me(), g = m ? (m.unit.indexOf('hq-') === 0 ? 'hq' : m.unit) : undefined;   // 登出後名單停在原本的分組
+    clearMe(); v.board = v.hist = null; if (msg) UI.toast(msg); picker(true, g);
+  }
   function onSheetClosed() {
     if (!loggedIn()) setTimeout(function () { picker(true); }, 0);
     else if (typeof Admin !== 'undefined' && Admin.takeDirty()) loadBoard();
@@ -37,36 +40,91 @@ var Staff = (function () {
   }
 
   /* ---------- 選名字與密碼 ---------- */
+  // 名單來源：①手機快取（秒開）②名單快照 CSV（Google 試算表發布檔，不經 Apps Script）③後端 roster（最準、可能很慢）
+  function cachedRoster() { try { return JSON.parse(UI.store.get('roster')) || null; } catch (e) { return null; } }
+  // 本機名單快取跟著這支手機上發生的變化即時更新（避免剛設好密碼、登出後又被要求設密碼）
+  function patchRoster(id, patch) {
+    var l = cachedRoster(); if (!l) return;
+    l.forEach(function (s) { if (s.id === id) Object.assign(s, patch); });
+    UI.store.set('roster', JSON.stringify(l));
+  }
+  function parseCsv(t) {
+    var lines = String(t || '').replace(/\r/g, '').split('\n').filter(function (l) { return l.trim(); });
+    if (!lines.length) return null;
+    var cell = function (l) { return l.split(',').map(function (c) { return c.replace(/^"|"$/g, ''); }); };
+    var h = cell(lines[0]);
+    if (h.join(',') !== 'id,name,unit,store,hasPin,locked') return null;
+    return lines.slice(1).map(cell).map(function (c) { return { id: c[0], name: c[1], unit: c[2], store: c[3], hasPin: c[4] === 'Y', locked: c[5] === 'Y' }; });
+  }
+  function fetchCsvRoster() {
+    if (!CFG.ROSTER_CSV || CFG.MODE !== 'cloud') return Promise.resolve(null);
+    var ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    var t = setTimeout(function () { if (ctl) ctl.abort(); }, 8000);
+    return fetch(CFG.ROSTER_CSV + (CFG.ROSTER_CSV.indexOf('?') < 0 ? '?' : '&') + 't=' + Date.now(), { signal: ctl ? ctl.signal : undefined })
+      .then(function (r) { return r.ok ? r.text() : null; }).then(function (x) { clearTimeout(t); return parseCsv(x); }, function () { clearTimeout(t); return null; });
+  }
+
   function picker(force, unit) {
-    var lock = force === true;
-    UI.sheet('<div class="bar"><b>請選擇你是誰</b>' + (lock ? '' : '<button data-close>取消</button>') + '</div><div class="body"><div class="loading">載入名單中</div></div>', lock);
+    var lock = force === true, people = null, shown = false, done = false;
+    var GROUPS = L.UNITS.concat([{ id: 'hq', name: '總部' }]);
+    var grp = function (u) { return u.indexOf('hq-') === 0 ? 'hq' : u; };
+    var cur = unit || (me() && grp(me().unit)) || v.unit || 'mala', curStore = null;
+    var head = '<div class="bar"><b>請選擇你是誰</b>' + (lock ? '' : '<button data-close>取消</button>') + '</div>';
+    UI.sheet(head + '<div class="body"><div class="loading">載入名單中</div><button class="btn ghost" id="toAdmin" style="margin-top:6px">⚙ 主管設定</button></div>', lock);
+    $('sheet').querySelector('#toAdmin').onclick = function () { done = true; Admin.open(); };
+
+    function draw() {
+      if (done) return;
+      shown = true;
+      var list = people.filter(function (s) { return grp(s.unit) === cur; }), stores = L.STORES[cur] || null, body;
+      if (stores && !curStore) {
+        var extra = list.some(function (s) { return stores.indexOf(s.store) < 0; }) ? ['未分店'] : [];
+        body = '<div class="hint" style="margin:0 0 6px">請先選門市</div><div class="picklist">' + stores.concat(extra).map(function (st) {
+          var n = list.filter(function (s) { return (stores.indexOf(s.store) < 0 ? '未分店' : s.store) === st; }).length;
+          return '<button data-ps="' + esc(st) + '">' + esc(st) + '<br><small style="color:var(--sub);font-weight:400">' + n + ' 人</small></button>';
+        }).join('') + '</div>';
+      } else {
+        if (stores) list = list.filter(function (s) { return (stores.indexOf(s.store) < 0 ? '未分店' : s.store) === curStore; });
+        body = (stores ? '<button class="btn ghost small" id="backStore" style="margin-bottom:8px">← ' + esc(curStore) + '（換門市）</button>' : '') +
+          '<div class="picklist">' + (list.map(function (p) { return '<button data-pick="' + esc(p.id) + '">' + esc(p.name) + (p.locked ? ' 🔒' : '') + (cur === 'hq' ? '<br><small style="color:var(--sub);font-weight:400">' + L.STAFF_UNIT_NAME[p.unit].replace('總部', '') + '</small>' : '') + '</button>'; }).join('') || '<div class="hint" style="grid-column:1/-1">這個單位還沒有同仁名單</div>') + '</div>';
+      }
+      var s = UI.sheet(head + '<div class="body">' +
+        '<div class="hint" style="margin:0 0 10px">選自己的名字並輸入 4 位數密碼（第一次使用會請你設定）。這支手機會記住你，按「我已閱讀」時會請你手寫簽名。</div>' +
+        '<div class="seg">' + GROUPS.map(function (u) { return '<button data-pu="' + u.id + '" class="' + (u.id === cur ? 'on' : '') + '">' + u.name + '</button>'; }).join('') + '</div>' +
+        body + '<div class="hint" style="margin-top:14px">找不到自己的名字？請洽主管在「設定 → 同仁名單」新增。</div>' +
+        '<button class="btn ghost" id="toAdmin" style="margin-top:6px">⚙ 主管設定</button></div>', lock);
+      s.querySelector('#toAdmin').onclick = function () { done = true; Admin.open(); };
+      s.querySelectorAll('[data-pu]').forEach(function (b) { b.onclick = function () { cur = b.dataset.pu; curStore = null; draw(); }; });
+      s.querySelectorAll('[data-ps]').forEach(function (b) { b.onclick = function () { curStore = b.dataset.ps; draw(); }; });
+      if (s.querySelector('#backStore')) s.querySelector('#backStore').onclick = function () { curStore = null; draw(); };
+      s.querySelectorAll('[data-pick]').forEach(function (b) {
+        b.onclick = function () {
+          done = true;
+          pinForm(people.filter(function (p) { return p.id === b.dataset.pick; })[0], function () {
+            // 回到名單時，合併這支手機剛發生的變化（被鎖、設好密碼），避免期間抵達的名單把它蓋掉
+            var c = cachedRoster() || [];
+            people.forEach(function (x) { var y = c.filter(function (z) { return z.id === x.id; })[0]; if (y) { if (y.locked) x.locked = true; if (y.hasPin) x.hasPin = true; } });
+            done = false; draw();
+          });
+        };
+      });
+    }
+    // 名單到了就畫；之後來的更新（CSV、後端）只在使用者還停在名單畫面時重畫
+    function got(list, src) {
+      if (!list || !list.length && src !== 'api') return;
+      people = list; if (src === 'api') UI.store.set('roster', JSON.stringify(list));
+      if (!done) draw();
+    }
+    got(cachedRoster(), 'cache');
+    fetchCsvRoster().then(function (l) { if (!people || !people._api) got(l, 'csv'); });
     API.call('roster').then(function (r) {
-      if (!r.ok) {
-        var es = UI.sheet('<div class="bar"><b>請選擇你是誰</b></div><div class="body"><div class="errbox"></div><button class="btn primary" id="rt">重試</button>' +
-          '<button class="btn ghost" id="toAdmin" style="margin-top:8px">⚙ 主管設定</button></div>', true);
-        es.querySelector('.errbox').textContent = r.message;
-        es.querySelector('#rt').onclick = function () { picker(force, unit); };
-        es.querySelector('#toAdmin').onclick = function () { Admin.open(); };
-        return;
-      }
-      var GROUPS = L.UNITS.concat([{ id: 'hq', name: '總部' }]);
-      var grp = function (u) { return u.indexOf('hq-') === 0 ? 'hq' : u; };
-      var people = r.data, cur = unit || (me() && grp(me().unit)) || v.unit || 'mala';
-      function draw() {
-        var list = people.filter(function (s) { return grp(s.unit) === cur; });
-        var s = UI.sheet('<div class="bar"><b>請選擇你是誰</b>' + (lock ? '' : '<button data-close>取消</button>') + '</div><div class="body">' +
-          '<div class="hint" style="margin:0 0 10px">選自己的名字並輸入 4 位數密碼（第一次使用會請你設定）。這支手機會記住你，按「我已閱讀」時會請你手寫簽名。</div>' +
-          '<div class="seg">' + GROUPS.map(function (u) { return '<button data-pu="' + u.id + '" class="' + (u.id === cur ? 'on' : '') + '">' + u.name + '</button>'; }).join('') + '</div>' +
-          '<div class="picklist">' + (list.map(function (p) { return '<button data-pick="' + esc(p.id) + '">' + esc(p.name) + (p.locked ? ' 🔒' : '') + (cur === 'hq' ? '<br><small style="color:var(--sub);font-weight:400">' + L.STAFF_UNIT_NAME[p.unit].replace('總部', '') + '</small>' : '') + '</button>'; }).join('') || '<div class="hint" style="grid-column:1/-1">這個單位還沒有同仁名單</div>') + '</div>' +
-          '<div class="hint" style="margin-top:14px">找不到自己的名字？請洽主管在「設定 → 同仁名單」新增。</div>' +
-          '<button class="btn ghost" id="toAdmin" style="margin-top:6px">⚙ 主管設定</button></div>', lock);
-        s.querySelector('#toAdmin').onclick = function () { Admin.open(); };
-        s.querySelectorAll('[data-pu]').forEach(function (b) { b.onclick = function () { cur = b.dataset.pu; draw(); }; });
-        s.querySelectorAll('[data-pick]').forEach(function (b) {
-          b.onclick = function () { pinForm(people.filter(function (p) { return p.id === b.dataset.pick; })[0], function () { draw(); }); };
-        });
-      }
-      draw();
+      if (r.ok) { r.data._api = true; got(r.data, 'api'); return; }
+      if (people || done) return;
+      var es = UI.sheet('<div class="bar"><b>請選擇你是誰</b></div><div class="body"><div class="errbox"></div><button class="btn primary" id="rt">重試</button>' +
+        '<button class="btn ghost" id="toAdmin" style="margin-top:8px">⚙ 主管設定</button></div>', true);
+      es.querySelector('.errbox').textContent = r.message;
+      es.querySelector('#rt').onclick = function () { picker(force, unit); };
+      es.querySelector('#toAdmin').onclick = function () { Admin.open(); };
     });
   }
 
@@ -97,7 +155,8 @@ var Staff = (function () {
         API.call('login', { staffId: p.id, pin: s.querySelector('#pv').value }).then(function (r) {
           done();
           if (r.ok) return enter(r.data);
-          if (r.code === 'LOCKED') { p.locked = true; return pinForm(p, back); }
+          if (r.code === 'LOCKED') { p.locked = true; patchRoster(p.id, { locked: true }); return pinForm(p, back); }
+          if (r.code === 'BAD_REQ' && /尚未設定密碼/.test(r.message)) { p.hasPin = false; return pinForm(p, back); }   // 名單快照可能還沒更新
           err.textContent = r.message; s.querySelector('#pv').value = '';
         });
       };
@@ -124,7 +183,7 @@ var Staff = (function () {
   }
 
   function enter(d) {
-    UI.store.set('token', d.token); UI.store.set('me', JSON.stringify(d.me));
+    UI.store.set('token', d.token); UI.store.set('me', JSON.stringify(d.me)); patchRoster(d.me.id, { hasPin: true, locked: false });
     v.unit = L.homeTab(d.me.unit); v.tab = 'board'; v.board = v.hist = null;
     UI.closeSheet(); UI.toast('你好，' + d.me.name);
     if (d.board) { v.board = d.board; cacheBoard(d.board); renderMe(); render(); }   // 登入回應已含公告，不用再等一次

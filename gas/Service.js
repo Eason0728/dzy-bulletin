@@ -7,6 +7,7 @@
 'use strict';
 
 function makeService_(L, store, files, auth, clock, clockSrc) {
+  var ADMIN_TOKEN_MS = 7 * 24 * 3600e3;   // 主管登入記住 7 天（2026-09-30 Eason 指定；原 12 小時）
   function err(code, message) { var e = new Error(message || code); e.code = code; return e; }
   function iso() { return new Date(clock.nowMs()).toISOString(); }
   function log(action, target, summary) { store.addLog({ at: iso(), action: action, target: target || '', summary: summary || '' }); }
@@ -68,7 +69,7 @@ function makeService_(L, store, files, auth, clock, clockSrc) {
   var H = {
     roster: function () {
       return store.getStaff().filter(function (s) { return s.active; }).map(function (s) {
-        return { id: s.id, name: L.maskName(s.name), unit: s.unit, hasPin: !!s.pinHash, locked: (Number(s.fail) || 0) >= L.STAFF_MAX_FAIL };
+        return { id: s.id, name: L.maskName(s.name), unit: s.unit, store: s.store || '', hasPin: !!s.pinHash, locked: (Number(s.fail) || 0) >= L.STAFF_MAX_FAIL };
       });
     },
     setPin: function (q) {
@@ -135,7 +136,7 @@ function makeService_(L, store, files, auth, clock, clockSrc) {
         var e = err(r.code, r.code === 'ADMIN_LOCKED' ? '錯誤太多次，請 15 分鐘後再試' : '通行碼錯誤');
         e.until = r.until; throw e;
       }
-      var atoken = auth.makeAdminToken(store.secret(), a.ver, clock.nowMs() + 12 * 3600e3);
+      var atoken = auth.makeAdminToken(store.secret(), a.ver, clock.nowMs() + ADMIN_TOKEN_MS);
       return { atoken: atoken, data: H.adminData({ atoken: atoken }) };   // 一併回傳設定頁資料，少一次往返
     },
     adminData: function (q) {
@@ -150,7 +151,7 @@ function makeService_(L, store, files, auth, clock, clockSrc) {
         return o;
       });
       var staff = store.getStaff().filter(function (s) { return s.active; }).map(function (s) {
-        return { id: s.id, name: s.name, unit: s.unit, hasPin: !!s.pinHash, locked: (Number(s.fail) || 0) >= L.STAFF_MAX_FAIL };
+        return { id: s.id, name: s.name, unit: s.unit, store: s.store || '', hasPin: !!s.pinHash, locked: (Number(s.fail) || 0) >= L.STAFF_MAX_FAIL };
       });
       mark();
       var quota = null;
@@ -240,11 +241,21 @@ function makeService_(L, store, files, auth, clock, clockSrc) {
       var name = String(q.name || '').trim();
       if (!name || name.length > 20) throw err('BAD_REQ', '請填姓名（20 字內）');
       if (L.STAFF_UNIT_IDS.indexOf(q.unit) < 0) throw err('BAD_REQ', '單位錯誤');
+      var stores = L.STORES[q.unit] || [], st = String(q.store || '');
+      if (stores.length && stores.indexOf(st) < 0) throw err('BAD_REQ', '請選擇門市');
+      if (!stores.length) st = '';
       var all = store.getStaff();
       if (all.some(function (s) { return s.active && s.name === name && s.unit === q.unit; })) throw err('BAD_REQ', '此單位已有同名同仁');
-      var s = { id: nextId('S-', all, 3), name: name, unit: q.unit, pinHash: '', salt: '', pinVer: 0, fail: 0, active: true, createdAt: iso(), deletedAt: '' };
-      store.saveStaff(s); log('新增同仁', s.id, name + '（' + L.STAFF_UNIT_NAME[s.unit] + '）');
-      return { staff: { id: s.id, name: s.name, unit: s.unit, hasPin: false, locked: false } };
+      var s = { id: nextId('S-', all, 3), name: name, unit: q.unit, pinHash: '', salt: '', pinVer: 0, fail: 0, active: true, createdAt: iso(), deletedAt: '', src: '', store: st };
+      store.saveStaff(s); log('新增同仁', s.id, name + '（' + L.STAFF_UNIT_NAME[s.unit] + (st ? st : '') + '）');
+      return { staff: { id: s.id, name: s.name, unit: s.unit, store: st, hasPin: false, locked: false } };
+    },
+    staffSetStore: function (q) {
+      requireAdmin(q);
+      var s = findStaff(q.staffId), stores = L.STORES[s.unit] || [], st = String(q.store || '');
+      if (!stores.length || stores.indexOf(st) < 0) throw err('BAD_REQ', '門市錯誤');
+      s.store = st; store.saveStaff(s); log('變更門市', s.id, s.name + '→' + st);
+      return {};
     },
     // 從打卡系統同步：只新增在職且尚未在名單的人；打卡已離職者只列出，不自動刪除
     syncClock: function (q) {
@@ -257,12 +268,13 @@ function makeService_(L, store, files, auth, clock, clockSrc) {
         if (!r.empId || !name || L.STAFF_UNIT_IDS.indexOf(r.unit) < 0) return;
         if (r.active) liveKeys[key] = 1;
         if (!r.active) return;
-        if (all.some(function (s) { return s.src === key; })) return;         // 已同步過（含被手動刪除的，不再加回）
+        var had = all.filter(function (s) { return s.src === key; })[0];
+        if (had) { if (r.store && !had.store && had.active) { had.store = r.store; store.saveStaff(had); } return; }   // 已同步過（含被手動刪除的，不再加回）；補上門市
         var same = all.filter(function (s) { return s.active && !s.src && s.name === name && s.unit === r.unit; })[0];
-        if (same) { same.src = key; store.saveStaff(same); adopted++; return; }   // 手動建過的同一人：補上來源
+        if (same) { same.src = key; if (r.store && !same.store) same.store = r.store; store.saveStaff(same); adopted++; return; }   // 手動建過的同一人：補上來源
         var gone = all.filter(function (s) { return !s.active && !s.src && s.name === name && s.unit === r.unit; })[0];
         if (gone) { gone.src = key; store.saveStaff(gone); return; }            // 佈告欄已手動刪除的同一人：視為刻意刪除，不加回
-        var s = { id: nextId('S-', all, 3), name: name, unit: r.unit, pinHash: '', salt: '', pinVer: 0, fail: 0, active: true, createdAt: iso(), deletedAt: '', src: key };
+        var s = { id: nextId('S-', all, 3), name: name, unit: r.unit, pinHash: '', salt: '', pinVer: 0, fail: 0, active: true, createdAt: iso(), deletedAt: '', src: key, store: r.store || '' };
         store.saveStaff(s); all.push(s); added.push(name + '（' + L.STAFF_UNIT_NAME[r.unit] + '）');
       });
       var left = all.filter(function (s) { return s.active && s.src && !liveKeys[s.src] && got.sources.indexOf(s.src.split(':')[0]) >= 0; })
@@ -298,7 +310,7 @@ function makeService_(L, store, files, auth, clock, clockSrc) {
       return { ok: false, code: 'SERVER', message: '系統忙碌，請稍後再試' };
     }
   }
-  return { call: call, WRITE_ACTIONS: ['setPin', 'login', 'ack', 'adminLogin', 'savePost', 'setPublished', 'setPinned', 'staffAdd', 'staffDelete', 'staffResetPin', 'syncClock'] };   // uploadFile 不碰試算表，不上鎖
+  return { call: call, WRITE_ACTIONS: ['setPin', 'login', 'ack', 'adminLogin', 'savePost', 'setPublished', 'setPinned', 'staffAdd', 'staffDelete', 'staffResetPin', 'syncClock', 'staffSetStore'] };   // uploadFile 不碰試算表，不上鎖
 }
 
 if (typeof module !== 'undefined') module.exports = { makeService_: makeService_ };

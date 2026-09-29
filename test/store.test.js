@@ -46,6 +46,7 @@ vm.createContext(G);
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../gas/Store.js'), 'utf8'), G);
 props.SPREADSHEET_ID = 'fake';
 ['公告', '同仁', '已讀', '操作紀錄'].forEach(n => { sheets[n] = makeSheet(3); });
+sheets['名單快照'] = makeSheet(3); sheets['名單快照'].clearContents = () => { sheets['名單快照'].data = []; };
 // 同仁表：表頭＋1 人（最大 3 列）
 const staffHead = G.SHEETS_.staff.head;
 sheets['同仁'].data = [staffHead, ['S-001', '甲', 'mala', '', '', '0', '0', 'TRUE', '', '', '']];
@@ -94,6 +95,15 @@ const Q = vm.runInContext('makeStore_', G)(files);                         // �
 Q.saveStaff(Object.assign({ id: 'S-005' }, S, { name: '戊（改）' }));
 const col = sheets['同仁'].data.map(r => r[0] + ':' + r[1]);
 eq('手動刪列後寫回正確的列、沒有蓋到別人', col, ['id:姓名', 'S-001:甲', 'S-003:丙', 'S-004:丁（改）', 'S-005:戊（改）']);
+
+// 7) 名單快照：同仁表寫入後重寫，只有公開欄位、姓名遮罩、不含雜湊
+const Z = vm.runInContext('makeStore_', G)(files);
+Z.saveStaff(Object.assign({ id: 'S-006' }, S, { name: '歐陽娜娜', unit: 'mzt', store: '金山', pinHash: 'HASH', salt: 'SALT' }));
+const snap = sheets['名單快照'].data;
+eq('快照表頭', snap[0], ['id', 'name', 'unit', 'store', 'hasPin', 'locked']);
+eq('快照含新同仁（遮罩、門市、有密碼）', snap.find(r => r[0] === 'S-006'), ['S-006', '歐OO娜', 'mzt', '金山', 'Y', '']);
+eq('快照不含雜湊或 salt', JSON.stringify(snap).includes('HASH') || JSON.stringify(snap).includes('SALT'), false);
+eq('快照筆數＝在職同仁', snap.length - 1, vm.runInContext('makeStore_', G)(files).getStaff().filter(s => s.active).length);
 
 // 5) 操作紀錄不換世代（不讓快取失效）
 const genBefore = props.DATA_GEN;

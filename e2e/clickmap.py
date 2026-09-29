@@ -13,8 +13,8 @@ key 的規則（KEY_JS 與 SCAN_JS 共用同一段邏輯，不可分岔，否則
 
 _KEY_LOGIC = """
   if (e.id) return '#' + e.id;
-  const ENUM = ['pu', 'tab', 'unit', 'af', 'at'];
-  const ITEM = ['pick', 'post', 'view', 'month', 'rx', 'cp', 're', 'off', 'pin', 'ed', 'rmf', 'rp', 'del', 'close'];
+  const ENUM = ['pu', 'ps', 'tab', 'unit', 'af', 'at'];
+  const ITEM = ['pick', 'post', 'view', 'month', 'rx', 'cp', 're', 'off', 'pin', 'ed', 'rmf', 'rp', 'del', 'close', 'st'];
   const ds = e.dataset || {};
   for (const k of ENUM) if (ds[k] !== undefined) return '[data-' + k + '=' + ds[k] + ']';
   for (const k of ITEM) if (ds[k] !== undefined) return '[data-' + k + ']';

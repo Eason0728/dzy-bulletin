@@ -17,7 +17,7 @@ const call = (a, q) => { seen.add(a); return C(a, q); };
 let r = call('roster');
 eq('roster ok', r.ok, true);
 eq('roster masked', r.data.find(s => s.id === 'S-001').name, '陳O安');
-eq('roster no hash leak', Object.keys(r.data[0]).sort(), ['hasPin', 'id', 'locked', 'name', 'unit']);
+eq('roster no hash leak', Object.keys(r.data[0]).sort(), ['hasPin', 'id', 'locked', 'name', 'store', 'unit']);
 eq('tester no pin', r.data.find(s => s.id === 'S-013').hasPin, false);
 
 // board 不帶憑證
@@ -65,6 +65,7 @@ eq('admin wrong', call('adminLogin', { pass: 'nope' }).code, 'AUTH');
 r = C('adminLogin', { pass: '1234' });
 eq('admin ok (init)', r.ok, true);
 eq('adminLogin returns data', Array.isArray(r.data.data.posts) && Array.isArray(r.data.data.staff), true);
+{ const exp = Number(r.data.atoken.split('.')[2]); const d = (exp - Date.now()) / 86400e3; eq('admin token valid ~7 days', d > 6.99 && d <= 7.001, true); }
 let at = r.data.atoken;
 eq('adminData no token', call('adminData', {}).code, 'AUTH');
 r = call('adminData', { atoken: at });
@@ -81,7 +82,7 @@ eq('receipts read', r.data.rows.filter(x => x.read).map(x => x.staffId).sort(), 
 // 重設密碼 → 舊憑證失效、解鎖
 eq('reset', call('staffResetPin', { atoken: at, staffId: 'S-013' }).ok, true);
 eq('old token dead', C('board', { token: tok }).code, 'AUTH');
-eq('roster after reset', C('roster').data.find(s => s.id === 'S-013'), { id: 'S-013', name: '測OO甲', unit: 'mala', hasPin: false, locked: false });
+eq('roster after reset', C('roster').data.find(s => s.id === 'S-013'), { id: 'S-013', name: '測OO甲', unit: 'mala', store: '', hasPin: false, locked: false });
 
 // 上傳＋上架
 eq('upload bad type', call('uploadFile', { atoken: at, name: 'a.png', data: 'AAAA' }).code, 'BAD_TYPE');
@@ -182,11 +183,24 @@ eq('ADMIN_INIT consumed', C('adminLogin', { pass: 'pass5678' }).ok, true);
   eq('deleted not re-added', C('syncClock', { atoken: ad }).data.added.includes('金山新人（墨竹亭）'), false);
   eq('roster has no src leak', Object.keys(C('roster').data[0]).includes('src'), false);
 }
+// C16 墨竹亭門市
+{ const ad = C('adminLogin', { pass: 'pass5678' }).data.atoken;
+  eq('staffAdd mzt without store rejected', C('staffAdd', { atoken: ad, name: '墨竹新人', unit: 'mzt' }).code, 'BAD_REQ');
+  const r1 = C('staffAdd', { atoken: ad, name: '墨竹新人', unit: 'mzt', store: '六張犁' });
+  eq('staffAdd mzt with store', [r1.ok, r1.data.staff.store], [true, '六張犁']);
+  eq('staffAdd cf ignores store', C('staffAdd', { atoken: ad, name: '央廚新人2', unit: 'cf', store: '光復' }).data.staff.store, '');
+  eq('roster shows store', C('roster').data.find(s => s.id === r1.data.staff.id).store, '六張犁');
+  eq('staffSetStore ok', C('staffSetStore', { atoken: ad, staffId: r1.data.staff.id, store: '光復' }).ok, true);
+  eq('staffSetStore bad store', C('staffSetStore', { atoken: ad, staffId: r1.data.staff.id, store: '台中' }).code, 'BAD_REQ');
+  eq('staffSetStore non-mzt rejected', C('staffSetStore', { atoken: ad, staffId: 'S-009', store: '光復' }).code, 'BAD_REQ');
+  eq('staffSetStore no token', call('staffSetStore', { staffId: r1.data.staff.id, store: '金山' }).code, 'AUTH');
+  eq('store persisted', C('adminData', { atoken: ad }).data.staff.find(s => s.id === r1.data.staff.id).store, '光復');
+}
 eq('unknown action', C('hack', {}).code, 'BAD_REQ');
 { const code = require('fs').readFileSync(__dirname + '/../gas/Code.js', 'utf8'); const m = /var WRITE_ACTIONS_ = (\[[^\]]*\])/.exec(code);
   const svcW = require('../gas/Service.js').makeService_(DZYB, {}, {}, {}, {}).WRITE_ACTIONS;
   eq('Code.js WRITE_ACTIONS_ matches Service', JSON.stringify(eval(m[1]).sort()), JSON.stringify(svcW.slice().sort())); }
-eq('all 17 actions covered', seen.size, 17);
+eq('all 18 actions covered', seen.size, 18);
 
 // （放最後：會把管理登入鎖住）
 M.setAdminInit('abc');

@@ -81,6 +81,7 @@ function makeApp(cfg) {
   const { makeService_ } = require(path.join(ROOT, 'gas/Service.js'));
   const { makeSqliteStore } = require('./store-sqlite.js');
   const { makeBridge, makeFakeBridge } = require('./bridge.js');
+  const { judgeHealth } = require('./health-rules.js');
 
   const VERSION = (/VERSION: '([0-9.]+)'/.exec(fs.readFileSync(path.join(ROOT, 'js/config.js'), 'utf8')) || [])[1] || '?';
   const { DATA_DIR, E2E, ALLOW, MAX_INFLIGHT } = cfg;
@@ -212,16 +213,21 @@ function makeApp(cfg) {
   function job(file, pick) {
     try { return pick(JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'logs', file), 'utf8'))); } catch (e) { return null; }
   }
+  // 兩個背景工作各自的結果檔（server/mirror.js、server/daily.js）只挑狀態欄位帶出，錯誤原文不外露（#6 審查發現 3）。
+  // mirror-last.json 的待回填筆數欄位叫 pending（#8），對外沿用 #6 的 sigPending；fails＝連續失敗次數（「連續 2 次 → 黃」用）。
+  // level／why：#8 監看判定（server/health-rules.js），守門可以直接看燈號，也可以自己拿 at 重算。
   function health() {
     let freeMB = null;
     try { const s = fs.statfsSync(DATA_DIR); freeMB = Math.floor(s.bavail * s.bsize / 1048576); } catch (e) {}
-    return {
+    const num = (v) => (v === undefined || v === null || isNaN(Number(v)) ? null : Number(v));
+    const h = {
       ok: true, v: VERSION, uptime: Math.round(process.uptime()), e2e: E2E,
       bridge: (cfg.BRIDGE_URL && cfg.BRIDGE_KEY && !E2E) ? 'configured' : 'missing',
-      mirror: job('mirror-last.json', (j) => ({ at: j.at || null, ok: !!j.ok, sigPending: j.sigPending === undefined ? null : Number(j.sigPending) })),
+      mirror: job('mirror-last.json', (j) => ({ at: j.at || null, ok: !!j.ok, sigPending: num(j.pending !== undefined ? j.pending : j.sigPending), fails: num(j.fails) || 0 })),
       backup: job('backup-last.json', (j) => ({ at: j.at || null, ok: !!j.ok })),
       disk: { freeMB }
     };
+    return Object.assign(h, judgeHealth(h, Date.now()));
   }
 
   // ---- 測試入口（E2E=1 才有）：以帶入格式重設資料，密碼用真的雜湊 ----

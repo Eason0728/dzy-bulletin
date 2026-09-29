@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 鼎兆元｜電子佈告欄 — 每小時鏡像＋簽名回填（server/mirror.js，#8）。
+     StartInterval 3600：同一個 job 不會重疊（上一輪還沒結束，這一輪就不會啟動）；失敗不在同一輪重試。
+     範本佔位字串同 com.dzy.bulletin.plist；實際安裝見 M4 的 DEPLOY.md（#9）。 -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.dzy.bulletin.mirror</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__NODE__</string>
+    <string>__REPO__/server/mirror.js</string>
+  </array>
+  <key>WorkingDirectory</key><string>__REPO__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>DATA_DIR</key><string>__DATA_DIR__</string>
+  </dict>
+  <key>StartInterval</key><integer>3600</integer>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__DATA_DIR__/logs/mirror.out.log</string>
+  <key>StandardErrorPath</key><string>__DATA_DIR__/logs/mirror.err.log</string>
+</dict>
+</plist>

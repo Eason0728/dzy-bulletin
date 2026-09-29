@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 鼎兆元｜電子佈告欄 — 每日 DB 快照（server/daily.js，#8）：每天 03:30（系統時區須為台北，M4 驗收）。
+     StartCalendarInterval 錯過的班（睡眠／關機）會在喚醒後補跑，所以守門給 26 小時寬限。
+     範本佔位字串同 com.dzy.bulletin.plist；實際安裝見 M4 的 DEPLOY.md（#9）。 -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.dzy.bulletin.daily</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__NODE__</string>
+    <string>__REPO__/server/daily.js</string>
+  </array>
+  <key>WorkingDirectory</key><string>__REPO__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>DATA_DIR</key><string>__DATA_DIR__</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>3</integer>
+    <key>Minute</key><integer>30</integer>
+  </dict>
+  <key>StandardOutPath</key><string>__DATA_DIR__/logs/daily.out.log</string>
+  <key>StandardErrorPath</key><string>__DATA_DIR__/logs/daily.err.log</string>
+</dict>
+</plist>

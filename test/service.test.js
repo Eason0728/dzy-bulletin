@@ -96,7 +96,16 @@ const f1 = r.data;
 { const ad0 = C('adminLogin', { pass: '1234' }).data.atoken, body = { title: '冪等測試', units: ['cf'], publishOn: DZYB.today(), files: [] };
   const n0 = C('adminData', { atoken: ad0 }).data.posts.length;
   const p1 = C('savePost', { atoken: ad0, post: body, reqId: 'rid-1' }).data.post.id, p2 = C('savePost', { atoken: ad0, post: body, reqId: 'rid-1' }).data.post.id;
-  eq('savePost reqId idempotent', [p1 === p2, C('adminData', { atoken: ad0 }).data.posts.length - n0], [true, 1]); }
+  eq('savePost reqId idempotent', [p1 === p2, C('adminData', { atoken: ad0 }).data.posts.length - n0], [true, 1]);
+  // 逾時後改內容再存（同一份草稿、同 reqId）：不另建、也不丟掉修改 → 變成編輯第一則
+  const p3 = C('savePost', { atoken: ad0, post: Object.assign({}, body, { title: '冪等測試（改）' }), reqId: 'rid-1' }).data.post;
+  eq('same reqId changed content edits first post', [p3.id === p1, p3.title, C('adminData', { atoken: ad0 }).data.posts.length - n0], [true, '冪等測試（改）', 1]);
+  // 新草稿（新 reqId）一定建立新公告
+  const p4 = C('savePost', { atoken: ad0, post: body, reqId: 'rid-2' }).data.post.id;
+  eq('new reqId creates new post', [p4 !== p1, C('adminData', { atoken: ad0 }).data.posts.length - n0], [true, 2]);
+  // 編輯別則公告時沿用舊 reqId 也不會被誤判
+  const p5 = C('savePost', { atoken: ad0, post: Object.assign({}, body, { id: p4, title: '改第二則' }), reqId: 'rid-1' }).data.post;
+  eq('reqId with different post id not deduped', [p5.id, p5.title], [p4, '改第二則']); }
 eq('savePost bad file type', C('savePost', { atoken: at, post: { title: 't', units: ['mala'], publishOn: DZYB.today(), files: [{ id: 'x', name: 'evil.exe', type: 'pdf', size: 1 }] } }).code, 'BAD_TYPE');
 eq('savePost invalid', call('savePost', { atoken: at, post: { title: '', units: ['mala'], publishOn: '2026-09-29' } }).code, 'BAD_REQ');
 r = C('savePost', { atoken: at, post: { title: '測試公告', body: 'x', units: ['cf', 'mzt', 'mala'], publishOn: DZYB.today(), expiresOn: '', pinned: true, files: [f1] } });
@@ -127,19 +136,19 @@ eq('no debug field on server error', Object.keys(M.callSync('receipts', { atoken
 eq('deleted not counted', C('adminData', { atoken: at }).data.posts.find(p => p.id === 'P-20260920-001').targetCount, 5);
 
 // 更換通行碼：只能經由 ADMIN_INIT（網頁沒有 changePass）
-eq('changePass removed', C('changePass', { atoken: at, oldPass: '1234', newPass: '5678' }).code, 'BAD_REQ');
-M.setAdminInit('5678');
+eq('changePass removed', C('changePass', { atoken: at, oldPass: '1234', newPass: 'pass5678' }).code, 'BAD_REQ');
+M.setAdminInit('pass5678');
 eq('pending ADMIN_INIT kills old atoken', C('adminData', { atoken: at }).code, 'AUTH');
 eq('old pass rejected while pending', C('adminLogin', { pass: '1234' }).code, 'AUTH');
-r = C('adminLogin', { pass: '5678' });
+r = C('adminLogin', { pass: 'pass5678' });
 eq('ADMIN_INIT replaces pass', r.ok, true);
 eq('old atoken dead after replace', C('adminData', { atoken: at }).code, 'AUTH');
 eq('new atoken ok', C('adminData', { atoken: r.data.atoken }).ok, true);
 eq('old pass rejected', C('adminLogin', { pass: '1234' }).code, 'AUTH');
-eq('ADMIN_INIT consumed', C('adminLogin', { pass: '5678' }).ok, true);
+eq('ADMIN_INIT consumed', C('adminLogin', { pass: 'pass5678' }).ok, true);
 
 // C15 總部：看得到／要簽
-{ const tk = id => { M.callSync('staffResetPin', { atoken: C('adminLogin', { pass: '5678' }).data.atoken, staffId: id }); return C('setPin', { staffId: id, pin: '2580' }).data.token; };
+{ const tk = id => { M.callSync('staffResetPin', { atoken: C('adminLogin', { pass: 'pass5678' }).data.atoken, staffId: id }); return C('setPin', { staffId: id, pin: '2580' }).data.token; };
   const dzy = tk('S-016'), hmzt = tk('S-017'), hmala = tk('S-018');
   const ids = t => C('board', { token: t }).data.posts.map(p => p.id);
   eq('hq-dzy sees cf post', ids(dzy).includes('P-20260927-001'), true);
@@ -149,7 +158,7 @@ eq('ADMIN_INIT consumed', C('adminLogin', { pass: '5678' }).ok, true);
   eq('hq-dzy ack partial rejected', C('ack', { token: dzy, postId: 'P-20260927-001', sig: 'data:image/png;base64,AA' }).code, 'BAD_REQ');
   eq('hq-dzy ack all ok', C('ack', { token: dzy, postId: 'P-20260910-001', sig: 'data:image/png;base64,AA' }).ok, true);
   eq('hq-mala ack mzt rejected', C('ack', { token: hmala, postId: 'P-20260915-001', sig: 'data:image/png;base64,AA' }).code, 'BAD_REQ');
-  const ad = C('adminLogin', { pass: '5678' }).data.atoken, posts = C('adminData', { atoken: ad }).data.posts;
+  const ad = C('adminLogin', { pass: 'pass5678' }).data.atoken, posts = C('adminData', { atoken: ad }).data.posts;
   const tgt = id => posts.find(p => p.id === id).targetCount;
   eq('target all includes hq-dzy/hq-mzt/hq-mala', tgt('P-20260910-001'), 18);   // 門市在職 15（S-001 已刪、S-019 新增）＋總部 3
   eq('target cf excludes hq', tgt('P-20260927-001'), 6);   // 央廚 5＋S-019，總部都不算
@@ -157,7 +166,7 @@ eq('ADMIN_INIT consumed', C('adminLogin', { pass: '5678' }).ok, true);
   eq('staffAdd bad unit', C('staffAdd', { atoken: ad, name: 'x', unit: 'hq' }).code, 'BAD_REQ');
 }
 // 從打卡系統同步
-{ const ad = C('adminLogin', { pass: '5678' }).data.atoken;
+{ const ad = C('adminLogin', { pass: 'pass5678' }).data.atoken;
   eq('syncClock no token', call('syncClock', {}).code, 'AUTH');
   let s1 = C('syncClock', { atoken: ad }).data;
   eq('sync added', s1.added, ['光復新人（小辛辣）', '央廚新人（央廚）', '金山新人（墨竹亭）']);
@@ -178,6 +187,13 @@ eq('unknown action', C('hack', {}).code, 'BAD_REQ');
   const svcW = require('../gas/Service.js').makeService_(DZYB, {}, {}, {}, {}).WRITE_ACTIONS;
   eq('Code.js WRITE_ACTIONS_ matches Service', JSON.stringify(eval(m[1]).sort()), JSON.stringify(svcW.slice().sort())); }
 eq('all 17 actions covered', seen.size, 17);
+
+// （放最後：會把管理登入鎖住）
+M.setAdminInit('abc');
+eq('ADMIN_INIT too short', C('adminLogin', { pass: 'abc' }).code, 'AUTH');
+M.setAdminInit('newpass88');
+for (let i = 0; i < 5; i++) C('adminLogin', { pass: 'wrong' + i });
+eq('pending init locked after 5 wrong', C('adminLogin', { pass: 'newpass88' }).code, 'ADMIN_LOCKED');
 
 console.log(`service: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

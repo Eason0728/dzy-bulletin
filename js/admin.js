@@ -100,6 +100,7 @@ var Admin = (function () {
     a.draft = p ? { title: p.title, body: p.body, units: p.units.slice(), publishOn: p.publishOn, expiresOn: p.expiresOn || '', pinned: !!p.pinned }
       : { title: '', body: '', units: [], publishOn: a.data.today, expiresOn: '', pinned: false };
     a.files = p ? p.files.slice() : []; a.upMsg = ''; a.tab = 'new';
+    a.reqId = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);   // 冪等鍵綁這份草稿：換草稿就換新
   }
   function formHTML() {
     if (!a.draft) startEdit(null);
@@ -141,12 +142,10 @@ var Admin = (function () {
     if (q('fCancel')) q('fCancel').onclick = function () { a.edit = null; a.draft = null; a.files = []; a.tab = 'posts'; render(); };
     q('fSave').onclick = function () {
       var post = Object.assign({ id: a.edit || undefined, files: a.files }, d);
-      if (!a.reqId) a.reqId = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);   // 同一次儲存（含重送）用同一個 reqId
       var bad = L.postProblem(post); if (bad) { q('fErr').textContent = bad; return; }
       var done = UI.busy(q('fSave'), '儲存中…');
       API.admin('savePost', { post: post, reqId: a.reqId }).then(function (r) {
         done();
-        if (r.ok) a.reqId = null;
         if (!r.ok) { if (r.code !== 'AUTH') q('fErr').textContent = r.message; return; }
         var st = r.data.post.status.state;
         UI.toast(a.edit ? '已儲存' : st === 'plan' ? '已排定，' + L.fmtMD(r.data.post.publishOn) + ' 上架' : '已上架');

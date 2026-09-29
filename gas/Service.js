@@ -44,6 +44,13 @@ function makeService_(L, store, files, auth, clock, clockSrc) {
   function targets(p) {
     return store.getStaff().filter(function (s) { return s.active && L.mustSign(s.unit, p); });
   }
+  // 公告內容指紋（判斷冪等重送是否為同一份內容）
+  function fingerprint(d) {
+    var s = JSON.stringify([d.id || '', String(d.title || '').trim(), d.body || '', L.normUnits(d.units), d.publishOn || '', d.expiresOn || '', !!d.pinned,
+      (d.files || []).map(function (f) { return f && f.id; })]);
+    var h = 5381; for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+    return h.toString(36) + ':' + s.length;
+  }
   function nextId(prefix, list, width) {
     var n = 0;
     list.forEach(function (x) { if (x.id.indexOf(prefix) === 0) n = Math.max(n, parseInt(x.id.slice(prefix.length), 10) || 0); });
@@ -108,6 +115,8 @@ function makeService_(L, store, files, auth, clock, clockSrc) {
       // 偵測到 ADMIN_INIT：轉成雜湊、刪掉原文；若是更換（原本已有通行碼），版本 +1 讓所有舊的管理登入失效。
       // 有待生效的 ADMIN_INIT 時：只接受新通行碼（舊的立即失效），輸對才轉成雜湊；輸錯不會消化它
       if (a.init) {
+        if (Number(a.lockUntil) > clock.nowMs()) throw err('ADMIN_LOCKED', '錯誤太多次，請 15 分鐘後再試');   // 鎖定中一律不比對
+        if (a.hash && String(a.init).length < 6) throw err('AUTH', '新的管理通行碼至少要 6 碼，請到 Apps Script 指令碼屬性 ADMIN_INIT 修改');   // 更換時才檢查長度
         if (!auth.safeEq(String(q.pass || ''), String(a.init))) {
           var bad = auth.adminLogin({ hash: '-', salt: '', fail: a.fail, lockUntil: a.lockUntil }, '', clock.nowMs());   // 沿用連錯鎖定
           a.fail = bad.st.fail; a.lockUntil = bad.st.lockUntil; store.setAdmin(a);
@@ -177,8 +186,12 @@ function makeService_(L, store, files, auth, clock, clockSrc) {
       requireAdmin(q);
       var d = q.post || {};
       // 冪等：前端每次按下儲存帶一個 reqId；逾時重送同一個 reqId 時回傳第一次的結果，不重複建立公告
-      var rid = String(q.reqId || '');
-      if (rid && store.getReq) { var prev = store.getReq(rid); if (prev) return { post: withStatus(findPost(prev), clock.today()) }; }
+      var rid = String(q.reqId || ''), fp = fingerprint(d), prev = null;
+      if (rid && store.getReq) { try { prev = JSON.parse(store.getReq(rid) || 'null'); } catch (e) { prev = null; } }
+      if (prev && prev.id) {
+        if (prev.fp === fp && (!d.id || d.id === prev.id)) return { post: withStatus(findPost(prev.id), clock.today()) };   // 真的重送：回第一次結果
+        if (!d.id) d.id = prev.id;       // 第一次其實已建立、之後又改了內容：改成編輯那一則，不另建、也不丟掉修改
+      }
       var bad = L.postProblem(d); if (bad) throw err('BAD_REQ', bad);
       var fl = (d.files || []).map(function (f) {
         var t = L.fileType(f && f.name);
@@ -198,7 +211,7 @@ function makeService_(L, store, files, auth, clock, clockSrc) {
       p.publishOn = d.publishOn; p.expiresOn = d.expiresOn || ''; p.pinned = !!d.pinned; p.files = fl; p.updatedAt = now;
       if (fl.length) files.share(fl.map(function (f) { return f.id; }));   // 先驗證並分享（不合格的 id 在這裡就被擋，公告不會寫入）
       store.savePost(p);                                                  // 再寫試算表
-      if (rid && store.putReq) store.putReq(rid, p.id);
+      if (rid && store.putReq) store.putReq(rid, JSON.stringify({ id: p.id, fp: fp }));
       if (removed.length) files.revoke(removed);                          // 最後才撤銷移除的附件
       log(d.id ? '編輯' : '上架', p.id, p.title);
       return { post: withStatus(p, clock.today()) };

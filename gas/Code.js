@@ -3,7 +3,7 @@
 'use strict';
 
 var WRITE_ACTIONS_ = ['setPin', 'login', 'ack', 'adminLogin', 'savePost', 'setPublished', 'setPinned', 'staffAdd', 'staffDelete', 'staffResetPin', 'syncClock'];   // 必須與 Service.WRITE_ACTIONS 一致（test 檢查）
-var VERSION_ = '0.3.8';
+var VERSION_ = '0.3.9';
 
 function doGet() {
   return json_({ ok: true, data: { app: 'dzy-bulletin', v: VERSION_ } });

@@ -13,14 +13,15 @@
 │   ├── logic.js                   共用純函式（前端、後端、node 測試三方共用，正本只有這一份）
 │   ├── config.js                  MODE、GAS 網址、逾時、版本號
 │   ├── api.js                     cloud：fetch GAS；local：轉給 mock.js
-│   ├── mock.js                    本機假後端（完整實作 API 契約，資料放 localStorage）
+│   ├── mock.js                    本機假後端：Service.js＋localStorage store＋假加密
 │   ├── staff.js                   名單／密碼／公告／歷史／內容頁／附件檢視
 │   ├── sign.js                    手寫簽名板
 │   └── admin.js                   設定面板（公告管理、表單、上傳、回條、同仁、通行碼）
 ├── gas/                           clasp rootDir（.clasp.json 已 gitignore）
 │   ├── appsscript.json
-│   ├── Code.js                    路由＋處理函式
-│   ├── Auth.js                    雜湊、憑證、鎖定
+│   ├── Code.js                    路由（doPost）＋把 Service 接到 Store／Files
+│   ├── Service.js                 API 契約 17 個 action 的唯一實作（本機假後端也用這份）
+│   ├── Auth.js                    雜湊、憑證、鎖定（加密原語注入）
 │   ├── Store.js                   試算表讀寫
 │   ├── Files.js                   Drive 上傳／分享／撤銷／空間
 │   └── Logic.js                   ← 由 tools/build.sh 從 js/logic.js 複製產生，不手改

@@ -12,7 +12,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.6 -apple-system,BlinkMacS
 button{font:inherit;cursor:pointer}
 input,textarea,select{font:inherit;color:inherit}
 .wrap{max-width:600px;margin:0 auto;padding:0 16px 96px}
-.demo{background:#fff4d6;color:#6b4e00;font-size:12.5px;padding:6px 16px;display:flex;gap:8px;align-items:center;justify-content:center;flex-wrap:wrap}
+.demo{position:relative;z-index:60;background:#fff4d6;color:#6b4e00;font-size:12.5px;padding:6px 16px;display:flex;gap:8px;align-items:center;justify-content:center;flex-wrap:wrap}
 .demo button{border:1px solid #d9b95a;background:#fff;border-radius:999px;padding:1px 10px;font-size:12px}
 header.top{position:sticky;top:0;z-index:20;background:var(--brand);color:var(--brand-ink)}
 header.top .in{max-width:600px;margin:0 auto;padding:12px 16px 10px;display:flex;align-items:center;gap:10px}

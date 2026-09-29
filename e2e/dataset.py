@@ -55,9 +55,10 @@ def make(seed, today):
             n += 1
             staff.append({'id': 'S-%03d' % n, 'name': name(), 'unit': u, 'pin': rand_pin(rng), 'fail': 0})
     # 分層：約 1/5 沒設密碼、1 人被鎖定（連錯 3 次）
-    for s in rng.sample(staff, max(1, len(staff) // 5)):
+    firsts = {u: next(x['id'] for x in staff if x['unit'] == u) for u in STAFF_UNITS}   # 每個單位第一位保證有密碼（登入流程要用）
+    for s in rng.sample([x for x in staff if x['id'] not in firsts.values()], max(1, len(staff) // 5)):
         s['pin'] = None
-    lockable = [s for s in staff if s['pin'] and s['unit'] in UNITS]
+    lockable = [s for s in staff if s['pin'] and s['unit'] in UNITS and s['id'] not in firsts.values()] or [s for s in staff if s['pin'] and s['unit'] in UNITS]
     rng.choice(lockable)['fail'] = 3
 
     # 公告：四種狀態都要出現；單位組合含「全部」
@@ -108,6 +109,7 @@ def make(seed, today):
 
     admin_pass = 'E2E' + ''.join(rng.choice('abcdefghjk23456789') for _ in range(6))
     data = {'staff': staff, 'posts': posts, 'reads': reads, 'clock': clock, 'adminPass': admin_pass}
+    data['firsts'] = firsts
     return data
 
 

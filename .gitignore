@@ -8,3 +8,5 @@ node_modules/
 test-results/
 playwright-report/
 gas/Config.local.js
+e2e/artifacts/
+__pycache__/

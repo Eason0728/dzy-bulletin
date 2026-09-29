@@ -343,7 +343,15 @@ const srv = http.createServer((req, res) => {
     eq('mirror 已讀少 1 筆 → BAD_REQ', (await raw({ action: 'bridge', key: KEY, op: 'mirror', data: Object.assign({}, d2, { reads: d2.reads.slice(1) }) })).code, 'BAD_REQ');
     eq('mirror 已讀多 1 筆 → 接受', (await raw({ action: 'bridge', key: KEY, op: 'mirror', data: Object.assign({}, d2, { reads: d2.reads.concat([{ postId: 'P-X', staffId: 'S-001', name: 'a', unit: 'mala', at: 't', driveSigId: '' }]) }) })).ok, true);
     eq('mirror 已讀少帶 force:true → 放行', [(await raw({ action: 'bridge', key: KEY, op: 'mirror', force: true, data: Object.assign({}, d2, { reads: d2.reads.slice(2) }) })).ok, book.getSheetByName('已讀').data.length], [true, d2.reads.length - 1]);
-    await B.call('mirror', { data: d2 }); }
+    await B.call('mirror', { data: d2 });
+    // M3 審查 S6：比「不重複 (postId, staffId)、非空白」的列數。分頁有 2 列重複＋1 列空白時，送去重後的資料要接受；真的少一筆不重複的要拒絕
+    const sh = book.getSheetByName('已讀'); sh.data.push(sh.data[1].slice(), sh.data[2].slice(), ['', '', '', '', '', '']); bumpGen();
+    eq('（前提）已讀分頁原始列數比 Mac mini 多 3', sh.data.length - 1, d2.reads.length + 3);
+    eq('分頁有重複／空白已讀列：送去重後的資料 → 接受', (await raw({ action: 'bridge', key: KEY, op: 'mirror', data: d2 })).ok, true);
+    sh.data.push(sh.data[1].slice()); bumpGen();
+    eq('分頁有重複列、但真的少一筆不重複的已讀 → 拒絕', (await raw({ action: 'bridge', key: KEY, op: 'mirror', data: Object.assign({}, d2, { reads: d2.reads.slice(1).concat([d2.reads[2]]) }) })).code, 'BAD_REQ');
+    const st = book.getSheetByName('同仁'), stn = st.data.length - 1; const orig = st.data.slice(1).map((r) => r.slice()); st.data.push(...orig.map((r) => r.slice()), ...orig.map((r) => r.slice())); bumpGen();   // 同仁分頁整份重複兩次（原始列數 ×3，比原始列數會被「少一半以上」擋下）
+    eq('同仁分頁整份重複（原始列數 ×3）：送去重後的資料 → 接受（posts／staff 也比不重複 id）', [stn, (await raw({ action: 'bridge', key: KEY, op: 'mirror', data: d2 })).ok], [d2.staff.length, true]); }
 
   // #13 N1：mirror 只接受「分頁既有」或「目前簽名資料夾裡的圖」當簽名檔 id；否則整份拒絕，回條也讀不出雲端硬碟的其他檔案
   { const base = snapshot(), legacyDir = newFolder('舊簽名資料夾', 'ROOT');

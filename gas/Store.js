@@ -80,6 +80,11 @@ function writeSnap_(staffRows) {
 var MIRROR_KEYS_ = ['posts', 'staff', 'reads', 'log'], MIRROR_TMP_ = '__鏡像中', MIRROR_OLD_ = '__上一輪';
 // oldSig：現有「已讀」分頁的 postId|staffId → 簽名檔 id。新資料沒帶 driveSigId 時保留原值（#13 S3）：
 // 搬遷前的舊簽名 Drive id 已在分頁裡，Mac mini 端漏回填或欄位名對不上時，第一次鏡像也不會把它洗成空白。
+function distinct_(list, keyOf) {                                     // 不重複、非空白的鍵數
+  var seen = Object.create(null), n = 0;
+  list.forEach(function (x) { var k = keyOf(x); if (k && !seen[k]) { seen[k] = true; n++; } });
+  return n;
+}
 function mirrorRows_(d, fromPost, oldSig) {
   oldSig = oldSig || {};
   return {
@@ -244,12 +249,15 @@ function makeStore_(files) {
       if (MIRROR_KEYS_.every(function (k) { return !d[k].length; })) throw bad('鏡像資料全空，拒絕覆寫');
       var oldReads = rows('reads', true).filter(function (r) { return r.postId; });
       if (!opt.force) {                                                     // force 只由 Eason 手動帶，mirror.js 預設不帶
+        // 筆數一律比「不重複、非空白」的鍵：正式分頁可能有重複或空白列，搬到 Mac mini 時會去重，比原始列數會被永久拒絕（M3 審查 S6）
+        var idOf = function (r) { return r && r.id ? String(r.id) : ''; }, readOf = function (r) { return r && r.postId && r.staffId ? r.postId + '|' + r.staffId : ''; };
         ['posts', 'staff'].forEach(function (k) {
-          var sh = book.getSheetByName(SHEETS_[k].name), have = sh ? Math.max(sh.getLastRow() - 1, 0) : 0;
-          if (d[k].length * 2 < have) throw bad('鏡像的' + SHEETS_[k].name + '筆數（' + d[k].length + '）比現有（' + have + '）少一半以上，拒絕覆寫（確認無誤請帶 force）');
+          var have = distinct_(rows(k, true), idOf), send = distinct_(d[k], idOf);
+          if (send * 2 < have) throw bad('鏡像的' + SHEETS_[k].name + '筆數（' + send + '）比現有（' + have + '）少一半以上，拒絕覆寫（確認無誤請帶 force）');
         });
         // 已讀不會被硬刪（每人每則一次），筆數只增不減 → 少一筆就拒絕（#13 S6）
-        if (d.reads.length < oldReads.length) throw bad('鏡像的已讀筆數（' + d.reads.length + '）比現有（' + oldReads.length + '）少，拒絕覆寫（確認無誤請帶 force）');
+        var haveR = distinct_(oldReads, readOf), sendR = distinct_(d.reads, readOf);
+        if (sendR < haveR) throw bad('鏡像的已讀筆數（' + sendR + '）比現有（' + haveR + '）少，拒絕覆寫（確認無誤請帶 force）');
       }
       var oldSig = {}, known = Object.create(null);
       oldReads.forEach(function (r) { if (r.sigId) { oldSig[r.postId + '|' + r.staffId] = r.sigId; known[r.sigId] = true; } });

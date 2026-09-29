@@ -33,6 +33,7 @@ function makeFiles_() {
   function ours(id) {
     var f;
     try { f = DriveApp.getFileById(id); } catch (e) { throw err('BAD_REQ', '找不到附件檔案'); }
+    if (f.isTrashed()) throw err('BAD_REQ', '找不到附件檔案');     // 已撤銷（在垃圾桶）的附件不可再 share 回公開（#13 第 3 輪 R1）
     // 只允許 Word／PDF／Excel：擋掉正本試算表、簽名圖、資料夾與任何 Google 文件類型
     if (OK_MIME.indexOf(f.getMimeType()) < 0 || id === PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID')) throw err('BAD_REQ', '附件格式錯誤');
     var fid = attachFolder_().getId(), ps = f.getParents();

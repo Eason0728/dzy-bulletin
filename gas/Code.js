@@ -98,7 +98,12 @@ function bridgeCore_(req, d) {
     try { return fn(); } finally { release(); }
   };
   try {
-    if (op === 'upload') return ok(d.files().upload(String(req.name || ''), String(req.mime || ''), String(req.data || '')));
+    if (op === 'upload') {                                            // 與 Service.uploadFile 同一套規則：只收 Word／PDF／Excel、單檔 ≤ 20MB（限制每次呼叫能造成的傷害）
+      var un = String(req.name || ''), ub = String(req.data || ''), usz = Math.floor(ub.length * 3 / 4);
+      if (!DZYB.fileType(un)) return bad('只接受 Word／PDF／Excel');
+      if (!(usz > 0) || usz > DZYB.MAX_BYTES + 3) return bad('單檔不能超過 20MB');
+      return ok(d.files().upload(un, DZYB.fileMime(un), ub));           // mime 一律依副檔名，不信任呼叫端
+    }
     if (op === 'share') { d.files().share(Array.isArray(req.ids) ? req.ids.map(String) : []); return ok({}); }
     if (op === 'revoke') { d.files().revoke(Array.isArray(req.ids) ? req.ids.map(String) : []); return ok({}); }
     if (op === 'quota') return ok(d.files().quota());
@@ -168,7 +173,8 @@ function gasBridgeDeps_() {
 
 // 每日 DB 快照：獨立的「鼎兆元｜電子佈告欄備份」資料夾（雲端硬碟根目錄、不分享、僅 owner），保留 30 天。
 // 不得放在附件資料夾底下：附件資料夾有 share／ours 邏輯，且會被人打開翻（#7）。
-var BACKUP_FOLDER_NAME_ = '鼎兆元｜電子佈告欄備份', BACKUP_KEEP_DAYS_ = 30;
+// 單檔上限 14MB：Mac mini 端 daily.js 以 base64 POST 上傳，14MB 的 base64 約 19MB，遠低於 Apps Script 的請求上限，也限制每次呼叫能塞的配額
+var BACKUP_FOLDER_NAME_ = '鼎兆元｜電子佈告欄備份', BACKUP_KEEP_DAYS_ = 30, BACKUP_MAX_BYTES_ = 14 * 1024 * 1024;
 function backupFolder_() {
   var fo = folderByProp_('BACKUP_FOLDER_ID', BACKUP_FOLDER_NAME_, null), aid = attachFolder_().getId(), ps = fo.getParents();
   while (ps.hasNext()) {
@@ -185,9 +191,14 @@ function backupSharedWith_(fo) {
   try { return fo.getEditors().length + fo.getViewers().length; } catch (e) { return -1; }
 }
 function saveBackup_(name, b64) {
-  if (!name || !b64) { var e = new Error('備份檔名或內容是空的'); e.code = 'BAD_REQ'; throw e; }
+  var bad = function (m) { var e = new Error(m); e.code = 'BAD_REQ'; return e; };
+  if (!name || !b64) throw bad('備份檔名或內容是空的');
+  if (!/\.gz$/i.test(name)) throw bad('備份檔只收 .gz');
+  if (Math.floor(b64.length * 3 / 4) > BACKUP_MAX_BYTES_ + 3) throw bad('備份檔不能超過 14MB');
+  var bytes = Utilities.base64Decode(b64);
+  if (bytes.length < 2 || (bytes[0] & 255) !== 0x1f || (bytes[1] & 255) !== 0x8b) throw bad('備份檔不是 gzip');   // magic bytes 1f 8b
   var fo = backupFolder_();
-  var f = fo.createFile(Utilities.newBlob(Utilities.base64Decode(b64), 'application/gzip', name.replace(/[^\w.-]/g, '_')));
+  var f = fo.createFile(Utilities.newBlob(bytes, 'application/gzip', name.replace(/[^\w.-]/g, '_')));
   f.setSharing(DriveApp.Access.PRIVATE, DriveApp.Permission.NONE);   // 分享狀態明確設成「限制」
   var cut = Date.now() - BACKUP_KEEP_DAYS_ * 86400e3, it = fo.getFiles(), trashed = 0;
   while (it.hasNext()) { var x = it.next(); if (x.getId() !== f.getId() && x.getDateCreated().getTime() < cut) { x.setTrashed(true); trashed++; } }

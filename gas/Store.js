@@ -119,7 +119,12 @@ function mirrorHeal_(book) {
   });
   props_().setProperty('MIRROR_PHASE', 'done'); return 'restore';
 }
-function mirrorHeal() { Logger.log('鏡像修復：' + mirrorHeal_(ss_())); }   // 編輯器手動執行用（clean／forward／restore）
+// 編輯器手動執行用（clean／forward／restore）：先拿 ScriptLock，每小時的鏡像正在換名時不插手（#13 第 3 輪建議 4）
+function mirrorHeal() {
+  var l = LockService.getScriptLock();
+  if (!l.tryLock(30000)) { Logger.log('鏡像進行中，稍後再試'); return 'busy'; }
+  try { var r = mirrorHeal_(ss_()); Logger.log('鏡像修復：' + r); return r; } finally { l.releaseLock(); }
+}
 
 function makeStore_(files) {
   var book = null, memo = {}, gen = null, snapDirty = false;                              // gen 惰性讀取：寫入動作在鎖內才第一次讀
@@ -258,6 +263,10 @@ function makeStore_(files) {
         // 已讀不會被硬刪（每人每則一次），筆數只增不減 → 少一筆就拒絕（#13 S6）
         var haveR = distinct_(oldReads, readOf), sendR = distinct_(d.reads, readOf);
         if (sendR < haveR) throw bad('鏡像的已讀筆數（' + sendR + '）比現有（' + haveR + '）少，拒絕覆寫（確認無誤請帶 force）');
+        // 操作紀錄也只增不減（Mac mini 只有匯入時才清），#10 回退也要看它 → 不重複列數少就拒絕（#13 第 3 輪建議 2）
+        var logOf = function (e) { return e && (e.at || e.action) ? [e.at, e.action, e.target || '', e.summary || ''].join('\u0001') : ''; };
+        var haveL = distinct_(rows('log', true), logOf), sendL = distinct_(d.log, logOf);
+        if (sendL < haveL) throw bad('鏡像的操作紀錄筆數（' + sendL + '）比現有（' + haveL + '）少，拒絕覆寫（確認無誤請帶 force）');
       }
       var oldSig = {}, known = Object.create(null);
       oldReads.forEach(function (r) { if (r.sigId) { oldSig[r.postId + '|' + r.staffId] = r.sigId; known[r.sigId] = true; } });

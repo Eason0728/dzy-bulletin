@@ -11,7 +11,7 @@ function eq(name, got, want) {
 }
 
 // ---------- 假 Google 服務 ----------
-const props = {}, cache = {};
+const props = {}, cache = {}, logged = [];
 let lockFree = true, throwOnWrite = null, onTryLock = null, failRename = null, failDelete = null;   // failDelete：{name, n} 刪這個名稱的分頁時丟錯 n 次
    // onTryLock：等鎖期間發生的事（S2）；failRename：改成這個名稱時丟錯一次（還原時同名可以成功）                       // throwOnWrite：寫到這個分頁名稱時丟錯（模擬 mirror 寫到一半逾時）
 function makeSheet(name, maxRows) {
@@ -80,7 +80,8 @@ function fileObj(id) {
 }
 const signed = (buf) => Array.from(buf).map((b) => (b > 127 ? b - 256 : b));
 const G = {
-  console: Object.assign({}, console, { error: () => {}, warn: () => {} }),   // 預期中的錯誤（丟錯測試）不洗版
+  console: Object.assign({}, console, { error: () => {}, warn: () => {} }),
+  Logger: { log: (m) => logged.push(String(m)) },   // 預期中的錯誤（丟錯測試）不洗版
   DZYB: require('../js/logic.js'),
   PropertiesService: { getScriptProperties: () => ({
     getProperty: (k) => (k in props ? props[k] : null), setProperty: (k, v) => { props[k] = String(v); },
@@ -301,14 +302,14 @@ const srv = http.createServer((req, res) => {
 
   // mirror 寫到一半丟錯（已讀寫完、寫操作紀錄時逾時）→ 正式四分頁仍是上一輪的完整資料；下一輪成功並清掉殘留暫存分頁
   const good = snapshot();
-  const d2 = Object.assign({}, full, { log: [{ at: 'x', action: 'y', target: '', summary: '' }] });
+  const d2 = Object.assign({}, full, { log: dump.log.concat([{ at: 'x', action: 'y', target: '', summary: '' }]) });
   throwOnWrite = '操作紀錄__鏡像中';
   eq('mirror 中途丟錯 → 回錯誤', (await raw({ action: 'bridge', key: KEY, op: 'mirror', data: d2 })).ok, false);
   eq('mirror 中途丟錯 → 正式四分頁仍是上一輪完整資料', snapshot(), good);
   eq('（殘留暫存分頁存在，正式分頁不受影響）', book.getSheets().some((s) => s.name === '已讀__鏡像中'), true);
   throwOnWrite = null;
   eq('下一輪 mirror 成功', (await raw({ action: 'bridge', key: KEY, op: 'mirror', data: d2 })).ok, true);
-  eq('下一輪清掉殘留暫存分頁、操作紀錄換成新資料', [book.getSheets().map((s) => s.name), book.getSheetByName('操作紀錄').data.length], [['公告', '同仁', '已讀', '操作紀錄'], 2]);
+  eq('下一輪清掉殘留暫存分頁、操作紀錄換成新資料', [book.getSheets().map((s) => s.name), book.getSheetByName('操作紀錄').data.length], [['公告', '同仁', '已讀', '操作紀錄'], dump.log.length + 2]);
   eq('mirror 缺任一份（例如沒帶 reads）→ BAD_REQ、正式分頁不被清空', [(await raw({ action: 'bridge', key: KEY, op: 'mirror', data: { posts: [], staff: [], log: [] } })).code, book.getSheetByName('已讀').data.length], ['BAD_REQ', dump.reads.length + 1]);
   lockFree = false;
   eq('mirror 拿不到 ScriptLock → SERVER 忙碌', (await raw({ action: 'bridge', key: KEY, op: 'mirror', data: d2 })).code, 'SERVER');
@@ -343,6 +344,12 @@ const srv = http.createServer((req, res) => {
     eq('mirror 已讀少 1 筆 → BAD_REQ', (await raw({ action: 'bridge', key: KEY, op: 'mirror', data: Object.assign({}, d2, { reads: d2.reads.slice(1) }) })).code, 'BAD_REQ');
     eq('mirror 已讀多 1 筆 → 接受', (await raw({ action: 'bridge', key: KEY, op: 'mirror', data: Object.assign({}, d2, { reads: d2.reads.concat([{ postId: 'P-X', staffId: 'S-001', name: 'a', unit: 'mala', at: 't', driveSigId: '' }]) }) })).ok, true);
     eq('mirror 已讀少帶 force:true → 放行', [(await raw({ action: 'bridge', key: KEY, op: 'mirror', force: true, data: Object.assign({}, d2, { reads: d2.reads.slice(2) }) })).ok, book.getSheetByName('已讀').data.length], [true, d2.reads.length - 1]);
+    await B.call('mirror', { data: d2 });
+    // 第 3 輪建議 2：操作紀錄也只增不減——log:[]、少一筆不重複的 → 拒絕；重複列不算；force:true 才放行
+    const lb = snapshot();
+    eq('mirror log:[]（其他正常）→ BAD_REQ、操作紀錄沒被洗掉', [(await raw({ action: 'bridge', key: KEY, op: 'mirror', data: Object.assign({}, d2, { log: [] }) })).code, snapshot() === lb], ['BAD_REQ', true]);
+    eq('mirror 操作紀錄少 1 筆（用重複列湊數也不算）→ BAD_REQ', (await raw({ action: 'bridge', key: KEY, op: 'mirror', data: Object.assign({}, d2, { log: d2.log.slice(1).concat([d2.log[1]]) }) })).code, 'BAD_REQ');
+    eq('mirror 操作紀錄少帶 force:true → 放行', [(await raw({ action: 'bridge', key: KEY, op: 'mirror', force: true, data: Object.assign({}, d2, { log: d2.log.slice(1) }) })).ok, book.getSheetByName('操作紀錄').data.length], [true, d2.log.length]);
     await B.call('mirror', { data: d2 });
     // M3 審查 S6：比「不重複 (postId, staffId)、非空白」的列數。分頁有 2 列重複＋1 列空白時，送去重後的資料要接受；真的少一筆不重複的要拒絕
     const sh = book.getSheetByName('已讀'); sh.data.push(sh.data[1].slice(), sh.data[2].slice(), ['', '', '', '', '', '']); bumpGen();
@@ -392,34 +399,40 @@ const srv = http.createServer((req, res) => {
 
   // 建議 3＋S7：換名的進度寫進 MIRROR_PHASE，heal 依標記還原（沒做完）或往前完成（只差刪備份）
   { const base = snapshot(); failRename = '同仁';                 // 第二張（同仁）的暫存分頁改成正式名稱時丟錯
-    eq('換名中途失敗 → 回錯誤', (await raw({ action: 'bridge', key: KEY, op: 'mirror', data: Object.assign({}, d2, { log: [] }) })).ok, false);
+    eq('換名中途失敗 → 回錯誤', (await raw({ action: 'bridge', key: KEY, op: 'mirror', data: Object.assign({}, d2, { log: d2.log.concat([{ at: 'fail', action: 'round', target: '', summary: '' }]) }) })).ok, false);
     eq('換名中途失敗 → 四個正式分頁都在且是上一輪資料、沒有「__上一輪」殘留、標記回 done', [snapshot() === base, book.getSheets().filter((x) => /__上一輪$/.test(x.name)).length, props.MIRROR_PHASE], [true, 0, 'done']);
     eq('換名失敗後 GAS roster 照常', doPost({ action: 'roster' }).ok, true);
     // 換名成功、刪「同仁__上一輪」時中斷兩次（mirror 本身與 catch 內的 heal 都失敗）→ 標記停在 tmp_renamed；手動 heal 往前完成、不改資料
     failDelete = { name: '同仁__上一輪', n: 2 };
-    const d3 = Object.assign({}, d2, { log: [{ at: 'new', action: 'round', target: '', summary: '' }] });
+    const d3 = Object.assign({}, d2, { log: d2.log.concat([{ at: 'new', action: 'round', target: '', summary: '' }]) });
     eq('刪備份時中斷 → 回錯誤、標記停在 tmp_renamed', [(await raw({ action: 'bridge', key: KEY, op: 'mirror', data: d3 })).ok, props.MIRROR_PHASE], [false, 'tmp_renamed']);
     const mid = snapshot();
-    eq('（前提）四張正式分頁都是新一輪、還留著「同仁__上一輪」', [book.getSheetByName('操作紀錄').data[1][1], !!book.getSheetByName('同仁__上一輪')], ['round', true]);
+    eq('（前提）四張正式分頁都是新一輪、還留著「同仁__上一輪」', [book.getSheetByName('操作紀錄').data.slice(-1)[0][1], !!book.getSheetByName('同仁__上一輪')], ['round', true]);
     eq('手動 mirrorHeal()：往前完成（只刪備份、四分頁資料不變）', [vm.runInContext('mirrorHeal_(ss_())', G), snapshot() === mid, book.getSheets().map((x) => x.name), props.MIRROR_PHASE], ['forward', true, ['公告', '同仁', '已讀', '操作紀錄'], 'done']);
+    // 第 3 輪建議 4：手動 mirrorHeal() 先拿 ScriptLock，拿不到（鏡像正在換名）就回報 busy、不動分頁
+    book.getSheetByName('同仁').setName('同仁__上一輪'); props.MIRROR_PHASE = 'backup_renamed'; const all = () => JSON.stringify(book.getSheets().map((x) => [x.name, x.data])), hb = all(), hn = book.getSheets().map((x) => x.name);
+    lockFree = false;
+    eq('mirrorHeal() 拿不到鎖 → busy、分頁與標記都沒動', [vm.runInContext('mirrorHeal()', G), all() === hb, book.getSheets().map((x) => x.name), props.MIRROR_PHASE, logged.slice(-1)[0]], ['busy', true, hn, 'backup_renamed', '鏡像進行中，稍後再試']);
+    lockFree = true;
+    eq('mirrorHeal() 拿到鎖 → 依標記還原', [vm.runInContext('mirrorHeal()', G), book.getSheets().map((x) => x.name).sort().join(), props.MIRROR_PHASE], ['restore', ['公告', '同仁', '已讀', '操作紀錄'].sort().join(), 'done']);
     // 同樣的中斷狀態，下一輪鏡像先 heal（往前完成）、接著被防呆擋下 → 分頁仍一致是新一輪，不會混合
     failDelete = { name: '同仁__上一輪', n: 2 };
-    await raw({ action: 'bridge', key: KEY, op: 'mirror', data: Object.assign({}, d3, { log: [{ at: 'new2', action: 'round2', target: '', summary: '' }] }) });
+    await raw({ action: 'bridge', key: KEY, op: 'mirror', data: Object.assign({}, d3, { log: d3.log.concat([{ at: 'new2', action: 'round2', target: '', summary: '' }]) }) });
     const mid2 = snapshot();
-    eq('下一輪先 heal 再被防呆擋：分頁一致是上一輪成功換上的資料', [(await raw({ action: 'bridge', key: KEY, op: 'mirror', data: Object.assign({}, d3, { reads: [] }) })).code, book.getSheetByName('操作紀錄').data[1][1], book.getSheets().map((x) => x.name), snapshot() === mid2], ['BAD_REQ', 'round2', ['公告', '同仁', '已讀', '操作紀錄'], true]);
+    eq('下一輪先 heal 再被防呆擋：分頁一致是上一輪成功換上的資料', [(await raw({ action: 'bridge', key: KEY, op: 'mirror', data: Object.assign({}, d3, { reads: [] }) })).code, book.getSheetByName('操作紀錄').data.slice(-1)[0][1], book.getSheets().map((x) => x.name), snapshot() === mid2], ['BAD_REQ', 'round2', ['公告', '同仁', '已讀', '操作紀錄'], true]);
     // 還原路徑：換名做到一半（標記 renaming、同仁已改成「__上一輪」）→ 下一輪開頭整組還原後成功
     book.getSheetByName('同仁').setName('同仁__上一輪'); props.MIRROR_PHASE = 'renaming';
-    eq('（前提）正式同仁分頁不見', book.getSheetByName('同仁'), null);
-    eq('下一輪 mirror 開頭自我修復後成功', [(await raw({ action: 'bridge', key: KEY, op: 'mirror', data: d2 })).ok, book.getSheets().map((x) => x.name)], [true, ['公告', '同仁', '已讀', '操作紀錄']]); }
+    eq('（前提）正式同仁分頁不見', book.getSheetByName('同仁'), null);   // 下一行帶 force：前面幾輪的操作紀錄比 d2 多
+    eq('下一輪 mirror 開頭自我修復後成功', [(await raw({ action: 'bridge', key: KEY, op: 'mirror', force: true, data: d2 })).ok, book.getSheets().map((x) => x.name)], [true, ['公告', '同仁', '已讀', '操作紀錄']]); }
 
   eq('鏡像後重寫公開名單快照（只有遮罩姓名）', [snapSheet.data.length - 1, snapSheet.data.slice(1).every((r) => r[1].includes('O') || r[1].length <= 2), JSON.stringify(snapSheet.data).includes('h1')], [d2.staff.filter((x) => x.active).length, true, false]);
   // 鏡像後回退（PRIMARY=gas）：GAS 的 readSig 讀得到鏡像寫回的 Drive id（用上面 sigs 上傳得到的真 id）
-  await B.call('mirror', { data: Object.assign({}, d2, { reads: [Object.assign({}, dump.reads[0], { driveSigId: up.ids[0] })].concat(d2.reads.slice(1)) }) });
+  await B.call('mirror', { data: Object.assign({}, d2, { reads: [Object.assign({}, dump.reads[0], { driveSigId: up.ids[0] })].concat(d2.reads.slice(1)) }), force: true });
   props.PRIMARY = 'gas';
   eq('回退後 GAS 用鏡像的簽名檔 id 讀得到簽名圖', store().getSigs(dump.reads[0].postId)[dump.reads[0].staffId], png);
 
   // ===== 驗收 9：備份檔落在獨立備份資料夾、分享狀態為「限制」 =====
-  const b64 = Buffer.from('gzip-bytes').toString('base64');
+  const zlib = require('zlib'), b64 = zlib.gzipSync(Buffer.from('gzip-bytes')).toString('base64');
   props.BACKUP_FOLDER_ID = vm.runInContext('attachFolder_()', G).createFolder('備份').getId();   // 模擬舊草稿：備份資料夾在附件資料夾底下
   drive.folders[props.BACKUP_FOLDER_ID].sharing = 'ANYONE_WITH_LINK';
   const oldFolder = props.BACKUP_FOLDER_ID;
@@ -427,7 +440,7 @@ const srv = http.createServer((req, res) => {
   const bf = drive.files[bk.id], bfo = drive.folders[bf.parent];
   eq('備份：不在附件資料夾底下，改建在雲端硬碟根目錄的獨立資料夾', [bf.parent !== oldFolder, bfo.parent, bfo.name, props.BACKUP_FOLDER_ID === bf.parent], [true, 'ROOT', '鼎兆元｜電子佈告欄備份', true]);
   eq('備份：檔案與資料夾分享狀態都是「限制」', [bf.sharing, bfo.sharing], ['PRIVATE', 'PRIVATE']);
-  eq('備份：內容與檔名', [Buffer.from(bf.bytes.map((x) => x & 255)).toString(), bf.name, bf.mime], ['gzip-bytes', 'dzyb-2026-09-30.db.gz', 'application/gzip']);
+  eq('備份：內容與檔名', [zlib.gunzipSync(Buffer.from(bf.bytes.map((x) => x & 255))).toString(), bf.name, bf.mime], ['gzip-bytes', 'dzyb-2026-09-30.db.gz', 'application/gzip']);
   drive.folders[bf.parent].sharing = 'ANYONE_WITH_LINK';          // 有人把備份資料夾分享出去 → 下次備份時收回
   const oldId = newFile({ name: 'old.gz', mime: 'application/gzip', bytes: [1] }, bf.parent); drive.files[oldId].created = Date.now() - 31 * 86400e3;
   const bk2 = await B.call('backup', { name: '../../evil name.gz', data: b64 });
@@ -436,6 +449,13 @@ const srv = http.createServer((req, res) => {
   eq('備份：回報個別共用者人數（沒人＝0）', bk2.sharedWith, 0);
   drive.folders[bf.parent].editors = ['someone@example.com'];
   eq('備份：資料夾有個別共用者時回報人數（M3 標黃）', (await B.call('backup', { name: 'b.gz', data: b64 })).sharedWith, 1);
+  // 第 3 輪建議 1：backup 只收 .gz（檔名＋magic bytes 1f 8b）、單檔 ≤ 14MB，其他一律 BAD_REQ、不建檔
+  { const nf = Object.keys(drive.files).length, bkr = async (name, data) => (await raw({ action: 'bridge', key: KEY, op: 'backup', name, data })).code;
+    eq('備份：檔名不是 .gz → BAD_REQ', [await bkr('x.db', b64), await bkr('x.gz.exe', b64), await bkr('x.zip', b64)], ['BAD_REQ', 'BAD_REQ', 'BAD_REQ']);
+    eq('備份：檔名 .gz 但內容不是 gzip → BAD_REQ', [await bkr('x.gz', Buffer.from('not gzip').toString('base64')), await bkr('x.gz', Buffer.from([0x1f]).toString('base64')), await bkr('x.gz', Buffer.from([0x1f, 0x00, 1, 2]).toString('base64')), await bkr('x.gz', Buffer.from([0x00, 0x8b, 1, 2]).toString('base64'))], ['BAD_REQ', 'BAD_REQ', 'BAD_REQ', 'BAD_REQ']);
+    const big = Buffer.alloc(14 * 1024 * 1024 + 16); big[0] = 0x1f; big[1] = 0x8b;
+    eq('備份：超過 14MB → BAD_REQ；剛好 14MB → 接受', [await bkr('big.gz', big.toString('base64')), (await raw({ action: 'bridge', key: KEY, op: 'backup', name: 'ok.gz', data: big.subarray(0, 14 * 1024 * 1024).toString('base64') })).ok], ['BAD_REQ', true]);
+    eq('備份：被拒的都沒有建檔（只多了剛好 14MB 那一個）', Object.keys(drive.files).length, nf + 1); }
   eq('備份：空內容 → BAD_REQ', (await raw({ action: 'bridge', key: KEY, op: 'backup', name: 'x.gz', data: '' })).code, 'BAD_REQ');
 
   // ===== 其他 op 與 bridge.js 格式對齊（upload／share／revoke／clock／sig） =====
@@ -445,6 +465,17 @@ const srv = http.createServer((req, res) => {
   await B.files.share([u.id]);
   eq('share：附件改成知道連結者可看', drive.files[u.id].sharing, 'ANYONE_WITH_LINK');
   await B.files.revoke([u.id]);
+  eq('R1：revoke 後再 share → BAD_REQ、分享狀態維持 PRIVATE（已撤銷的附件不能重新公開）', [(await raw({ action: 'bridge', key: KEY, op: 'share', ids: [u.id] })).code, drive.files[u.id].sharing], ['BAD_REQ', 'PRIVATE']);
+  eq('R1：垃圾桶裡的附件再 revoke 不出錯（吞掉）、狀態不變', [await B.files.revoke([u.id]), drive.files[u.id].sharing, drive.files[u.id].trashed], [undefined, 'PRIVATE', true]);
+  // 第 3 輪建議 1：upload 與 Service.uploadFile 同一套規則（DZYB.fileType／MAX_BYTES），mime 依副檔名
+  { const upr = async (name, data, mime) => (await raw({ action: 'bridge', key: KEY, op: 'upload', name, mime: mime || 'application/pdf', data })).code, nf = Object.keys(drive.files).length;
+    eq('upload：x.html／a.exe／沒有副檔名 → BAD_REQ', [await upr('x.html', pdf, 'text/html'), await upr('a.exe', pdf), await upr('noext', pdf)], ['BAD_REQ', 'BAD_REQ', 'BAD_REQ']);
+    const big = Buffer.alloc(20 * 1024 * 1024 + 16).toString('base64');
+    eq('upload：超過 20MB → BAD_REQ；空檔 → BAD_REQ', [await upr('big.pdf', big), await upr('empty.pdf', '')], ['BAD_REQ', 'BAD_REQ']);
+    eq('upload：被拒的都沒有建檔', Object.keys(drive.files).length, nf);
+    const w = await B.files.upload('報告.docx', 'text/html', pdf);
+    eq('upload：mime 一律依副檔名（呼叫端送 text/html 也存成 docx 的 mime）', [w.type, drive.files[w.id].mime], ['docx', G.DZYB.fileMime('報告.docx')]);
+    eq('upload：剛好 20MB 的 xlsx → 接受', (await raw({ action: 'bridge', key: KEY, op: 'upload', name: 'a.xlsx', mime: '', data: Buffer.alloc(20 * 1024 * 1024).toString('base64') })).ok, true); }
   eq('revoke：收回分享並丟垃圾桶', [drive.files[u.id].sharing, drive.files[u.id].trashed], ['PRIVATE', true]);
   eq('share 簽名圖（不是附件）→ BAD_REQ', (await raw({ action: 'bridge', key: KEY, op: 'share', ids: [up.ids[0]] })).code, 'BAD_REQ');
   eq('clock：沒設打卡來源時回空名單＋提示', (await B.clockSrc.read()).errors, ['未設定打卡來源']);

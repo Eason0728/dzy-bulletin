@@ -5,8 +5,11 @@
  * 環境變數（正式設定寫在 server/.env，不進 git）：
  *   PORT=8793  DATA_DIR=~/dzy-bulletin-data  BRIDGE_URL=<Apps Script 網址>  BRIDGE_KEY=<與 Apps Script 指令碼屬性相同>
  *   ALLOW_ORIGIN=https://dzy-bulletin.github.io（E2E 模式預設空白，且不得含正式網域）
- *   MAX_INFLIGHT_MB=200（同時累積中的請求體總量上限，超過回 503 BUSY）
- *   E2E=1（只在測試時開：/__seed、/__clock 等測試入口，改用假橋接）；BRIDGE_FAKE_DELAY_MS（E2E 假橋接每個動作延遲，阻塞測試用）
+ *   MAX_INFLIGHT_MB=200（同時累積中的請求體總量上限，依實際收到的位元組計；超過回 503 BUSY。
+ *     註：原始位元組之外還有 Buffer.concat／toString／JSON.parse 的副本，實際記憶體約 3 倍，200MB ≈ 600MB）
+ *   BODY_IDLE_MS=30000（請求體超過這麼久沒有新資料就中斷）；REQUEST_TIMEOUT_S=180（整個請求上限，含 27MB 附件經 4G 上傳）
+ *   E2E=1（只在測試時開：/__seed、/__clock 等測試入口，改用假橋接）；E2E 必須明確指定非預設的 DATA_DIR，且不得設 BRIDGE_URL／BRIDGE_KEY
+ *   BRIDGE_FAKE_DELAY_MS（E2E 假橋接每個動作延遲，阻塞測試用）；BRIDGE_FAKE_FAIL=1（E2E 假橋接一律失敗並回 AUTH，驗錯誤碼對應用）
  *
  * 不卡住事件迴圈（#6 審查發現 1）：Google 橋接一律 async，在 Service 之外 await。每個請求用自己的 files／clockSrc 墊片建 Service：
  * 墊片需要 Google 時丟出「待橋接」標記（Service 會先做完憑證與格式驗證才走到墊片，所以未授權的請求永遠不會打橋接），
@@ -24,6 +27,7 @@ const ROOT = path.join(__dirname, '..');
 const MIN_NODE = 24;                                        // node:sqlite 的 DatabaseSync 不需旗標；DEPLOY.md 寫同一個數字
 const MAX_BODY = 40 * 1024 * 1024;                          // 單一請求：附件 20MB → base64 約 27MB
 const QUOTA_EVERY_MS = 10 * 60e3;                           // 雲端空間背景刷新間隔（請求路徑只讀快取）
+const QUOTA_STALE_MS = 24 * 3600e3;                         // 快取超過 1 天（背景一直刷新失敗）就回 null，不顯示過時數字
 const PENDING = 'BRIDGE_PENDING';                           // 墊片「待橋接」標記（只在伺服器內部流動，不會回給前端）
 const PROD_ORIGIN = /dzy-bulletin\.github\.io/i;
 
@@ -41,18 +45,31 @@ function loadEnv(file) {
   } catch (e) {}
 }
 
+function defaultDataDir(env) { return path.join(env.HOME || '', 'dzy-bulletin-data'); }
 function config(env) {
   const E2E = env.E2E === '1';
   const allowRaw = env.ALLOW_ORIGIN !== undefined ? env.ALLOW_ORIGIN : (E2E ? '' : 'https://dzy-bulletin.github.io');
   return {
     PORT: Number(env.PORT || 8793),
-    DATA_DIR: (env.DATA_DIR || path.join(env.HOME, 'dzy-bulletin-data')).replace(/^~/, env.HOME),
+    DATA_DIR: path.resolve((env.DATA_DIR || defaultDataDir(env)).replace(/^~/, env.HOME)),
+    DATA_DIR_SET: !!env.DATA_DIR,
     E2E,
     ALLOW: allowRaw.split(',').map((s) => s.trim()).filter(Boolean),
     MAX_INFLIGHT: Math.round((Number(env.MAX_INFLIGHT_MB) > 0 ? Number(env.MAX_INFLIGHT_MB) : 200) * 1024 * 1024),
     BRIDGE_URL: env.BRIDGE_URL || '', BRIDGE_KEY: env.BRIDGE_KEY || '',
-    FAKE_DELAY_MS: Number(env.BRIDGE_FAKE_DELAY_MS) || 0
+    FAKE_DELAY_MS: Number(env.BRIDGE_FAKE_DELAY_MS) || 0,
+    FAKE_FAIL: env.BRIDGE_FAKE_FAIL === '1',
+    BODY_IDLE_MS: Number(env.BODY_IDLE_MS) > 0 ? Number(env.BODY_IDLE_MS) : 30000,
+    REQUEST_TIMEOUT_MS: (Number(env.REQUEST_TIMEOUT_S) > 0 ? Number(env.REQUEST_TIMEOUT_S) : 180) * 1000
   };
+}
+// E2E 模式的保險（/__seed 可無金鑰清空全部資料）：回傳拒絕啟動的理由，沒問題回空字串
+function e2eProblem(cfg, env) {
+  if (!cfg.E2E) return '';
+  if (cfg.ALLOW.some((o) => PROD_ORIGIN.test(o))) return 'E2E 測試模式不能搭配正式網域的 ALLOW_ORIGIN（/__seed 可無金鑰清空全部資料），拒絕啟動';
+  if (!cfg.DATA_DIR_SET || cfg.DATA_DIR === path.resolve(defaultDataDir(env))) return 'E2E 測試模式必須用 DATA_DIR 指定一個測試用資料夾（不可是正式資料夾 ~/dzy-bulletin-data），拒絕啟動';
+  if (cfg.BRIDGE_URL || cfg.BRIDGE_KEY) return 'E2E 測試模式不能設 BRIDGE_URL／BRIDGE_KEY（測試一律用假橋接；有真金鑰代表這是正式環境），拒絕啟動';
+  return '';
 }
 
 function makeApp(cfg) {
@@ -73,17 +90,20 @@ function makeApp(cfg) {
   const auth = makeAuth_(nodeCrypto, L);
   const store = makeSqliteStore(DATA_DIR);
   const bridgeReady = E2E || !!(cfg.BRIDGE_URL && cfg.BRIDGE_KEY);
-  const bridge = E2E ? makeFakeBridge(cfg.FAKE_DELAY_MS) : makeBridge(cfg.BRIDGE_URL, cfg.BRIDGE_KEY);
+  const bridge = E2E ? makeFakeBridge(cfg.FAKE_DELAY_MS, cfg.FAKE_FAIL) : makeBridge(cfg.BRIDGE_URL, cfg.BRIDGE_KEY);
+  const { BRIDGE_MSG } = require('./bridge.js');
   const WRITE = new Set(makeService_(L, {}, {}, {}, {}).WRITE_ACTIONS);
   let clockOffsetMs = 0;                                    // 只有 E2E 會改
   const clock = { nowMs: () => Date.now() + clockOffsetMs, today: () => L.today(new Date(Date.now() + clockOffsetMs)) };
   const ts = () => new Date().toISOString();
 
   // ---- 雲端空間：請求路徑只讀 kv 快取，背景每 10 分鐘刷新（請求永遠不碰 Google）----
-  function cachedQuota() { try { const o = JSON.parse(store.kvGet('quota') || 'null'); return o ? o.q : null; } catch (e) { return null; } }
+  function cachedQuota() {
+    try { const o = JSON.parse(store.kvGet('quota') || 'null'); return o && Date.now() - o.at < QUOTA_STALE_MS ? o.q : null; } catch (e) { return null; }
+  }
   async function refreshQuota() {
     try { const q = await bridge.files.quota(); store.kvSet('quota', JSON.stringify({ at: Date.now(), q })); }
-    catch (e) { console.error(ts() + ' quota 刷新失敗：' + e.message); }
+    catch (e) { console.error(ts() + ' quota 刷新失敗：' + (e.detail || e.message)); }
   }
 
   // ---- 每請求的墊片：需要 Google 時登記「要做的事」並丟出待橋接標記 ----
@@ -104,23 +124,32 @@ function makeApp(cfg) {
   }
 
   // 跑一個 action：寫入動作才進交易；遇到待橋接就在交易外 await，再重跑（最多 3 輪）
+  // 凍結檔在「每一輪進交易之後」才檢查：等 share／clock 橋接期間才建的 READONLY 也擋得住寫入（#12 審查 S1）。
+  // uploadFile 不寫資料庫，但凍結期間上傳只會在 Drive 留孤兒檔，所以一併擋（N2）。
+  // 每一輪用 q 的深拷貝：Service 會改 q.post（例如把 d.id 換成 prev.id），重跑時要跟 GAS 一樣從原始請求算指紋（S4）。
+  const MOVED = { ok: false, code: 'MOVED', message: '系統搬家中，請稍後重新整理' };
+  const frozen = () => fs.existsSync(READONLY_FILE);
   async function run(action, q) {
-    if (WRITE.has(action) && fs.existsSync(READONLY_FILE)) return { out: { ok: false, code: 'MOVED', message: '系統搬家中，請稍後重新整理' }, revoke: [] };
+    if ((WRITE.has(action) || action === 'uploadFile') && frozen()) return { out: MOVED, revoke: [] };
     const pre = { shared: new Set(), revoke: [], uploaded: null, clock: null, need: null };
     for (let round = 0; round < 3; round++) {
       pre.need = null; pre.revoke = [];
       const sh = shims(pre);
       const svc = makeService_(L, store, sh.files, auth, clock, sh.clockSrc);
       const out = WRITE.has(action)
-        ? store.tx(() => { store.purgeReqs(Date.now()); return svc.call(action, q); })
-        : svc.call(action, q);
+        ? store.tx(() => { if (frozen()) return MOVED; store.purgeReqs(Date.now()); return svc.call(action, structuredClone(q)); })
+        : svc.call(action, structuredClone(q));
       if (out.code !== PENDING || !pre.need) {
         const revoke = out.ok ? pre.revoke.slice() : [];
         if (!out.ok && pre.uploaded) revoke.push(pre.uploaded.id);    // 上傳後第二輪才失敗（例如通行碼剛更換）：撤掉孤兒檔
         return { out, revoke };
       }
       try { await pre.need(); }
-      catch (e) { return { out: { ok: false, code: e.code && e.code !== PENDING ? e.code : 'SERVER', message: e.message || '系統忙碌，請稍後再試' }, revoke: [] }; }
+      catch (e) {   // 橋接錯誤只回伺服器自己的錯誤碼（絕不回 AUTH，否則前端會把主管登出）；原文只進 stderr（S3）
+        const code = e && e.code === 'BRIDGE_TIMEOUT' ? 'BRIDGE_TIMEOUT' : 'BRIDGE';
+        console.error(ts() + ' 橋接失敗 ' + action + '：' + (e && (e.detail || e.message)));
+        return { out: { ok: false, code, message: BRIDGE_MSG[code] }, revoke: [] };
+      }
     }
     return { out: { ok: false, code: 'SERVER', message: '系統忙碌，請稍後再試' }, revoke: [] };
   }
@@ -141,7 +170,9 @@ function makeApp(cfg) {
     res.end(buf);
   }
   // 請求體總量上限：所有累積中的請求體加起來不超過 MAX_INFLIGHT（Funnel 是公開網址，記憶體才是風險）。
-  // 有 Content-Length 就先整筆預約；額度在回應送出後才釋放（上傳 await 期間 base64 仍在記憶體裡）。
+  // 依「實際收到的位元組」計，不用 Content-Length 預扣：只送 header 不送資料的連線不佔額度（#12 審查 B1）；
+  // Content-Length 只用來提早擋超過 MAX_BODY 的請求。額度在回應送出後才釋放（上傳 await 期間 base64 仍在記憶體裡）。
+  // 慢速連線：請求體 BODY_IDLE_MS 沒有新資料就中斷；整個請求另有 server.requestTimeout。
   let inflight = 0;
   function reserve(lease, n) { if (inflight + n > MAX_INFLIGHT) return false; inflight += n; lease.n += n; return true; }
   function release(lease) { inflight -= lease.n; lease.n = 0; }
@@ -149,19 +180,22 @@ function makeApp(cfg) {
   function readBody(req, lease) {
     return new Promise((ok, no) => {
       const len = Number(req.headers['content-length']) || 0;
-      if (len > MAX_BODY) { req.resume(); return no(tag('TOO_BIG')); }
-      if (len > 0 && !reserve(lease, len)) { req.resume(); return no(tag('BUSY')); }
-      const chunks = []; let n = 0, dead = false;
-      const fail = (code) => { dead = true; chunks.length = 0; no(tag(code)); };   // 之後的資料照收照丟，讓回應能正常送達
+      const chunks = []; let n = 0, bad = len > MAX_BODY ? 'TOO_BIG' : '', done = false, drained = 0;
+      const idle = () => { clearTimeout(timer); timer = setTimeout(() => { if (!done) { done = true; req.destroy(); no(tag('IDLE')); } }, cfg.BODY_IDLE_MS); };
+      let timer = null; idle();
+      // 超過上限時：丟掉已收的、剩下的照收照丟（最多再收 2×MAX_BODY，更大的直接斷線），收完才回 413／503，客戶端才讀得到回應（S6）
+      const fail = (code) => { bad = code; chunks.length = 0; release(lease); };
       req.on('data', (c) => {
-        if (dead) return;
+        if (done) return;
+        idle();
+        if (bad) { drained += c.length; if (drained > 2 * MAX_BODY) { done = true; clearTimeout(timer); req.destroy(); no(tag(bad)); } return; }
         n += c.length;
         if (n > MAX_BODY) return fail('TOO_BIG');
-        if (n > lease.n && !reserve(lease, n - lease.n)) return fail('BUSY');
+        if (!reserve(lease, c.length)) return fail('BUSY');
         chunks.push(c);
       });
-      req.on('end', () => { if (!dead) ok(Buffer.concat(chunks).toString('utf8')); });
-      req.on('error', (e) => { if (!dead) { dead = true; no(e); } });
+      req.on('end', () => { if (done) return; done = true; clearTimeout(timer); if (bad) no(tag(bad)); else ok(Buffer.concat(chunks).toString('utf8')); });
+      req.on('error', (e) => { if (done) return; done = true; clearTimeout(timer); no(e); });
     });
   }
   const BODY_ERR = {
@@ -201,6 +235,7 @@ function makeApp(cfg) {
     bridge.setClock(d.clock || []);
   }
   function testRoute(pathname, url, body, res) {
+    if (pathname === '/__dropPost') { store.dropPost(String(body.id)); return send(res, 200, { ok: true }); }
     if (pathname === '/__seed') { seed(body.demo ? require(path.join(ROOT, 'js/demo-data.js'))(L) : body); return send(res, 200, { ok: true }); }
     if (pathname === '/__clock') { clockOffsetMs = (Number(body.offDays) || 0) * 86400e3; return send(res, 200, { ok: true, data: { today: clock.today() } }); }
     if (pathname === '/__clockActive') { const rows = bridge.getClock().rows; rows.forEach((r) => { if (r.empId === body.empId) r.active = !!body.on; }); bridge.setClock(rows); return send(res, 200, { ok: true }); }
@@ -217,6 +252,7 @@ function makeApp(cfg) {
     if (req.method === 'GET' && url.pathname === '/health') return send(res, 200, health());
     if (req.method === 'GET' && url.pathname === '/') return send(res, 200, { ok: true, data: { app: 'dzy-bulletin-server', v: VERSION } });
     const isTest = E2E && url.pathname.startsWith('/__');
+    if (isTest && req.method !== 'POST' && !/^\/__(blob|bridgeCalls)$/.test(url.pathname)) { req.resume(); return send(res, 405, { ok: false, code: 'BAD_REQ', message: '只收 POST' }); }
     if (req.method !== 'POST' && !isTest) { req.resume(); return send(res, 404, { ok: false, code: 'NOT_FOUND', message: '找不到' }); }
     if (req.method === 'POST' && url.pathname !== '/' && !isTest) { req.resume(); return send(res, 404, { ok: false, code: 'NOT_FOUND', message: '找不到' }); }
     const lease = { n: 0 };
@@ -225,9 +261,10 @@ function makeApp(cfg) {
       let raw;
       try { raw = req.method === 'POST' ? await readBody(req, lease) : ''; }
       catch (e) {
-        const [code, obj] = BODY_ERR[e.tag] || [400, { ok: false, code: 'BAD_REQ', message: '格式錯誤' }];
+        const [code, obj] = BODY_ERR[e.tag] || [400, { ok: false, code: e.tag || 'BAD_REQ', message: '格式錯誤' }];
         logLine('-', Date.now() - t0, obj);
-        return send(res, code, obj, true);
+        if (e.tag !== 'IDLE' && !res.destroyed) send(res, code, obj, true);   // 慢速連線已被中斷，不回應
+        return;
       }
       if (isTest) return testRoute(url.pathname, url, JSON.parse(raw || '{}'), res);
       let q;
@@ -253,15 +290,16 @@ function main() {
   if (bad) { console.error('✗ ' + bad); process.exit(1); }
   loadEnv(path.join(__dirname, '.env'));
   const cfg = config(process.env);
-  if (cfg.E2E && cfg.ALLOW.some((o) => PROD_ORIGIN.test(o))) {
-    console.error('✗ E2E 測試模式不能搭配正式網域的 ALLOW_ORIGIN（/__seed 可無金鑰清空全部資料），拒絕啟動');
-    process.exit(1);
-  }
+  const e2eBad = e2eProblem(cfg, process.env);
+  if (e2eBad) { console.error('✗ ' + e2eBad); process.exit(1); }
   const app = makeApp(cfg);
   if (app.bridgeReady) { app.refreshQuota(); setInterval(app.refreshQuota, QUOTA_EVERY_MS); }
-  http.createServer(app.onRequest)
+  const server = http.createServer(app.onRequest);
+  server.headersTimeout = 15000;                           // header 15 秒內要送完
+  server.requestTimeout = cfg.REQUEST_TIMEOUT_MS;           // 整個請求（含請求體）上限
+  server
     .listen(cfg.PORT, '127.0.0.1', () => console.log(new Date().toISOString() + ` 佈告欄伺服器 v${app.VERSION} 啟動：127.0.0.1:${cfg.PORT}，資料 ${cfg.DATA_DIR}${cfg.E2E ? '（E2E 測試模式）' : ''}`));
 }
 
 if (require.main === module) main();
-module.exports = { nodeProblem, config, makeApp, MIN_NODE };
+module.exports = { nodeProblem, config, e2eProblem, makeApp, MIN_NODE };

@@ -100,6 +100,7 @@ var DZYB_MOCK = (function () {
     },
     callSync: function (action, req) { return svc.call(action, clone(req || {})); },
     blobOf: function (id) { return BLOBS[id] || null; },
+    dropPost: function (id) { var d = load(); d.posts = d.posts.filter(function (p) { return p.id !== id; }); save(); },   // 測試用：模擬 reqId 紀錄指向的公告已不存在
     setAdminInit: function (pw) { var d = load(); d.admin.init = pw; save(); },   // 模擬 Eason 在指令碼屬性填 ADMIN_INIT
     setClockActive: function (empId, on) { CLOCK.forEach(function (r) { if (r.empId === empId) r.active = on; }); },   // 測試用
     reset: function () { db = seed(); save(); },

@@ -5,21 +5,27 @@
  * fetch 跟隨 Apps Script 的 302 時 POST 會轉成 GET，與原本 curl -L 行為相同（Apps Script 就是這樣回結果），不是 bug。 */
 'use strict';
 
-function bridgeErr(message, code) { const e = new Error(message); e.code = code || 'SERVER'; return e; }
+// 橋接錯誤一律對應成伺服器自己的錯誤碼（BRIDGE／BRIDGE_TIMEOUT）與固定中文句子；Apps Script 回的 code／message 只進 stderr。
+// 絕不能原樣回傳：金鑰設錯時 Apps Script 回 AUTH，前端會把主管登出、重登又被登出（#12 審查 S3）。
+const BRIDGE_MSG = { BRIDGE: 'Google 雲端暫時連不上，請稍後再試', BRIDGE_TIMEOUT: '連線 Google 逾時，請稍後再試' };
+function bridgeErr(code, detail) { const e = new Error(BRIDGE_MSG[code]); e.code = code; e.detail = detail || ''; return e; }
 
 function makeBridge(url, key) {
   async function call(op, payload, timeoutSec) {
-    if (!url || !key) throw bridgeErr('未設定 Google 橋接');
+    if (!url || !key) throw bridgeErr('BRIDGE', '未設定 Google 橋接（BRIDGE_URL／BRIDGE_KEY）');
     const body = JSON.stringify(Object.assign({ action: 'bridge', key, op }, payload || {}));
     let text;
     try {
       const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body,
         redirect: 'follow', signal: AbortSignal.timeout((timeoutSec || 60) * 1000) });
       text = await res.text();
-    } catch (e) { throw bridgeErr('Google 橋接逾時或連不上'); }
+    } catch (e) {
+      const timeout = e && (e.name === 'TimeoutError' || e.name === 'AbortError');
+      throw bridgeErr(timeout ? 'BRIDGE_TIMEOUT' : 'BRIDGE', op + ': ' + (e && e.message));
+    }
     let j;
-    try { j = JSON.parse(text); } catch (e) { throw bridgeErr('Google 橋接回應格式錯誤'); }
-    if (!j.ok) throw bridgeErr(j.message || 'Google 橋接失敗', j.code);
+    try { j = JSON.parse(text); } catch (e) { throw bridgeErr('BRIDGE', op + ': 回應不是 JSON'); }
+    if (!j.ok) throw bridgeErr('BRIDGE', op + ': ' + (j.code || '') + ' ' + (j.message || ''));
     return j.data;
   }
   return {
@@ -28,20 +34,25 @@ function makeBridge(url, key) {
     files: {
       upload: (name, mime, b64) => call('upload', { name, mime, data: b64 }, 180),
       share: async (ids) => { await call('share', { ids }, 90); },
-      revoke: async (ids) => { try { await call('revoke', { ids }, 90); } catch (e) { console.error('revoke: ' + e.message); } },
+      revoke: async (ids) => { try { await call('revoke', { ids }, 90); } catch (e) { console.error('revoke: ' + (e.detail || e.message)); } },
       quota: () => call('quota', {}, 30)
     },
     clockSrc: { read: () => call('clock', {}, 90) }
   };
 }
 
-// 測試用：不連 Google 的假橋接（附件存在記憶體）。delayMs＞0 時每個橋接動作都延遲（阻塞測試用）；calls() 回傳各動作呼叫次數。
-function makeFakeBridge(delayMs) {
+// 測試用：不連 Google 的假橋接（附件存在記憶體）。delayMs＞0 時每個橋接動作都延遲（阻塞測試用）；calls() 回傳各動作呼叫次數；
+// failAll＝每個動作都丟出帶 code:'AUTH' 的錯誤（模擬 Apps Script 回「橋接金鑰錯誤」，驗 index.js 不會原樣回傳）。
+function makeFakeBridge(delayMs, failAll) {
   const blobs = {}; let seq = 0; let clock = { rows: [], errors: [], sources: ['gf', 'cf', 'js'], counts: {} };
   const calls = { upload: 0, share: 0, revoke: 0, quota: 0, clock: 0 };
   const typeOf = (n) => ({ pdf: 'pdf', doc: 'docx', docx: 'docx', xls: 'xlsx', xlsx: 'xlsx' })[String(n).split('.').pop().toLowerCase()] || null;
   const wait = () => (delayMs > 0 ? new Promise((ok) => setTimeout(ok, delayMs)) : Promise.resolve());
-  const op = (name, fn) => async (...a) => { calls[name]++; await wait(); return fn(...a); };
+  const op = (name, fn) => async (...a) => {
+    calls[name]++; await wait();
+    if (failAll) { const e = new Error('橋接金鑰錯誤'); e.code = 'AUTH'; throw e; }
+    return fn(...a);
+  };
   return {
     kind: 'fake',
     call: async () => { throw new Error('fake'); },
@@ -62,4 +73,4 @@ function makeFakeBridge(delayMs) {
   };
 }
 
-module.exports = { makeBridge, makeFakeBridge };
+module.exports = { makeBridge, makeFakeBridge, BRIDGE_MSG };

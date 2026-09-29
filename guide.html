@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>電子佈告欄使用教學</title>
+<meta name="description" content="鼎兆元｜電子佈告欄 使用教學（示範版）：同仁如何看公告、簽名確認；主管如何上架公告、看回條、管理名單。">
+<meta property="og:title" content="鼎兆元｜電子佈告欄 使用教學">
+<meta property="og:description" content="同仁看公告與簽名確認、主管上架公告與管理名單，一次看懂。">
+<meta property="og:image" content="https://dzy-bulletin.github.io/assets/og.jpg">
+<link rel="icon" href="assets/logo-mzt.png">
+<style>
+:root{--brand:#1F4E8C;--brand-soft:#e8eef7;--ink:#1f2328;--sub:#5d6470;--line:#e1e5ec;--bg:#f6f7f9;--card:#fff;--warn:#fff4d6;--warn-ink:#6b4e00}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{max-width:880px;margin:0 auto;padding:0 16px 64px}
+header.cover{background:var(--brand);color:#fff;padding:40px 16px 34px}
+header.cover .in{max-width:880px;margin:0 auto;display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+header.cover img{height:64px;border-radius:12px;box-shadow:0 0 0 2px rgba(255,255,255,.35)}
+header.cover h1{margin:0;font-size:30px;letter-spacing:1px;line-height:1.3}
+header.cover p{margin:6px 0 0;opacity:.85;font-size:15px}
+.badge{display:inline-block;background:#fff;color:var(--brand);font-weight:700;font-size:13px;border-radius:999px;padding:2px 12px;margin-left:6px;vertical-align:4px}
+nav.toc{background:var(--card);border-radius:14px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:18px 22px;margin:-18px 0 26px;position:relative}
+nav.toc b{display:block;margin-bottom:6px}
+nav.toc ol{margin:0;padding-left:22px}
+nav.toc a{color:var(--brand);text-decoration:none}
+.note{background:var(--warn);color:var(--warn-ink);border-radius:12px;padding:12px 16px;font-size:14.5px;margin:0 0 22px}
+h2{font-size:24px;margin:44px 0 6px;color:var(--brand);border-bottom:3px solid var(--brand);padding-bottom:6px}
+h2 small{font-size:15px;color:var(--sub);font-weight:400;margin-left:8px}
+.lead{color:var(--sub);margin:4px 0 18px}
+.step{background:var(--card);border-radius:14px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:20px 22px;margin:0 0 16px;display:grid;grid-template-columns:1fr 250px;gap:22px;align-items:start;break-inside:avoid;page-break-inside:avoid}
+.step.noimg{grid-template-columns:1fr}
+.step h3{margin:0 0 6px;font-size:19px;display:flex;align-items:center;gap:10px}
+.num{flex:none;width:30px;height:30px;border-radius:50%;background:var(--brand);color:#fff;display:grid;place-items:center;font-size:15px;font-weight:700}
+.step ul,.step ol{margin:6px 0 0;padding-left:22px}
+.step li{margin:3px 0}
+.step img{width:100%;border-radius:12px;border:1px solid var(--line);display:block}
+.tip{background:var(--brand-soft);border-radius:10px;padding:8px 12px;font-size:14.5px;margin-top:10px}
+.warn{background:#fdecea;color:#8a1c12;border-radius:10px;padding:8px 12px;font-size:14.5px;margin-top:10px}
+kbd{display:inline-block;background:#fff;border:1px solid var(--line);border-bottom-width:2px;border-radius:6px;padding:0 7px;font:inherit;font-size:.92em;white-space:nowrap}
+table{width:100%;border-collapse:collapse;background:var(--card);border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06);font-size:15px}
+th,td{padding:10px 14px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{background:var(--brand-soft);color:var(--brand);white-space:nowrap}
+.faq dt{font-weight:700;margin-top:16px}
+.faq dd{margin:4px 0 0 0;color:var(--sub)}
+footer{color:var(--sub);font-size:13px;text-align:center;margin-top:40px}
+@media (max-width:640px){
+  header.cover h1{font-size:24px}
+  .step{grid-template-columns:1fr;padding:18px}
+  .step img{max-width:300px;margin:0 auto}
+}
+@media print{
+  @page{size:A4;margin:12mm}
+  body{background:#fff;font-size:12.5pt}
+  header.cover{-webkit-print-color-adjust:exact;print-color-adjust:exact;padding:24px 16px}
+  nav.toc,.step,table{box-shadow:none;border:1px solid var(--line)}
+  .step{grid-template-columns:1fr 200px}
+  h2{break-before:page;page-break-before:always;margin-top:0}
+  h2.first{break-before:auto;page-break-before:auto}
+  a{color:inherit;text-decoration:none}
+  .num,.badge,th,.tip,.warn,.note{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+}
+</style>
+</head>
+<body>
+
+<header class="cover"><div class="in">
+  <img src="assets/logo-mzt.png" alt="墨竹亭"><img src="assets/logo-mala.jpg" alt="麻的小辛辣">
+  <div><h1>鼎兆元｜電子佈告欄 使用教學<span class="badge">示範版</span></h1>
+  <p>網址：dzy-bulletin.github.io　｜　手機、電腦都可以用，不用下載 App</p></div>
+</div></header>
+
+<main class="wrap">
+<nav class="toc"><b>目錄</b><ol>
+  <li><a href="#staff">同仁篇：看公告、簽名確認</a></li>
+  <li><a href="#admin">主管篇：上架公告、看回條、管理名單</a></li>
+  <li><a href="#faq">常見問題</a></li>
+</ol></nav>
+
+<div class="note">📷 本講義的畫面都是<b>示範用的假資料</b>（假名字、假公告）。截圖最上方黃色那一條「本機假資料」只出現在示範版，正式網址不會有。</div>
+
+<!-- ================= 同仁篇 ================= -->
+<h2 id="staff" class="first">一、同仁篇 <small>看公告、簽名確認</small></h2>
+<p class="lead">主管在 LINE 群組貼出網址後，點開就能使用。第一次要花 1 分鐘設定，之後打開就直接看到公告。</p>
+
+<section class="step"><div>
+  <h3><span class="num">1</span>選自己的名字</h3>
+  <ul>
+    <li>上方先點你的單位：<b>墨竹亭／小辛辣／央廚／總部</b>。</li>
+    <li>找到自己的名字點下去。為了保護個資，名字中間會用 O 遮起來，例如「林雅婷」會顯示成「林O婷」。</li>
+    <li>總部同仁在「總部」分頁，名字下方會標出鼎兆元、墨竹亭或小辛辣。</li>
+  </ul>
+  <div class="tip">找不到自己的名字？請主管到「設定 → 同仁名單」幫你新增。</div>
+</div><img src="docs/screens/01-選名字.png" alt="選名字畫面"></section>
+
+<section class="step"><div>
+  <h3><span class="num">2</span>第一次使用：設定 4 位數密碼</h3>
+  <ul>
+    <li>輸入 4 位數字，再輸入一次確認，按 <kbd>設定並進入</kbd>。</li>
+    <li>太好猜的密碼（例如 1111、1234、8765）不能用。</li>
+    <li>設定好之後，這支手機會記住你，下次打開不用再輸入。</li>
+    <li>換手機或按了「不是我」時，才需要再輸入一次密碼。</li>
+  </ul>
+  <div class="warn">⚠️ 密碼<b>連續輸錯 3 次會被鎖住</b>，要請主管重設。請記好自己的密碼，也不要告訴別人。</div>
+</div><img src="docs/screens/03-第一次設定密碼.png" alt="設定密碼畫面"></section>
+
+<section class="step"><div>
+  <h3><span class="num">3</span>看公告</h3>
+  <ul>
+    <li>上方可以切換單位的公告分頁。你的單位分頁上的<b>紅色數字</b>是還沒讀的則數。</li>
+    <li>公告右上角的<b>紅點</b>代表你還沒簽名確認。</li>
+    <li>左邊有藍色邊條、標著「📌 置頂」的是重要公告，會排在最上面。</li>
+    <li>每則都標有上架日與到期日，到期後會自動移到「歷史區」。</li>
+  </ul>
+  <div class="tip">總部墨竹亭、總部小辛辣的同仁只會看到自己品牌的分頁；總部鼎兆元看得到全部三個分頁。</div>
+</div><img src="docs/screens/04-公告列表.png" alt="公告列表畫面"></section>
+
+<section class="step"><div>
+  <h3><span class="num">4</span>打開公告、看附件</h3>
+  <ul>
+    <li>點公告就能看完整內容。</li>
+    <li>下方的附件（Word、PDF、Excel）點一下就能在手機上直接看。</li>
+    <li>附件<b>只能線上看，不能下載、列印或複製</b>。</li>
+    <li>看完按右上角 <kbd>關閉</kbd> 回到公告。</li>
+  </ul>
+</div><img src="docs/screens/05-公告內容.png" alt="公告內容畫面"></section>
+
+<section class="step"><div>
+  <h3><span class="num">5</span>按「我已閱讀」並簽名</h3>
+  <ol>
+    <li>讀完公告後按最下方的 <kbd>我已閱讀</kbd>。</li>
+    <li>用手指在框框裡<b>簽下自己的名字</b>。簽歪了可以按 <kbd>清除重簽</kbd>。</li>
+    <li>按 <kbd>確認簽名</kbd> 完成，公告上的紅點就會消失。</li>
+  </ol>
+  <div class="tip">簽名和時間會留存，主管看得到誰讀了、誰還沒讀。每則公告只要簽一次。</div>
+</div><img src="docs/screens/07-手寫簽名.png" alt="手寫簽名畫面"></section>
+
+<section class="step"><div>
+  <h3><span class="num">6</span>簽名完成</h3>
+  <ul>
+    <li>公告最下方會顯示「✓ 已於○月○日 ○○:○○ 簽名確認閱讀」和你的簽名。</li>
+    <li>公告列表上會出現「✓ 已讀」。</li>
+  </ul>
+</div><img src="docs/screens/08-簽名完成.png" alt="簽名完成畫面"></section>
+
+<section class="step"><div>
+  <h3><span class="num">7</span>找以前的公告：歷史區</h3>
+  <ul>
+    <li>點上方 <kbd>🗂 歷史區</kbd>。</li>
+    <li>已經下架的公告會依<b>下架的月份</b>分類，點月份就能查看。</li>
+    <li>歷史區的公告和附件都還能打開看。</li>
+  </ul>
+</div><img src="docs/screens/09-歷史區.png" alt="歷史區畫面"></section>
+
+<section class="step"><div>
+  <h3><span class="num">8</span>忘記密碼怎麼辦？</h3>
+  <ul>
+    <li>在輸入密碼的畫面按 <kbd>忘記密碼？</kbd>。</li>
+    <li>畫面會提示：請主管到「設定 → 同仁名單」幫你按「重設密碼」。</li>
+    <li>主管重設後，你再點一次自己的名字，就能設定新密碼。</li>
+  </ul>
+</div><img src="docs/screens/11-忘記密碼.png" alt="忘記密碼畫面"></section>
+
+<!-- ================= 主管篇 ================= -->
+<h2 id="admin">二、主管篇 <small>上架公告、看回條、管理名單</small></h2>
+<p class="lead">需要<b>管理通行碼</b>才能進入設定。管理通行碼只有鼎兆元總部能更換，網頁上沒有修改的功能。</p>
+
+<section class="step"><div>
+  <h3><span class="num">1</span>進入設定</h3>
+  <ul>
+    <li>按右上角 <kbd>⚙ 設定</kbd>，輸入管理通行碼。</li>
+    <li>還沒選名字時，可以按選名字畫面最下方的 <kbd>⚙ 主管設定</kbd>。</li>
+    <li>分成三個分頁：<b>公告管理／新增公告／同仁名單</b>。</li>
+    <li>用完請按 <kbd>登出</kbd>，尤其是用別人的手機時。</li>
+  </ul>
+  <div class="warn">⚠️ 管理通行碼<b>連錯 5 次會鎖 15 分鐘</b>。</div>
+</div><img src="docs/screens/12-設定-公告管理.png" alt="公告管理畫面"></section>
+
+<section class="step"><div>
+  <h3><span class="num">2</span>新增公告</h3>
+  <ol>
+    <li>到 <kbd>新增公告</kbd>，填<b>標題</b>和<b>內容</b>（內容最多 5,000 字，較長的請做成附件）。</li>
+    <li>勾選<b>顯示單位</b>：墨竹亭、小辛辣、央廚，勾「全部」就是三區都出現。</li>
+    <li>設定<b>上架日</b>：選未來的日期，就會等到那天才出現在同仁畫面（「排定上架」）。</li>
+    <li>設定<b>到期日</b>：到期後自動下架、移到歷史區。留空就不會自動下架。</li>
+    <li>需要的話勾選<b>置頂</b>。</li>
+    <li>上傳<b>附件</b>：Word、PDF、Excel，最多 5 個，單檔 20MB 以內。上傳時會顯示進度，請不要關掉頁面。</li>
+    <li>按 <kbd>上架公告</kbd>。</li>
+  </ol>
+</div><img src="docs/screens/14-設定-新增公告.png" alt="新增公告畫面"></section>
+
+<section class="step noimg"><div>
+  <h3><span class="num">3</span>誰要簽名？（應讀人數怎麼算）</h3>
+  <table>
+    <tr><th>同仁所屬</th><th>看得到</th><th>要簽名的公告</th></tr>
+    <tr><td>墨竹亭／小辛辣／央廚（門市）</td><td>三個分頁都能看</td><td>含自己單位的公告</td></tr>
+    <tr><td>總部鼎兆元</td><td>三個分頁都能看</td><td>只有上架時選「全部」的公告</td></tr>
+    <tr><td>總部墨竹亭</td><td>只有墨竹亭分頁</td><td>含墨竹亭的公告</td></tr>
+    <tr><td>總部小辛辣</td><td>只有小辛辣分頁</td><td>含小辛辣的公告</td></tr>
+  </table>
+</div></section>
+
+<section class="step"><div>
+  <h3><span class="num">4</span>看已讀回條與簽名</h3>
+  <ul>
+    <li>在 <kbd>公告管理</kbd> 每則公告下方可以看到「已讀 ○/○ 人」和進度條。</li>
+    <li>按 <kbd>已讀回條／簽名</kbd>：打勾的是已簽名（附簽名圖和時間），紅色打叉的是還沒讀的人。</li>
+    <li>上方可以切換 <b>上架中／排定上架／已下架</b> 三類。</li>
+  </ul>
+</div><img src="docs/screens/13-設定-已讀回條.png" alt="已讀回條畫面"></section>
+
+<section class="step noimg"><div>
+  <h3><span class="num">5</span>下架、重新上架、置頂、編輯</h3>
+  <ul>
+    <li><kbd>下架</kbd>：公告立刻從同仁畫面移到歷史區，依「今天」的月份封存。</li>
+    <li><kbd>重新上架</kbd>：在「已下架」分類裡操作。已經過了到期日的公告，要先按編輯、把到期日往後延。</li>
+    <li><kbd>置頂</kbd>／<kbd>取消置頂</kbd>：調整是否排在最上面。</li>
+    <li><kbd>編輯</kbd>：修改內容、單位、日期或附件。附件移除後，原本的連結也會失效。</li>
+  </ul>
+  <div class="tip">公告<b>沒有刪除功能</b>，所有公告都會永久留存在歷史區。</div>
+</div></section>
+
+<section class="step"><div>
+  <h3><span class="num">6</span>管理同仁名單</h3>
+  <ul>
+    <li><kbd>↻ 從打卡系統同步</kbd>：自動帶入<b>小辛辣光復店、央廚、墨竹亭金山店</b>打卡系統裡的在職同仁（只讀取，不會改動打卡系統）。打卡系統已離職的人只會列出來提醒，不會自動刪除。</li>
+    <li><b>新增同仁</b>：其他門市（小辛辣美村、南昌，墨竹亭光復、六張犁）和總部同仁，請填姓名、選單位後按新增。</li>
+    <li><kbd>重設密碼</kbd>：同仁忘記密碼或被鎖住（名單上顯示「🔒 已鎖定」）時使用。舊密碼立刻失效，他已登入的手機也會被登出。</li>
+    <li><kbd>刪除</kbd>：離職同仁從名單移除，他以前的簽名紀錄會保留。</li>
+  </ul>
+</div><img src="docs/screens/15-設定-同仁名單與打卡同步.png" alt="同仁名單畫面"></section>
+
+<!-- ================= 常見問題 ================= -->
+<h2 id="faq">三、常見問題</h2>
+<dl class="faq">
+  <dt>打開要等好幾秒，正常嗎？</dt>
+  <dd>正常。系統架在 Google 的雲端服務上，偶爾第一次打開要等 5～20 秒，之後就快了。已經登入過的手機會先顯示上次的公告，上方出現「更新中…」，稍等一下就會換成最新內容。</dd>
+  <dt>畫面怪怪的、跟別人看到的不一樣？</dt>
+  <dd>請重新整理頁面。頁面最下方有版本號（例如 v0.3.9），可以跟主管對一下是不是同一版。</dd>
+  <dt>從 LINE 點開每次都要重新選名字？</dt>
+  <dd>可以在 LINE 右上角選「用預設瀏覽器開啟」，之後改用手機的瀏覽器打開，就會記住你。</dd>
+  <dt>公告不見了？</dt>
+  <dd>可能已經過了到期日，或被主管下架了，請到「🗂 歷史區」依月份查看。</dd>
+  <dt>附件為什麼不能下載？</dt>
+  <dd>公司內部文件為了保密，只開放線上閱讀，不能下載、列印或複製。</dd>
+  <dt>密碼被鎖住了？</dt>
+  <dd>連續輸錯 3 次就會鎖住，請找主管在「設定 → 同仁名單」幫你重設密碼。</dd>
+  <dt>可以幫別人簽名嗎？</dt>
+  <dd>不行。簽名代表本人已閱讀並了解內容，請每個人用自己的名字和密碼簽名，密碼也不要告訴別人。</dd>
+</dl>
+
+<footer>鼎兆元｜電子佈告欄 使用教學（示範版）　網址 dzy-bulletin.github.io</footer>
+</main>
+</body>
+</html>

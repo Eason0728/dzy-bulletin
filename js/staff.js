@@ -9,7 +9,8 @@ var Staff = (function () {
   function loggedIn() { return !!(UI.store.get('token') && me()); }
 
   function start() {
-    $('foot').textContent = '鼎兆元｜電子佈告欄 v' + CFG.VERSION + (CFG.MODE === 'local' ? '（本機假資料）' : '');
+    $('foot').textContent = '鼎兆元｜電子佈告欄 v' + CFG.VERSION + (CFG.MODE === 'local' ? '（本機假資料）' : '') + '　';
+    var gl = document.createElement('a'); gl.href = 'guide.html'; gl.textContent = '📖 使用教學'; gl.style.color = 'inherit'; $('foot').appendChild(gl);
     if (CFG.MODE === 'local') {
       // 本機假資料提示條由程式產生，不寫在 HTML 原始碼（避免 LINE 等連結預覽抓到）
       $('demoBar').innerHTML = '🧪 本機假資料｜管理通行碼 <b>1234</b>｜假同仁密碼 <b>0000</b> <button id="testMe">🖊 用未讀測試員登入</button> <button id="resetDemo">重置假資料</button>';

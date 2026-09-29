@@ -30,9 +30,17 @@ var Admin = (function () {
   function load(keepScroll) {
     var top = keepScroll ? UI.$('sheet').scrollTop : 0;
     if (!a.data) UI.sheet('<div class="bar"><b>設定</b><button data-close>關閉</button></div><div class="body"><div class="loading">載入中</div></div>');
+    var t0 = Date.now();
     return API.admin('adminData').then(function (r) {
-      if (!r.ok) { if (r.code !== 'AUTH') UI.toast(r.message); return; }
-      a.data = r.data; render(); UI.$('sheet').scrollTop = top;
+      if (!r.ok) {
+        if (r.code === 'AUTH') return;
+        if (a.data) { UI.toast(r.message); return; }
+        var es = UI.sheet('<div class="bar"><b>設定</b><button data-close>關閉</button></div><div class="body"><div class="errbox"></div><button class="btn primary" id="adRetry">重試</button></div>');
+        es.querySelector('.errbox').textContent = r.message + '（' + Math.round((Date.now() - t0) / 1000) + ' 秒）';
+        es.querySelector('#adRetry').onclick = function () { load(); };
+        return;
+      }
+      a.data = r.data; a.loadMs = Date.now() - t0; render(); UI.$('sheet').scrollTop = top;
     });
   }
 
@@ -80,7 +88,7 @@ var Admin = (function () {
     var rows = a.receipts[id];
     if (!rows) return '<div class="loading" style="padding:10px 0">載入回條中</div>';
     return '<div class="names">' + (rows.map(function (r) {
-      return '<span class="' + (r.read ? '' : 'no') + '">' + (r.read ? '✓' : '✗') + ' ' + esc(r.name) + '<small style="opacity:.6"> ' + L.UNIT_NAME[r.unit] +
+      return '<span class="' + (r.read ? '' : 'no') + '">' + (r.read ? '✓' : '✗') + ' ' + esc(r.name) + '<small style="opacity:.6"> ' + (L.STAFF_UNIT_NAME[r.unit] || '') +
         (!r.active ? '（已刪除）' : r.inTarget === false ? '（已不在公告單位）' : '') + (r.read ? ' ' + esc(UI.fmtTime(r.at)) : '') + '</small>' +
         (r.sig ? '<br><img src="' + esc(r.sig) + '" style="height:40px;background:#fff;border-radius:4px;margin-top:3px">' : '') + '</span>';
     }).join('') || '<span>此單位沒有同仁</span>') + '</div>';
@@ -176,18 +184,18 @@ var Admin = (function () {
   function staffHTML() {
     var st = a.data.staff;
     return '<div class="panel"><h4>新增同仁</h4><div class="row"><input class="inp" id="sName" placeholder="姓名（全名）" maxlength="20">' +
-      '<select class="inp" id="sUnit">' + L.UNITS.map(function (u) { return '<option value="' + u.id + '">' + u.name + '</option>'; }).join('') + '</select></div>' +
+      '<select class="inp" id="sUnit">' + L.STAFF_UNITS.map(function (u) { return '<option value="' + u.id + '">' + u.name + '</option>'; }).join('') + '</select></div>' +
       '<div class="err" id="sErr"></div><div style="height:10px"></div><button class="btn primary" id="sAdd">新增</button></div>' +
-      L.UNITS.map(function (u) {
+      L.STAFF_UNITS.map(function (u) {
         var ppl = st.filter(function (s) { return s.unit === u.id; });
-        return '<div class="panel"><h4><span class="tag ' + u.id + '">' + u.name + '</span> ' + ppl.length + ' 人</h4>' + (ppl.map(function (s) {
+        return '<div class="panel"><h4><span class="tag ' + (u.id.indexOf('hq-') === 0 ? 'hq' : u.id) + '">' + u.name + '</span> ' + ppl.length + ' 人</h4>' + (ppl.map(function (s) {
           return '<div class="arow" style="display:flex;align-items:center;gap:8px;padding:8px 0"><span style="flex:1">' + esc(s.name) + ' <small style="color:var(--sub)">' +
             (s.locked ? '<span class="lockmark">🔒 已鎖定</span>' : s.hasPin ? '已設密碼' : '未設密碼') + '</small></span>' +
             (s.hasPin ? '<button class="btn ghost small" data-rp="' + esc(s.id) + '">重設密碼</button>' : '') +
             '<button class="btn ghost small" data-del="' + esc(s.id) + '">刪除</button></div>';
         }).join('') || '<div class="hint">尚無同仁</div>') + '</div>';
       }).join('') +
-      '<div class="hint">名單頁只顯示遮罩姓名（例：陳O安）。應讀人數＝公告單位內目前名單上的同仁；刪除同仁後，他的簽名紀錄保留，但不再計入人數。</div>';
+      '<div class="hint">總部鼎兆元看得到全部公告、只簽「全部」；總部墨竹亭／小辛辣只看得到並簽自己品牌的公告。名單頁只顯示遮罩姓名（例：陳O安）。應讀人數＝公告單位內目前名單上的同仁；刪除同仁後，他的簽名紀錄保留，但不再計入人數。</div>';
   }
   function passHTML() {
     return '<div class="panel"><h4>變更管理通行碼</h4><label class="f">目前的通行碼</label><input class="inp" id="op" type="password" autocomplete="off">' +

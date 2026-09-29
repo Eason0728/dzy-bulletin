@@ -14,6 +14,17 @@ var DZYB = (function () {
   var UNIT_NAME = {};
   UNITS.forEach(function (u) { UNIT_NAME[u.id] = u.name; });
 
+  // C15 同仁所屬（名單用）：三個門市單位＋總部三組
+  var STAFF_UNITS = UNITS.concat([
+    { id: 'hq-dzy', name: '總部鼎兆元' },
+    { id: 'hq-mzt', name: '總部墨竹亭' },
+    { id: 'hq-mala', name: '總部小辛辣' }
+  ]);
+  var STAFF_UNIT_IDS = STAFF_UNITS.map(function (u) { return u.id; });
+  var STAFF_UNIT_NAME = {};
+  STAFF_UNITS.forEach(function (u) { STAFF_UNIT_NAME[u.id] = u.name; });
+  var HQ_BRAND = { 'hq-mzt': 'mzt', 'hq-mala': 'mala' };
+
   var MAX_FILES = 5;
   var MAX_BYTES = 20 * 1024 * 1024;
   var STAFF_MAX_FAIL = 3;           // C14
@@ -37,6 +48,18 @@ var DZYB = (function () {
     return UNIT_IDS.filter(function (id) { return (list || []).indexOf(id) >= 0; });
   }
   function isAllUnits(list) { return normUnits(list).length === UNIT_IDS.length; }
+
+  // C15 看得到哪些分頁：總部墨竹亭／小辛辣只看自己品牌；其餘（門市、總部鼎兆元）三個分頁都能看
+  function viewTabs(staffUnit) { return HQ_BRAND[staffUnit] ? [HQ_BRAND[staffUnit]] : UNIT_IDS.slice(); }
+  function canSee(staffUnit, p) { var b = HQ_BRAND[staffUnit]; return !b || (p.units || []).indexOf(b) >= 0; }
+  // C15 要不要簽：門市＝公告含自己單位；總部墨竹亭／小辛辣＝公告含該品牌；總部鼎兆元＝只簽「全部」
+  function mustSign(staffUnit, p) {
+    if (staffUnit === 'hq-dzy') return isAllUnits(p.units);
+    var b = HQ_BRAND[staffUnit] || staffUnit;
+    return (p.units || []).indexOf(b) >= 0;
+  }
+  // 未讀紅點掛在哪個分頁
+  function homeTab(staffUnit) { return HQ_BRAND[staffUnit] || (UNIT_IDS.indexOf(staffUnit) >= 0 ? staffUnit : UNIT_IDS[0]); }
 
   // C10：p = {published, offOn, expiresOn, publishOn}
   function status(p, td) {
@@ -125,6 +148,8 @@ var DZYB = (function () {
 
   return {
     UNITS: UNITS, UNIT_IDS: UNIT_IDS, UNIT_NAME: UNIT_NAME,
+    STAFF_UNITS: STAFF_UNITS, STAFF_UNIT_IDS: STAFF_UNIT_IDS, STAFF_UNIT_NAME: STAFF_UNIT_NAME,
+    viewTabs: viewTabs, canSee: canSee, mustSign: mustSign, homeTab: homeTab,
     MAX_FILES: MAX_FILES, MAX_BYTES: MAX_BYTES, SIG_MAX_CHARS: SIG_MAX_CHARS,
     STAFF_MAX_FAIL: STAFF_MAX_FAIL, ADMIN_MAX_FAIL: ADMIN_MAX_FAIL, ADMIN_LOCK_MS: ADMIN_LOCK_MS,
     today: today, isDate: isDate, addDays: addDays, normUnits: normUnits, isAllUnits: isAllUnits,

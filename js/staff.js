@@ -29,7 +29,7 @@ var Staff = (function () {
     var m = me(), bar = $('meBar');
     if (!m || !UI.store.get('token')) { bar.innerHTML = ''; return; }
     bar.innerHTML = '👤 <span id="meName"></span> <button id="chgMe">不是我</button>';
-    $('meName').textContent = m.name + '（' + L.UNIT_NAME[m.unit] + '）';
+    $('meName').textContent = m.name + '（' + L.STAFF_UNIT_NAME[m.unit] + '）';
     $('chgMe').onclick = function () { logout(); };
   }
 
@@ -46,13 +46,15 @@ var Staff = (function () {
         es.querySelector('#toAdmin').onclick = function () { Admin.open(); };
         return;
       }
-      var people = r.data, cur = unit || (me() && me().unit) || v.unit || 'mala';
+      var GROUPS = L.UNITS.concat([{ id: 'hq', name: '總部' }]);
+      var grp = function (u) { return u.indexOf('hq-') === 0 ? 'hq' : u; };
+      var people = r.data, cur = unit || (me() && grp(me().unit)) || v.unit || 'mala';
       function draw() {
-        var list = people.filter(function (s) { return s.unit === cur; });
+        var list = people.filter(function (s) { return grp(s.unit) === cur; });
         var s = UI.sheet('<div class="bar"><b>請選擇你是誰</b>' + (lock ? '' : '<button data-close>取消</button>') + '</div><div class="body">' +
           '<div class="hint" style="margin:0 0 10px">選自己的名字並輸入 4 位數密碼（第一次使用會請你設定）。這支手機會記住你，按「我已閱讀」時會請你手寫簽名。</div>' +
-          '<div class="seg">' + L.UNITS.map(function (u) { return '<button data-pu="' + u.id + '" class="' + (u.id === cur ? 'on' : '') + '">' + u.name + '</button>'; }).join('') + '</div>' +
-          '<div class="picklist">' + (list.map(function (p) { return '<button data-pick="' + esc(p.id) + '">' + esc(p.name) + (p.locked ? ' 🔒' : '') + '</button>'; }).join('') || '<div class="hint" style="grid-column:1/-1">這個單位還沒有同仁名單</div>') + '</div>' +
+          '<div class="seg">' + GROUPS.map(function (u) { return '<button data-pu="' + u.id + '" class="' + (u.id === cur ? 'on' : '') + '">' + u.name + '</button>'; }).join('') + '</div>' +
+          '<div class="picklist">' + (list.map(function (p) { return '<button data-pick="' + esc(p.id) + '">' + esc(p.name) + (p.locked ? ' 🔒' : '') + (cur === 'hq' ? '<br><small style="color:var(--sub);font-weight:400">' + L.STAFF_UNIT_NAME[p.unit].replace('總部', '') + '</small>' : '') + '</button>'; }).join('') || '<div class="hint" style="grid-column:1/-1">這個單位還沒有同仁名單</div>') + '</div>' +
           '<div class="hint" style="margin-top:14px">找不到自己的名字？請洽主管在「設定 → 同仁名單」新增。</div>' +
           '<button class="btn ghost" id="toAdmin" style="margin-top:6px">⚙ 主管設定</button></div>', lock);
         s.querySelector('#toAdmin').onclick = function () { Admin.open(); };
@@ -79,7 +81,7 @@ var Staff = (function () {
     var s = UI.sheet('<div class="bar"><b>' + title + '</b><button id="pfBack">返回</button></div><div class="body">' + body + '</div>', true);
     s.querySelector('#pfBack').onclick = back;
     if (p.locked) { s.querySelector('#pfBack2').onclick = back; return; }
-    s.querySelector('#pfWho').textContent = p.name + '（' + L.UNIT_NAME[p.unit] + '）' + (p.hasPin ? '' : '你好，第一次使用請設定 4 位數密碼，之後換手機時要輸入。');
+    s.querySelector('#pfWho').textContent = p.name + '（' + L.STAFF_UNIT_NAME[p.unit] + '）' + (p.hasPin ? '' : '你好，第一次使用請設定 4 位數密碼，之後換手機時要輸入。');
     var err = s.querySelector('#pfErr'), go = s.querySelector('#pfGo');
     if (p.hasPin) {
       s.querySelector('#pfForgot').onclick = function () {
@@ -120,7 +122,7 @@ var Staff = (function () {
 
   function enter(d) {
     UI.store.set('token', d.token); UI.store.set('me', JSON.stringify(d.me));
-    v.unit = d.me.unit; v.tab = 'board'; v.board = v.hist = null;
+    v.unit = L.homeTab(d.me.unit); v.tab = 'board'; v.board = v.hist = null;
     UI.closeSheet(); UI.toast('你好，' + d.me.name); loadBoard();
   }
 
@@ -131,7 +133,7 @@ var Staff = (function () {
       v.loading = false;
       if (!r.ok) { if (r.code !== 'AUTH') { v.error = r.message; render(); } return; }
       v.board = r.data; UI.store.set('me', JSON.stringify(r.data.me)); renderMe();
-      if (!v.unit) v.unit = r.data.me.unit;
+      if (!v.unit) v.unit = L.homeTab(r.data.me.unit);
       render();
     });
   }
@@ -144,20 +146,21 @@ var Staff = (function () {
     });
   }
   function reads() { return (v.tab === 'hist' ? v.hist : v.board || {}).myReads || {}; }
-  function iTarget(p) { var m = me(); return !!m && p.units.indexOf(m.unit) >= 0; }
+  function iTarget(p) { var m = me(); return !!m && L.mustSign(m.unit, p); }
 
   function render() {
     var app = $('app'), m = me();
     if (!m) { app.innerHTML = ''; return; }
-    if (!v.unit) v.unit = m.unit;
+    var tabs = L.viewTabs(m.unit), home = L.homeTab(m.unit);
+    if (tabs.indexOf(v.unit) < 0) v.unit = home;
     var myR = (v.board && v.board.myReads) || {};
     var unread = function (u) {
       return v.board ? v.board.posts.filter(function (p) { return p.units.indexOf(u) >= 0 && iTarget(p) && !myR[p.id]; }).length : 0;
     };
     var h = '<div class="tabs"><button data-tab="board" class="' + (v.tab === 'board' ? 'on' : '') + '">📌 公告</button>' +
       '<button data-tab="hist" class="' + (v.tab === 'hist' ? 'on' : '') + '">🗂 歷史區</button></div>' +
-      '<div class="seg">' + L.UNITS.map(function (u) {
-        var n = (v.tab === 'board' && u.id === m.unit) ? unread(u.id) : 0;
+      '<div class="seg">' + L.UNITS.filter(function (u) { return tabs.indexOf(u.id) >= 0; }).map(function (u) {
+        var n = (v.tab === 'board' && u.id === home) ? unread(u.id) : 0;
         return '<button data-unit="' + u.id + '" class="' + (v.unit === u.id ? 'on' : '') + '">' + u.name + (n ? '<span class="n">' + n + '</span>' : '') + '</button>';
       }).join('') + '</div>';
     if (v.loading) h += '<div class="loading">載入中</div>';

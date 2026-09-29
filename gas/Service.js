@@ -40,7 +40,7 @@ function makeService_(L, store, files, auth, clock) {
     var o = {}; store.getReads().forEach(function (r) { if (r.staffId === sid) o[r.postId] = r.at; }); return o;
   }
   function targets(p) {
-    return store.getStaff().filter(function (s) { return s.active && p.units.indexOf(s.unit) >= 0; });
+    return store.getStaff().filter(function (s) { return s.active && L.mustSign(s.unit, p); });
   }
   function nextId(prefix, list, width) {
     var n = 0;
@@ -78,19 +78,19 @@ function makeService_(L, store, files, auth, clock) {
     board: function (q) {
       var s = staffOf(q), td = clock.today();
       var posts = store.getPosts().map(function (p) { return withStatus(p, td); })
-        .filter(function (p) { return p.status.state === 'on'; }).sort(L.sortBoard);
+        .filter(function (p) { return p.status.state === 'on' && L.canSee(s.unit, p); }).sort(L.sortBoard);
       return { today: td, me: me(s), posts: posts, myReads: myReadAt(s.id) };
     },
     history: function (q) {
       var s = staffOf(q), td = clock.today();
-      var posts = store.getPosts().filter(function (p) { return L.status(p, td).state === 'off'; })
+      var posts = store.getPosts().filter(function (p) { return L.status(p, td).state === 'off' && L.canSee(s.unit, p); })
         .sort(function (a, b) { return L.sortHistory(a, b, td); }).map(function (p) { return withStatus(p, td); });
       return { today: td, posts: posts, myReads: myReadAt(s.id) };
     },
     ack: function (q) {
       var s = staffOf(q), p = findPost(q.postId);
       if (L.status(p, clock.today()).state !== 'on') throw err('BAD_REQ', '這則公告已下架');
-      if (p.units.indexOf(s.unit) < 0) throw err('BAD_REQ', '這則公告不需要你簽名');
+      if (!L.canSee(s.unit, p) || !L.mustSign(s.unit, p)) throw err('BAD_REQ', '這則公告不需要你簽名');
       var sig = String(q.sig || '');
       if (sig.indexOf('data:image/') !== 0 || sig.length > L.SIG_MAX_CHARS) throw err('BAD_REQ', '簽名格式錯誤');
       if (myReadIds(s.id).indexOf(p.id) >= 0) throw err('ALREADY', '你已經簽過這則公告');
@@ -114,8 +114,9 @@ function makeService_(L, store, files, auth, clock) {
       return { atoken: auth.makeAdminToken(store.secret(), a.ver, clock.nowMs() + 12 * 3600e3) };
     },
     adminData: function (q) {
-      requireAdmin(q);
-      var td = clock.today(), reads = store.getReads();
+      var t = [clock.nowMs()], mark = function () { t.push(clock.nowMs()); };
+      requireAdmin(q); mark();
+      var td = clock.today(), reads = store.getReads(); mark();
       var posts = store.getPosts().map(function (p) {
         var o = withStatus(p, td), tg = targets(p);
         var ids = {}; tg.forEach(function (s) { ids[s.id] = 1; });
@@ -126,9 +127,12 @@ function makeService_(L, store, files, auth, clock) {
       var staff = store.getStaff().filter(function (s) { return s.active; }).map(function (s) {
         return { id: s.id, name: s.name, unit: s.unit, hasPin: !!s.pinHash, locked: (Number(s.fail) || 0) >= L.STAFF_MAX_FAIL };
       });
+      mark();
       var quota = null;
       try { quota = files.quota(); } catch (e) { quota = null; }
-      return { today: td, posts: posts, staff: staff, quota: quota };
+      mark();
+      // _t：各階段毫秒（驗證、讀已讀、整理公告與同仁、查空間），診斷慢速用
+      return { today: td, posts: posts, staff: staff, quota: quota, _t: t.slice(1).map(function (x, i) { return x - t[i]; }) };
     },
     receipts: function (q) {
       requireAdmin(q);
@@ -201,11 +205,11 @@ function makeService_(L, store, files, auth, clock) {
       requireAdmin(q);
       var name = String(q.name || '').trim();
       if (!name || name.length > 20) throw err('BAD_REQ', '請填姓名（20 字內）');
-      if (L.UNIT_IDS.indexOf(q.unit) < 0) throw err('BAD_REQ', '單位錯誤');
+      if (L.STAFF_UNIT_IDS.indexOf(q.unit) < 0) throw err('BAD_REQ', '單位錯誤');
       var all = store.getStaff();
       if (all.some(function (s) { return s.active && s.name === name && s.unit === q.unit; })) throw err('BAD_REQ', '此單位已有同名同仁');
       var s = { id: nextId('S-', all, 3), name: name, unit: q.unit, pinHash: '', salt: '', pinVer: 0, fail: 0, active: true, createdAt: iso(), deletedAt: '' };
-      store.saveStaff(s); log('新增同仁', s.id, name + '（' + L.UNIT_NAME[s.unit] + '）');
+      store.saveStaff(s); log('新增同仁', s.id, name + '（' + L.STAFF_UNIT_NAME[s.unit] + '）');
       return { staff: { id: s.id, name: s.name, unit: s.unit, hasPin: false, locked: false } };
     },
     staffDelete: function (q) {

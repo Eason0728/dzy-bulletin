@@ -87,6 +87,27 @@ eq('post bad unit only', L.postProblem(D({ units: ['xx'] })), '請選擇顯示�
 eq('post exp before pub', L.postProblem(D({ expiresOn: '2026-09-28' })), '到期日不能早於上架日');
 eq('post exp same day ok', L.postProblem(D({ expiresOn: '2026-09-29' })), null);
 
+// C15 總部三組
+const ALLP = { units: ['mzt', 'mala', 'cf'] }, MZT = { units: ['mzt'] }, MALA = { units: ['mala'] }, CF = { units: ['cf'] }, MC = { units: ['mzt', 'cf'] };
+eq('viewTabs store', L.viewTabs('cf'), ['mzt', 'mala', 'cf']);
+eq('viewTabs hq-dzy', L.viewTabs('hq-dzy'), ['mzt', 'mala', 'cf']);
+eq('viewTabs hq-mzt', L.viewTabs('hq-mzt'), ['mzt']);
+eq('viewTabs hq-mala', L.viewTabs('hq-mala'), ['mala']);
+eq('canSee store other unit', L.canSee('mala', CF), true);
+eq('canSee hq-mzt mzt', L.canSee('hq-mzt', MZT), true);
+eq('canSee hq-mzt all', L.canSee('hq-mzt', ALLP), true);
+eq('canSee hq-mzt mala', L.canSee('hq-mzt', MALA), false);
+eq('canSee hq-mala cf', L.canSee('hq-mala', CF), false);
+eq('canSee hq-dzy cf', L.canSee('hq-dzy', CF), true);
+eq('mustSign store own', L.mustSign('mala', MALA), true);
+eq('mustSign store other', L.mustSign('mala', CF), false);
+eq('mustSign hq-dzy all', L.mustSign('hq-dzy', ALLP), true);
+eq('mustSign hq-dzy partial', L.mustSign('hq-dzy', MC), false);
+eq('mustSign hq-mzt partial with mzt', L.mustSign('hq-mzt', MC), true);
+eq('mustSign hq-mala mzt', L.mustSign('hq-mala', MZT), false);
+eq('homeTab', [L.homeTab('cf'), L.homeTab('hq-mala'), L.homeTab('hq-dzy')], ['cf', 'mala', 'mzt']);
+eq('staff unit names', L.STAFF_UNIT_IDS.map(k => L.STAFF_UNIT_NAME[k]), ['墨竹亭', '小辛辣', '央廚', '總部鼎兆元', '總部墨竹亭', '總部小辛辣']);
+
 // 格式
 eq('fmtMD', L.fmtMD('2026-09-05'), '9/5');
 eq('fmtYM', L.fmtYM('2026-09'), '2026 年 9 月');

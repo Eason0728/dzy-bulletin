@@ -35,7 +35,7 @@ header.top h1 small{font-weight:400;opacity:.8}
 .unread{position:absolute;top:16px;right:14px;width:9px;height:9px;border-radius:50%;background:var(--dot)}
 .tag{display:inline-block;font-size:11.5px;font-weight:600;border-radius:6px;padding:0 6px;line-height:19px;color:#fff}
 .tag.mzt{background:var(--mzt)} .tag.mala{background:var(--mala)} .tag.cf{background:var(--cf)}
-.tag.all{background:#555}
+.tag.all{background:#555} .tag.hq{background:#4a4f7a}
 .pinmark{color:var(--brand);font-weight:700;font-size:12px}
 .readok{color:var(--ok);font-weight:600}
 .empty{text-align:center;color:var(--sub);padding:40px 0}

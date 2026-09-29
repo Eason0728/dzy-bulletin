@@ -20,6 +20,7 @@
 | C11 | 附件物件 | `{id, name, type:'pdf'\|'docx'\|'xlsx', size}`；`.doc` 的 type 算 `docx`，`.xls` 的 type 算 `xlsx` | — |
 | C12 | API 回傳 | 成功 `{ok:true,data}`；失敗 `{ok:false,code,message}`。code 只能用：`BAD_REQ` `AUTH` `BAD_PIN` `LOCKED` `WEAK_PIN` `HAS_PIN` `ALREADY` `NOT_FOUND` `TOO_BIG` `BAD_TYPE` `ADMIN_LOCKED` `SERVER`（前端另有 `NET`＝網路逾時；`checkFiles` 的 `TOO_MANY` 是前端內部碼，不作為 API code） | — |
 | C13 | localStorage 鍵 | 前綴一律用 `dzyb_`（同一個 github.io 網域的其他系統共用 localStorage，不准沒有前綴）：`dzyb_token`、`dzyb_atoken`、`dzyb_mock_db` | — |
+| C15 | 同仁所屬（2026-09-29 Eason 追加總部） | 名單單位 `mzt` `mala` `cf` `hq-dzy`（總部鼎兆元）`hq-mzt`（總部墨竹亭）`hq-mala`（總部小辛辣）；公告單位仍只有前三個。**看得到**：`hq-mzt`／`hq-mala` 只看含該品牌的公告（分頁只剩該品牌），其餘（門市、`hq-dzy`）三個分頁都能看。**要簽**：門市＝公告含自己單位；`hq-mzt`／`hq-mala`＝含該品牌；`hq-dzy`＝只簽三單位全選（「全部」）的公告。函式：`viewTabs` `canSee` `mustSign` `homeTab` | 總部墨竹亭看得到「全部」與墨竹亭公告 |
 | C14 | 連錯鎖定 | 同仁連錯 3 次 → 鎖到主管重設；管理通行碼連錯 5 次 → 鎖 15 分鐘 | — |
 
 ## Phase 1

@@ -67,13 +67,13 @@ let at = r.data.atoken;
 eq('adminData no token', call('adminData', {}).code, 'AUTH');
 r = call('adminData', { atoken: at });
 eq('adminData ok', r.ok, true);
-eq('adminData counts', r.data.posts.find(p => p.id === 'P-20260920-001').readCount + '/' + r.data.posts.find(p => p.id === 'P-20260920-001').targetCount, '2/5');
+eq('adminData counts', r.data.posts.find(p => p.id === 'P-20260920-001').readCount + '/' + r.data.posts.find(p => p.id === 'P-20260920-001').targetCount, '2/6');   // 小辛辣 5 人＋總部小辛辣 1 人
 eq('adminData staff full name', r.data.staff.find(s => s.id === 'S-001').name, '陳大安');
 eq('adminData locked flag', r.data.staff.find(s => s.id === 'S-013').locked, true);
 
 // receipts
 r = call('receipts', { atoken: at, postId: 'P-20260920-001' });
-eq('receipts rows', r.data.rows.length, 5);
+eq('receipts rows', r.data.rows.length, 6);
 eq('receipts read', r.data.rows.filter(x => x.read).map(x => x.staffId).sort(), ['S-001', 'S-013']);
 
 // 重設密碼 → 舊憑證失效、解鎖
@@ -111,14 +111,14 @@ eq('pin off', call('setPinned', { atoken: at, postId: pid, on: false }).data.pos
 // 同仁增刪
 eq('staffAdd empty', call('staffAdd', { atoken: at, name: ' ', unit: 'cf' }).code, 'BAD_REQ');
 r = C('staffAdd', { atoken: at, name: '新同仁', unit: 'cf' });
-eq('staffAdd ok', [r.ok, r.data.staff.id], [true, 'S-016']);
+eq('staffAdd ok', [r.ok, r.data.staff.id], [true, 'S-019']);
 eq('staffAdd dup', C('staffAdd', { atoken: at, name: '新同仁', unit: 'cf' }).code, 'BAD_REQ');
 eq('staffDelete', call('staffDelete', { atoken: at, staffId: 'S-001' }).ok, true);
 eq('deleted not in roster', C('roster').data.some(s => s.id === 'S-001'), false);
 r = C('receipts', { atoken: at, postId: 'P-20260920-001' });
 eq('deleted reader kept, inactive', [r.data.rows.find(x => x.staffId === 'S-001').active, r.data.rows.find(x => x.staffId === 'S-001').inTarget], [false, false]);
 eq('no debug field on server error', Object.keys(M.callSync('receipts', { atoken: at, postId: null })).includes('debug'), false);
-eq('deleted not counted', C('adminData', { atoken: at }).data.posts.find(p => p.id === 'P-20260920-001').targetCount, 4);
+eq('deleted not counted', C('adminData', { atoken: at }).data.posts.find(p => p.id === 'P-20260920-001').targetCount, 5);
 
 // 變更通行碼 → 舊管理憑證失效
 eq('changePass wrong old', call('changePass', { atoken: at, oldPass: 'x', newPass: '5678' }).code, 'AUTH');
@@ -128,6 +128,24 @@ eq('old atoken dead', C('adminData', { atoken: at }).code, 'AUTH');
 eq('new atoken ok', C('adminData', { atoken: r.data.atoken }).ok, true);
 eq('login new pass', C('adminLogin', { pass: '5678' }).ok, true);
 
+// C15 總部：看得到／要簽
+{ const tk = id => { M.callSync('staffResetPin', { atoken: C('adminLogin', { pass: '5678' }).data.atoken, staffId: id }); return C('setPin', { staffId: id, pin: '2580' }).data.token; };
+  const dzy = tk('S-016'), hmzt = tk('S-017'), hmala = tk('S-018');
+  const ids = t => C('board', { token: t }).data.posts.map(p => p.id);
+  eq('hq-dzy sees cf post', ids(dzy).includes('P-20260927-001'), true);
+  eq('hq-mzt sees only mzt/all', ids(hmzt).every(id => ['P-20260925-001', 'P-20260915-001', 'P-20260910-001'].includes(id)) && ids(hmzt).includes('P-20260915-001'), true);
+  eq('hq-mala not see mzt post', ids(hmala).includes('P-20260915-001'), false);
+  eq('hq-mzt history filtered', C('history', { token: hmzt }).data.posts.some(p => p.units.indexOf('mzt') < 0), false);
+  eq('hq-dzy ack partial rejected', C('ack', { token: dzy, postId: 'P-20260927-001', sig: 'data:image/png;base64,AA' }).code, 'BAD_REQ');
+  eq('hq-dzy ack all ok', C('ack', { token: dzy, postId: 'P-20260910-001', sig: 'data:image/png;base64,AA' }).ok, true);
+  eq('hq-mala ack mzt rejected', C('ack', { token: hmala, postId: 'P-20260915-001', sig: 'data:image/png;base64,AA' }).code, 'BAD_REQ');
+  const ad = C('adminLogin', { pass: '5678' }).data.atoken, posts = C('adminData', { atoken: ad }).data.posts;
+  const tgt = id => posts.find(p => p.id === id).targetCount;
+  eq('target all includes hq-dzy/hq-mzt/hq-mala', tgt('P-20260910-001'), 18);   // 門市在職 15（S-001 已刪、S-019 新增）＋總部 3
+  eq('target cf excludes hq', tgt('P-20260927-001'), 6);   // 央廚 5＋S-019，總部都不算
+  eq('staffAdd hq unit', C('staffAdd', { atoken: ad, name: '總部新人', unit: 'hq-mzt' }).ok, true);
+  eq('staffAdd bad unit', C('staffAdd', { atoken: ad, name: 'x', unit: 'hq' }).code, 'BAD_REQ');
+}
 eq('unknown action', C('hack', {}).code, 'BAD_REQ');
 eq('all 17 actions covered', seen.size, 17);
 

@@ -78,7 +78,7 @@ Apps Script Web App（madesiaosinla，以擁有者身分執行、任何人可呼
 | C | 姓名 | 簽名當下的姓名快照 |
 | D | 單位 | 快照 |
 | E | 簽名時間 | ISO 格式 |
-| F | 簽名 | JPEG data URL。前端先縮成 360px 寬再送，約 10～20KB，低於試算表單格 5 萬字上限。後端超過 45,000 字就拒收 |
+| F | 簽名檔 id | 簽名圖存成 Drive 檔案（附件資料夾下的「簽名」子資料夾），這格只存檔案 id。前端縮成 360px 寬的 PNG 再送，後端超過 45,000 字就拒收。**2026-09-29 實作時修正**：原規劃把圖直接存進試算表，但每年上萬筆簽名會讓整份表變得很慢，改存 Drive |
 
 - 同一人對同一則只能簽一次，後端會擋重複簽。
 
@@ -138,8 +138,8 @@ Apps Script Web App（madesiaosinla，以擁有者身分執行、任何人可呼
 | `history` | 同仁憑證 | — | `{today, posts:[已下架], myReads:{postId: 簽名時間}}` |
 | `ack` | 同仁憑證 | `postId, sig` | `{at}`；已經簽過回 code＝`ALREADY` |
 | `adminLogin` | — | `pass` | `{atoken}` |
-| `adminData` | 管理憑證 | — | `{posts（含排定、已下架）, staff（全名、在職、是否已設密碼、是否鎖定）, readCounts, quota}` |
-| `receipts` | 管理憑證 | `postId` | `[{staffId, name, unit, at, sig}]`（簽名圖只在展開時才載入） |
+| `adminData` | 管理憑證 | — | `{today, posts:[每則含 status、readCount、targetCount], staff:[{id,name(全名),unit,hasPin,locked}], quota:{limit,usage}\|null}` |
+| `receipts` | 管理憑證 | `postId` | `{rows:[{staffId, name, unit, active, read, at, sig}]}`（應讀名單＋已刪除但簽過的人；簽名圖只在展開時才載入） |
 | `uploadFile` | 管理憑證 | `name, mime, data(base64)` | `{id, name, type, size}` |
 | `savePost` | 管理憑證 | `{id?, title, body, units, publishOn, expiresOn, pinned, files}` | `{post}` |
 | `setPublished` | 管理憑證 | `postId, on` | `{post}` |
@@ -147,7 +147,7 @@ Apps Script Web App（madesiaosinla，以擁有者身分執行、任何人可呼
 | `staffAdd` | 管理憑證 | `name, unit` | `{staff}` |
 | `staffDelete` | 管理憑證 | `staffId` | — |
 | `staffResetPin` | 管理憑證 | `staffId` | — |
-| `changePass` | 管理憑證 | `oldPass, newPass` | — |
+| `changePass` | 管理憑證 | `oldPass, newPass` | `{atoken}`（ADMIN_VER+1 使所有舊管理憑證失效，回傳新憑證讓操作者不被登出） |
 
 - 所有寫入都用 `LockService` 排隊，避免兩個人同時上架時流水號重複。
 - 後端的日期一律用 `Asia/Taipei`。

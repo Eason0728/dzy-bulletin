@@ -3,7 +3,7 @@
 - 分級：完整
 - 分級依據：排程=否 發訊息=否 外部後台=是 被看到=是 寫正式資料=是
 - 現在在：④（①｜②｜③-需求｜③-規格｜③-方案｜④｜⑤｜結案）
-- 等 Eason：無
+- 等 Eason：正式 GAS 跑 setup() 授權＋填 ADMIN_INIT
 
 ## Eason 已定案（2026-09-29）
 1. 獨立網址（不併入 dzy、不擴充打卡店內公告）
@@ -28,6 +28,8 @@
 |---|---|---|---|---|---|
 | 2026-09-29 | 預覽自測 | preview/index.html 同仁端＋管理端全流程 | 通過（修 2 bug：日期少一天、他單位紅點） | 1 | 內建瀏覽器 JS 點擊驗證，errs=[] |
 | 2026-09-29 | 預覽自測 | 個人密碼：設定／驗證／鎖定／忘記重設／主管重設踢登出 | 通過（修：重設後空白頁、focus 空指標） | 2 | 同上，errs=[] |
+| 2026-09-29 | 任務關 | T1–T7 | 通過：node 153 項＋瀏覽器 local 全流程（同仁端、管理端）pageerror=0 | 1 | test/*.test.js、內建瀏覽器 JS 驗證 |
+| 2026-09-29 | 階段關 | Phase 1（T1–T7） | 不通過：5 處程式與契約不一致（4 改文件、1 改程式） | 1 | docs/gate/phase1-r1.md |
 
 ## 落地清單
 - [ ] 1 排程上線：
@@ -42,3 +44,8 @@
 ## spike 資源（④ 結束後清理）
 - spike GAS：scriptId `1DVAHktjmJOHWVDRLYZnPg5OpI3_CLVhd_osLGC9F6KRq2mtPXroU_wPZ`（madesiaosinla），部署 `AKfycbwjSqM-r4kL8Xep7mejf3rG_W09G1dLveC8DcZy25kF0hT_tzykY759gIlySkRkqICr`
 - Drive 測試資料夾「【spike】佈告欄附件測試」已丟垃圾桶、4 個測試檔已取消分享（2026-09-29）
+
+## 正式資源（2026-09-29 建立）
+- 正式 GAS：scriptId `13cscE_m0bv7mI4ArvR-EbTTc-bca27coHFxf-cRjjxXN15fvNOqm8RuL`（madesiaosinla），rootDir `gas/`
+- 部署 ID：`AKfycbzQXAnMnrYGoUEMDzr6XbtsuIDYyGWbGLcFW1xVDpa64NcBrMzI9GaVKJhIlC-WxnGK5g`（@1）。**之後一律 `clasp deploy -i <此 ID>` 更新，不要建新部署**（會換網址）
+- 等 Eason：正式 GAS 跑 setup() 授權＋填 ADMIN_INIT

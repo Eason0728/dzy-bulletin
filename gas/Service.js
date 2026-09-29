@@ -1,6 +1,6 @@
 /* 鼎兆元｜電子佈告欄 — 服務層：API 契約（spec 第五節）的唯一實作
  * 本機假後端（js/mock.js）與 GAS（gas/Code.js）都呼叫這一份，只換 store／files／auth／clock。
- * store: getPosts() savePost(p) getStaff() saveStaff(s) getReads() addRead(r) addLog(e) getAdmin() setAdmin(a) secret()
+ * store: getPosts() savePost(p) getStaff() saveStaff(s) getReads() addRead(r) [getSigs(postId)] addLog(e) getAdmin() setAdmin(a) secret()
  * files: upload(name,mime,b64) share(ids) revoke(ids) quota()
  * clock: { nowMs(), today() } */
 'use strict';
@@ -133,7 +133,8 @@ function makeService_(L, store, files, auth, clock) {
     receipts: function (q) {
       requireAdmin(q);
       var p = findPost(q.postId), reads = store.getReads().filter(function (r) { return r.postId === p.id; });
-      var byId = {}; reads.forEach(function (r) { byId[r.staffId] = r; });
+      var sigs = store.getSigs ? store.getSigs(p.id) : null;             // GAS：簽名圖存在 Drive，只在看回條時才讀
+      var byId = {}; reads.forEach(function (r) { if (sigs) r.sig = sigs[r.staffId] || null; byId[r.staffId] = r; });
       var rows = targets(p).map(function (s) {
         var r = byId[s.id]; delete byId[s.id];
         return { staffId: s.id, name: s.name, unit: s.unit, active: true, read: !!r, at: r ? r.at : null, sig: r ? r.sig : null };
@@ -155,7 +156,11 @@ function makeService_(L, store, files, auth, clock) {
       requireAdmin(q);
       var d = q.post || {};
       var bad = L.postProblem(d); if (bad) throw err('BAD_REQ', bad);
-      var fl = (d.files || []).map(function (f) { return { id: String(f.id), name: String(f.name), type: L.fileType(f.name) || f.type, size: Number(f.size) || 0 }; });
+      var fl = (d.files || []).map(function (f) {
+        var t = L.fileType(f && f.name);
+        if (!t || !f.id) throw err('BAD_TYPE', '附件格式錯誤');            // 類型一律由副檔名判斷，不信任前端
+        return { id: String(f.id), name: String(f.name), type: t, size: Number(f.size) || 0 };
+      });
       var now = iso(), p;
       if (d.id) {
         p = findPost(d.id);

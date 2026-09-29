@@ -33,7 +33,7 @@
 
 ### T2 `gas/Auth.js` 的核心邏輯＋`test/auth.test.js`
 - **輸入**：C6、C7、C8、C14。
-- **輸出**：`hashPin`、`makeStaffToken`、`verifyStaffToken(token, staffRow)`、`makeAdminToken`、`verifyAdminToken`、`applyLoginResult(row, ok)`（回傳新的錯誤次數與是否鎖定）。
+- **輸出**：`newSalt`、`hashPin`、`makeStaffToken`、`verifyStaffToken(secret, token, staffRow)`、`makeAdminToken`、`verifyAdminToken`、`staffLogin(row, pin)`（驗證＋回傳新的連錯次數與 `BAD_PIN`／`LOCKED`）、`adminLogin(state, pass, nowMs)`。（2026-09-29 階段關 r1 後修訂：原寫 `applyLoginResult(row, ok)`，改為驗證與計數同一函式，避免呼叫端漏寫回）
   - 加密函式從外部注入：GAS 版用 `Utilities`，node 版用 `crypto`。
 - **驗收**：
   - [ ] 竄改憑證任一字元 → 驗證失敗。
@@ -43,7 +43,7 @@
 
 ### T3 `js/mock.js` 本機假後端
 - **輸入**：spec 第五節 API 契約全部 17 個 action。
-- **輸出**：`mockCall(action, payload)` → Promise，回傳格式照 C12。資料放 `dzyb_mock_db`，預設假資料沿用預覽頁（含測試員 A／B／C）。
+- **輸出**：`DZYB_MOCK.call(action, payload)` → Promise（node 測試用 `DZYB_MOCK.callSync`），回傳格式照 C12。資料放 `dzyb_mock_db`，預設假資料沿用預覽頁（含測試員甲／乙／丙）。內部直接呼叫 `gas/Service.js`，與正式後端共用同一份商業邏輯。
 - **驗收**：
   - [ ] node 腳本逐一呼叫 17 個 action，回傳格式都正確。
   - [ ] 不帶憑證呼叫 board → `AUTH`。
@@ -83,7 +83,7 @@
 ### T8 `gas/Store.js`＋`gas/Code.js`（路由、同仁與公告相關 action）
 - **驗收**：
   - [ ] 17 個 action 都照契約回應。
-  - [ ] 寫入都包在 `withLock_`。
+  - [ ] 寫入動作（`Service.WRITE_ACTIONS`）都在 `LockService.getScriptLock()` 內執行（`gas/Code.js` doPost）。
   - [ ] `roster` 只回遮罩姓名，絕不回雜湊值或 salt。
 
 ### T9 `gas/Files.js`＋`setup()`

@@ -29,11 +29,11 @@ var Sign = (function () {
     okBtn.onclick = function () {
       var errEl = s.querySelector('#sgErr');
       if (len < 40) { errEl.textContent = '請先簽名'; return; }
-      // 縮成 360px 寬的 JPEG（約 10～20KB），白底
+      // 縮成 360px 寬、白底
       var o = document.createElement('canvas'); o.width = 360; o.height = Math.round(360 * c.height / c.width);
       var ox = o.getContext('2d'); ox.fillStyle = '#fff'; ox.fillRect(0, 0, o.width, o.height); ox.drawImage(c, 0, 0, o.width, o.height);
-      var sig = o.toDataURL('image/jpeg', 0.7);
-      if (sig.length > DZYB.SIG_MAX_CHARS) sig = o.toDataURL('image/jpeg', 0.4);
+      var sig = o.toDataURL('image/png');                               // 線條圖用 PNG 最小
+      if (sig.length > DZYB.SIG_MAX_CHARS) sig = o.toDataURL('image/jpeg', 0.5);
       var done = UI.busy(okBtn, '送出中…');
       API.staff('ack', { postId: post.id, sig: sig }).then(function (res) {
         done();

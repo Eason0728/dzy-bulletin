@@ -86,6 +86,7 @@ eq('upload bad type', call('uploadFile', { atoken: at, name: 'a.png', data: 'AAA
 r = C('uploadFile', { atoken: at, name: 'a.pdf', data: 'JVBERi0x' });
 eq('upload ok', [r.ok, r.data.type], [true, 'pdf']);
 const f1 = r.data;
+eq('savePost bad file type', C('savePost', { atoken: at, post: { title: 't', units: ['mala'], publishOn: DZYB.today(), files: [{ id: 'x', name: 'evil.exe', type: 'pdf', size: 1 }] } }).code, 'BAD_TYPE');
 eq('savePost invalid', call('savePost', { atoken: at, post: { title: '', units: ['mala'], publishOn: '2026-09-29' } }).code, 'BAD_REQ');
 r = C('savePost', { atoken: at, post: { title: '測試公告', body: 'x', units: ['cf', 'mzt', 'mala'], publishOn: DZYB.today(), expiresOn: '', pinned: true, files: [f1] } });
 eq('savePost new', [r.ok, r.data.post.units, r.data.post.status.state], [true, ['mzt', 'mala', 'cf'], 'on']);

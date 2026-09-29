@@ -297,10 +297,15 @@ function makeService_(L, store, files, auth, clock, clockSrc) {
   // 回傳 C12 格式；不讓內部錯誤訊息外洩
   function call(action, req) {
     try {
+      return callInner(action, req);
+    } finally {
+      if (store.endRequest) store.endRequest();   // 成功或失敗（例如連錯被鎖）都要把同仁異動寫進名單快照
+    }
+  }
+  function callInner(action, req) {
+    try {
       if (!Object.prototype.hasOwnProperty.call(H, action)) throw err('BAD_REQ', '未知的動作');
-      var data = H[action](req || {});
-      if (store.endRequest) store.endRequest();
-      return { ok: true, data: data };
+      return { ok: true, data: H[action](req || {}) };
     } catch (e) {
       if (e && e.code) {
         var o = { ok: false, code: e.code, message: e.message };

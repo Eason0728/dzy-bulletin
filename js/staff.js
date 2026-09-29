@@ -43,10 +43,17 @@ var Staff = (function () {
   // 名單來源：①手機快取（秒開）②名單快照 CSV（Google 試算表發布檔，不經 Apps Script）③後端 roster（最準、可能很慢）
   function cachedRoster() { try { return JSON.parse(UI.store.get('roster')) || null; } catch (e) { return null; } }
   // 本機名單快取跟著這支手機上發生的變化即時更新（避免剛設好密碼、登出後又被要求設密碼）
+  function patches() { try { return JSON.parse(UI.store.get('rosterPatch')) || {}; } catch (e) { return {}; } }
   function patchRoster(id, patch) {
-    var l = cachedRoster(); if (!l) return;
-    l.forEach(function (s) { if (s.id === id) Object.assign(s, patch); });
-    UI.store.set('roster', JSON.stringify(l));
+    var l = cachedRoster();
+    if (l) { l.forEach(function (s) { if (s.id === id) Object.assign(s, patch); }); UI.store.set('roster', JSON.stringify(l)); }
+    var ps = patches(); ps[id] = Object.assign({}, patch, { at: Date.now() }); UI.store.set('rosterPatch', JSON.stringify(ps));
+  }
+  // 來源資料的時間早於本機變化才套用（快照約 5 分鐘更新；後端回應若在變化之前送出也可能較舊）
+  function applyPatches(list, srcAt) {
+    var ps = patches();
+    list.forEach(function (x) { var p = ps[x.id]; if (p && p.at > srcAt) { if ('locked' in p) x.locked = p.locked; if ('hasPin' in p) x.hasPin = p.hasPin; } });
+    return list;
   }
   function parseCsv(t) {
     var lines = String(t || '').replace(/\r/g, '').split('\n').filter(function (l) { return l.trim(); });
@@ -102,8 +109,7 @@ var Staff = (function () {
           done = true;
           pinForm(people.filter(function (p) { return p.id === b.dataset.pick; })[0], function () {
             // 回到名單時，合併這支手機剛發生的變化（被鎖、設好密碼），避免期間抵達的名單把它蓋掉
-            var c = cachedRoster() || [];
-            people.forEach(function (x) { var y = c.filter(function (z) { return z.id === x.id; })[0]; if (y) { if (y.locked) x.locked = true; if (y.hasPin) x.hasPin = true; } });
+            applyPatches(people, 0);
             done = false; draw();
           });
         };
@@ -112,15 +118,14 @@ var Staff = (function () {
     // 名單到了就畫；之後來的更新（CSV、後端）只在使用者還停在名單畫面時重畫
     function got(list, src) {
       if (!list || !list.length && src !== 'api') return;
-      if (src === 'csv') {                                           // 快照可能比本機晚：保留這支手機剛發生的變化（後端結果最準，不合併）
-        var c = cachedRoster() || [];
-        list.forEach(function (x) { var y = c.filter(function (z) { return z.id === x.id; })[0]; if (y) { if (y.locked) x.locked = true; if (y.hasPin) x.hasPin = true; } });
-      }
+      if (src === 'csv') applyPatches(list, Date.now() - 10 * 60e3);   // 快照最多晚約 5～10 分鐘
+      if (src === 'api') applyPatches(list, reqAt);                     // 後端回應若在本機變化之前送出，也以本機變化為準
       people = list; if (src === 'api') UI.store.set('roster', JSON.stringify(list));
       if (!done) draw();
     }
     got(cachedRoster(), 'cache');
     fetchCsvRoster().then(function (l) { if (!people || !people._api) got(l, 'csv'); });
+    var reqAt = Date.now();
     API.call('roster').then(function (r) {
       if (r.ok) { r.data._api = true; got(r.data, 'api'); return; }
       if (people || done) return;

@@ -115,8 +115,11 @@ eq('快照筆數＝在職同仁', snap.length - 1, vm.runInContext('makeStore_',
 snapFail = true;
 const Y = vm.runInContext('makeStore_', G)(files);
 Y.saveStaff(Object.assign({ id: 'S-007' }, S, { name: '己' }));
+const snapRowsBefore = JSON.stringify(snapSheet.data); let created = 0; const origCreate = G.SpreadsheetApp.create; G.SpreadsheetApp.create = () => { created++; return snapBook; };
 let threw = false; try { Y.endRequest(); } catch (e) { threw = true; }
 eq('快照失敗不拋例外、同仁仍寫入成功', [threw, sheets['同仁'].data.some(r => r[0] === 'S-007')], [false, true]);
+eq('快照試算表打不開時真的沒寫入、也沒偷偷重建新表', [JSON.stringify(snapSheet.data) === snapRowsBefore, created, props.SNAP_SS_ID], [true, 0, 'SNAP']);
+G.SpreadsheetApp.create = origCreate;
 snapFail = false;
 
 // 5) 操作紀錄不換世代（不讓快取失效）

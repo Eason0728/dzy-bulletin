@@ -59,7 +59,7 @@ function cachePut_(key, obj) {
 // 絕不可寫進主試算表（主試算表有密碼雜湊與 salt，發布時選錯範圍就全外洩）。
 function snapBook_() {
   var pr = props_(), id = pr.getProperty('SNAP_SS_ID');
-  if (id) { try { return SpreadsheetApp.openById(id); } catch (e) {} }
+  if (id) return SpreadsheetApp.openById(id);                      // 打不開就丟例外（暫時性錯誤不可重建，否則已發布的網址會凍結在舊資料）
   var bk = SpreadsheetApp.create('鼎兆元｜電子佈告欄｜公開名單');
   pr.setProperty('SNAP_SS_ID', bk.getId());
   bk.getSheets()[0].setName(SHEETS_.snap.name);

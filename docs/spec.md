@@ -132,7 +132,7 @@ Apps Script Web App（madesiaosinla，以擁有者身分執行、任何人可呼
 
 | action | 需要 | 參數 | 回傳 data |
 |---|---|---|---|
-| `roster` | — | — | `[{id, name(遮罩), unit, hasPin, locked}]`（只列在職） |
+| `roster` | — | — | `[{id, name(遮罩), unit, store, hasPin, locked}]`（只列在職；Code.js 以 CacheService 快取結果 10 分鐘，世代換了即失效） |
 | `setPin` | — | `staffId, pin` | `{token, me, board}`（board 同 `board` 回傳，登入少一次往返） |
 | `login` | — | `staffId, pin` | `{token, me, board}`；錯誤時 code＝`BAD_PIN`（附剩餘次數）／`LOCKED`（需主管重設） |
 | `board` | 同仁憑證 | — | `{today, me, posts:[上架中，三個單位全部], myReads:{postId: 簽名時間}}` |
@@ -145,7 +145,8 @@ Apps Script Web App（madesiaosinla，以擁有者身分執行、任何人可呼
 | `savePost` | 管理憑證 | `post:{id?, title, body, units, publishOn, expiresOn, pinned, files}`, `reqId`（冪等鍵，綁一份草稿：同 reqId＋同內容指紋＝重送，回傳第一次結果；同 reqId 但內容不同＝改為編輯第一次建立的那則；6 小時內有效） | `{post}` |
 | `setPublished` | 管理憑證 | `postId, on` | `{post}` |
 | `setPinned` | 管理憑證 | `postId, on` | `{post}` |
-| `staffAdd` | 管理憑證 | `name, unit` | `{staff}` |
+| `staffAdd` | 管理憑證 | `name, unit, store`（墨竹亭必填：光復／金山／六張犁；其他單位忽略） | `{staff}` |
+| `staffSetStore` | 管理憑證 | `staffId, store`（只限墨竹亭同仁） | — |
 | `staffDelete` | 管理憑證 | `staffId` | — |
 | `staffResetPin` | 管理憑證 | `staffId` | — |
 | `syncClock` | 管理憑證 | — | `{added:[姓名（單位）], adopted, left:[{id,name,unit}], counts:{來源:在職人數}, errors:[]}`（2026-09-29 追加：從小辛辣光復、央廚、墨竹亭金山打卡系統 roster 唯讀同步；只新增，打卡已離職者只列出不刪；同仁表新增「來源」欄 `src`＝`gf|cf|js:emp_id`） |

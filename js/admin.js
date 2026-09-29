@@ -200,12 +200,12 @@ var Admin = (function () {
       '<button class="btn ghost" id="syncBtn">↻ 從打卡系統同步</button>' + syHTML + '</div>' +
       '<div class="panel"><h4>新增同仁</h4><div class="row"><input class="inp" id="sName" placeholder="姓名（全名）" maxlength="20">' +
       '<select class="inp" id="sUnit">' + L.STAFF_UNITS.map(function (u) { return '<option value="' + u.id + '">' + u.name + '</option>'; }).join('') + '</select>' +
-      '<select class="inp" id="sStore" hidden><option value="">選門市</option>' + L.STORES.mzt.map(function (x) { return '<option>' + x + '</option>'; }).join('') + '</select></div>' +
+      '<select class="inp" id="sStore"' + (L.STORES[L.STAFF_UNITS[0].id] ? '' : ' hidden') + '><option value="">選門市</option>' + L.STORES.mzt.map(function (x) { return '<option>' + x + '</option>'; }).join('') + '</select></div>' +
       '<div class="err" id="sErr"></div><div style="height:10px"></div><button class="btn primary" id="sAdd">新增</button></div>' +
       L.STAFF_UNITS.map(function (u) {
         var ppl = st.filter(function (s) { return s.unit === u.id; });
         return '<div class="panel"><h4><span class="tag ' + (u.id.indexOf('hq-') === 0 ? 'hq' : u.id) + '">' + u.name + '</span> ' + ppl.length + ' 人</h4>' + (ppl.map(function (s) {
-          var stSel = L.STORES[s.unit] ? '<select class="inp stSel" data-st="' + esc(s.id) + '" style="width:auto;padding:4px 6px">' + (L.STORES[s.unit].indexOf(s.store) < 0 ? '<option value="">未分店</option>' : '') +
+          var stSel = L.STORES[s.unit] ? '<select class="inp stSel" data-st="' + esc(s.id) + '" style="width:auto;padding:4px 6px">' + (L.STORES[s.unit].indexOf(s.store) < 0 ? '<option value="" disabled selected>未分店</option>' : '') +
             L.STORES[s.unit].map(function (x) { return '<option' + (x === s.store ? ' selected' : '') + '>' + x + '</option>'; }).join('') + '</select>' : '';
           return '<div class="arow" style="display:flex;align-items:center;gap:8px;padding:8px 0;flex-wrap:wrap"><span style="flex:1">' + esc(s.name) + ' <small style="color:var(--sub)">' +
             (s.locked ? '<span class="lockmark">🔒 已鎖定</span>' : s.hasPin ? '已設密碼' : '未設密碼') + '</small></span>' +

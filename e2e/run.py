@@ -310,11 +310,14 @@ def main():
         def exp_counts(): return ['%s %d 人' % (D.STAFF_UNIT_NAME[u], sum(1 for s in W.active_staff() if s['unit'] == u)) for u in D.STAFF_UNITS]
         check('A 各單位人數', panel_counts() == exp_counts(), f'{panel_counts()} vs {exp_counts()}')
         nn = '帶入新人%d' % (SEED % 100); nu = r2.choice(D.STAFF_UNITS)
-        pg.fill('#sName', 'X' + nn); pg.select_option('#sUnit', 'mzt'); pg.dispatch_event('#sUnit', 'change'); cm.mark('#sUnit', '選單位')
-        scan('設定-同仁-墨竹亭'); check('A 選墨竹亭時出現門市選單', pg.locator('#sStore').is_visible())
+        pg.fill('#sName', 'X' + nn); scan('設定-同仁-墨竹亭')
+        check('A 預設單位墨竹亭時門市選單一開始就看得到（不需切換）', pg.locator('#sUnit').input_value() == 'mzt' and pg.locator('#sStore').is_visible())
+        pg.select_option('#sUnit', 'cf'); check('A 切到央廚門市選單隱藏', not pg.locator('#sStore').is_visible())
+        pg.select_option('#sUnit', 'mzt'); cm.mark('#sUnit', '選單位')
+        check('A 切回墨竹亭門市選單出現', pg.locator('#sStore').is_visible())
         click('#sAdd'); check('A 墨竹亭沒選門市被擋', '請選擇門市' in text('#sErr'))
         pg.select_option('#sStore', D.STORES['mzt'][0]); cm.mark('#sStore', '選門市')
-        pg.select_option('#sUnit', nu); pg.dispatch_event('#sUnit', 'change'); pg.fill('#sName', nn)
+        pg.select_option('#sUnit', nu); pg.fill('#sName', nn)
         nst = r2.choice(D.STORES['mzt']) if nu in D.STORES else ''
         if nst: pg.select_option('#sStore', nst); cm.mark('#sStore', '選門市')
         click('#sAdd', '新增同仁')

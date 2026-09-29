@@ -112,6 +112,10 @@ var Staff = (function () {
     // 名單到了就畫；之後來的更新（CSV、後端）只在使用者還停在名單畫面時重畫
     function got(list, src) {
       if (!list || !list.length && src !== 'api') return;
+      if (src === 'csv') {                                           // 快照可能比本機晚：保留這支手機剛發生的變化（後端結果最準，不合併）
+        var c = cachedRoster() || [];
+        list.forEach(function (x) { var y = c.filter(function (z) { return z.id === x.id; })[0]; if (y) { if (y.locked) x.locked = true; if (y.hasPin) x.hasPin = true; } });
+      }
       people = list; if (src === 'api') UI.store.set('roster', JSON.stringify(list));
       if (!done) draw();
     }

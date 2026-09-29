@@ -3,7 +3,7 @@
 'use strict';
 
 var WRITE_ACTIONS_ = ['setPin', 'login', 'ack', 'adminLogin', 'savePost', 'setPublished', 'setPinned', 'staffAdd', 'staffDelete', 'staffResetPin', 'syncClock', 'staffSetStore'];   // 必須與 Service.WRITE_ACTIONS 一致（test 檢查）
-var VERSION_ = '0.5.0';
+var VERSION_ = '0.5.1';
 
 function doGet() {
   return json_({ ok: true, data: { app: 'dzy-bulletin', v: VERSION_ } });
@@ -26,7 +26,7 @@ function doPost(e) {
       try { hit = CacheService.getScriptCache().get(ck); } catch (x) {}
       if (hit) return ContentService.createTextOutput(hit).setMimeType(ContentService.MimeType.JSON);
       var out = JSON.stringify(build().call(action, req));
-      try { if (out.length < 90000 && out.indexOf('"ok":true') === 1) CacheService.getScriptCache().put(ck, out, 600); } catch (x) {}
+      try { if (out.length < 30000 && out.indexOf('"ok":true') === 1) CacheService.getScriptCache().put(ck, out, 600); } catch (x) {}
       return ContentService.createTextOutput(out).setMimeType(ContentService.MimeType.JSON);
     }
     if (WRITE_ACTIONS_.indexOf(action) < 0) return json_(build().call(action, req));
@@ -76,6 +76,7 @@ function setup() {
   if (ssId) book = SpreadsheetApp.openById(ssId);
   else { book = SpreadsheetApp.create('鼎兆元｜電子佈告欄'); pr.setProperty('SPREADSHEET_ID', book.getId()); }
   Object.keys(SHEETS_).forEach(function (k) {
+    if (k === 'snap') return;                                     // 名單快照在獨立試算表，不放主試算表
     var def = SHEETS_[k], sh = book.getSheetByName(def.name) || book.insertSheet(def.name);
     sh.getRange(1, 1, sh.getMaxRows(), def.cols.length).setNumberFormat('@');   // 純文字，避免日期被轉型（之後每次寫入也會對該列再設一次）
     if (sh.getLastRow() === 0) sh.getRange(1, 1, 1, def.head.length).setValues([def.head]).setFontWeight('bold');
@@ -90,6 +91,9 @@ function setup() {
   if (!pr.getProperty('TOKEN_SECRET')) pr.setProperty('TOKEN_SECRET', Utilities.getUuid() + Utilities.getUuid());
   if (!pr.getProperty('ADMIN_VER')) pr.setProperty('ADMIN_VER', '1');
   Drive.About.get({ fields: 'user' });   // 觸發 Drive 進階服務授權
+  try { makeStore_(makeFiles_()).refreshSnap(); } catch (e) { Logger.log('名單快照：' + e); }
+  var sp = pr.getProperty('SNAP_SS_ID');
+  if (sp) Logger.log('公開名單試算表（只有遮罩姓名，可整份發布到網路）：' + SpreadsheetApp.openById(sp).getUrl());
   Logger.log('試算表：' + book.getUrl());
   Logger.log('附件資料夾：' + folder.getUrl());
   Logger.log(pr.getProperty('ADMIN_HASH') ? '管理通行碼：已設定' : '管理通行碼：尚未設定 → 請到「專案設定 → 指令碼屬性」新增 ADMIN_INIT');

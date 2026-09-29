@@ -298,7 +298,9 @@ function makeService_(L, store, files, auth, clock, clockSrc) {
   function call(action, req) {
     try {
       if (!Object.prototype.hasOwnProperty.call(H, action)) throw err('BAD_REQ', '未知的動作');
-      return { ok: true, data: H[action](req || {}) };
+      var data = H[action](req || {});
+      if (store.endRequest) store.endRequest();
+      return { ok: true, data: data };
     } catch (e) {
       if (e && e.code) {
         var o = { ok: false, code: e.code, message: e.message };

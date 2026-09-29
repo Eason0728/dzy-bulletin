@@ -38,7 +38,9 @@ const G = {
     get: k => (k in cache ? cache[k] : null),
     getAll: ks => { const o = {}; ks.forEach(k => { if (k in cache) o[k] = cache[k]; }); return o; },
     put: (k, v) => { cache[k] = v; }, putAll: o => Object.assign(cache, o) }) },
-  SpreadsheetApp: { openById: () => ({ getSheetByName: n => sheets[n] }), flush: () => {} },
+  SpreadsheetApp: {
+    openById: id => { if (id === 'SNAP') { if (snapFail) throw new Error('快照試算表打不開'); return snapBook; } return { getSheetByName: n => sheets[n] }; },
+    create: () => snapBook, flush: () => {} },
   Utilities: { sleep: () => {}, formatDate: () => '' },
   console
 };
@@ -46,7 +48,10 @@ vm.createContext(G);
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../gas/Store.js'), 'utf8'), G);
 props.SPREADSHEET_ID = 'fake';
 ['公告', '同仁', '已讀', '操作紀錄'].forEach(n => { sheets[n] = makeSheet(3); });
-sheets['名單快照'] = makeSheet(3); sheets['名單快照'].clearContents = () => { sheets['名單快照'].data = []; };
+const snapSheet = makeSheet(3); let snapFail = false;
+snapSheet.getRange0 = snapSheet.getRange;
+snapSheet.getRange = (r, c, nr = 1, nc = 1) => { const g = snapSheet.getRange0(r, c, nr, nc); g.clearContent = () => { for (let i = r - 1; i < r - 1 + nr; i++) snapSheet.data[i] = []; snapSheet.data = snapSheet.data.filter(x => x && x.length); return g; }; return g; };
+const snapBook = { getId: () => 'SNAP', getSheets: () => [{ setName: () => {} }], getSheetByName: n => n === '名單快照' ? snapSheet : null, insertSheet: () => snapSheet };
 // 同仁表：表頭＋1 人（最大 3 列）
 const staffHead = G.SHEETS_.staff.head;
 sheets['同仁'].data = [staffHead, ['S-001', '甲', 'mala', '', '', '0', '0', 'TRUE', '', '', '']];
@@ -99,11 +104,20 @@ eq('手動刪列後寫回正確的列、沒有蓋到別人', col, ['id:姓名', 
 // 7) 名單快照：同仁表寫入後重寫，只有公開欄位、姓名遮罩、不含雜湊
 const Z = vm.runInContext('makeStore_', G)(files);
 Z.saveStaff(Object.assign({ id: 'S-006' }, S, { name: '歐陽娜娜', unit: 'mzt', store: '金山', pinHash: 'HASH', salt: 'SALT' }));
-const snap = sheets['名單快照'].data;
+eq('請求結束前不寫快照（批次同步只寫一次）', snapSheet.data.length, 0);
+Z.endRequest();
+const snap = snapSheet.data;
+eq('快照寫在獨立的公開名單試算表（主試算表沒有名單快照分頁）', [props.SNAP_SS_ID, sheets['名單快照']], ['SNAP', undefined]);
 eq('快照表頭', snap[0], ['id', 'name', 'unit', 'store', 'hasPin', 'locked']);
 eq('快照含新同仁（遮罩、門市、有密碼）', snap.find(r => r[0] === 'S-006'), ['S-006', '歐OO娜', 'mzt', '金山', 'Y', '']);
 eq('快照不含雜湊或 salt', JSON.stringify(snap).includes('HASH') || JSON.stringify(snap).includes('SALT'), false);
 eq('快照筆數＝在職同仁', snap.length - 1, vm.runInContext('makeStore_', G)(files).getStaff().filter(s => s.active).length);
+snapFail = true;
+const Y = vm.runInContext('makeStore_', G)(files);
+Y.saveStaff(Object.assign({ id: 'S-007' }, S, { name: '己' }));
+let threw = false; try { Y.endRequest(); } catch (e) { threw = true; }
+eq('快照失敗不拋例外、同仁仍寫入成功', [threw, sheets['同仁'].data.some(r => r[0] === 'S-007')], [false, true]);
+snapFail = false;
 
 // 5) 操作紀錄不換世代（不讓快取失效）
 const genBefore = props.DATA_GEN;

@@ -2,7 +2,7 @@
 'use strict';
 var CFG = (function () {
   var c = {
-    VERSION: '0.5.0',
+    VERSION: '0.5.1',
     ROSTER_CSV: '',   // 「名單快照」分頁發布到網路的 CSV 網址（不經 Apps Script，秒開）；空白＝只用後端
     GAS_URL: 'https://script.google.com/macros/s/AKfycbzQXAnMnrYGoUEMDzr6XbtsuIDYyGWbGLcFW1xVDpa64NcBrMzI9GaVKJhIlC-WxnGK5g/exec',
     MODE: 'cloud',

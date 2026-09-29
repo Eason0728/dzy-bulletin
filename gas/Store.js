@@ -7,7 +7,7 @@ var SHEETS_ = {
     head: ['id', '標題', '內容', '單位', '上架日', '到期日', '置頂', '上架中', '手動下架日', '附件', '建立時間', '最後修改時間'] },
   staff: { name: '同仁', cols: ['id', 'name', 'unit', 'pinHash', 'salt', 'pinVer', 'fail', 'active', 'createdAt', 'deletedAt', 'src', 'store'],
     head: ['id', '姓名', '單位', '密碼雜湊', 'salt', '密碼版本', '連續錯誤次數', '在職', '建立時間', '刪除時間', '來源（打卡系統）', '門市'] },
-  // 名單快照：只有遮罩姓名等公開欄位，由 Eason「發布到網路」成 CSV，選名字畫面直接讀（不經 Apps Script，快很多）
+  // 名單快照欄位定義（寫在獨立的公開名單試算表，見 snapBook_；setup 不在主試算表建這個分頁）
   snap: { name: '名單快照', cols: ['id', 'name', 'unit', 'store', 'hasPin', 'locked'], head: ['id', 'name', 'unit', 'store', 'hasPin', 'locked'] },
   reads: { name: '已讀', cols: ['postId', 'staffId', 'name', 'unit', 'at', 'sigId'],
     head: ['公告 id', '同仁 id', '姓名', '單位', '簽名時間', '簽名檔 id'] },
@@ -55,19 +55,29 @@ function cachePut_(key, obj) {
   } catch (e) {}
 }
 
-// 名單快照整張重寫（同仁表每次寫入後）；只放公開欄位
-function writeSnap_(bk, staffRows) {
-  var def = SHEETS_.snap, sh = bk.getSheetByName(def.name) || bk.insertSheet(def.name);
+// 名單快照：放在**獨立的試算表**「鼎兆元｜電子佈告欄｜公開名單」（只有公開欄位），發布到網路整份也不會外洩密碼資料。
+// 絕不可寫進主試算表（主試算表有密碼雜湊與 salt，發布時選錯範圍就全外洩）。
+function snapBook_() {
+  var pr = props_(), id = pr.getProperty('SNAP_SS_ID');
+  if (id) { try { return SpreadsheetApp.openById(id); } catch (e) {} }
+  var bk = SpreadsheetApp.create('鼎兆元｜電子佈告欄｜公開名單');
+  pr.setProperty('SNAP_SS_ID', bk.getId());
+  bk.getSheets()[0].setName(SHEETS_.snap.name);
+  return bk;
+}
+function writeSnap_(staffRows) {
+  var def = SHEETS_.snap, bk = snapBook_(), sh = bk.getSheetByName(def.name) || bk.insertSheet(def.name);
   var rows = [def.head].concat(staffRows.filter(function (r) { return r.id && bool_(r.active); }).map(function (r) {
     return [r.id, DZYB.maskName(r.name), r.unit, r.store || '', r.pinHash ? 'Y' : '', (Number(r.fail) || 0) >= DZYB.STAFF_MAX_FAIL ? 'Y' : ''];
   }));
   if (rows.length > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), rows.length - sh.getMaxRows() + 50);
-  sh.clearContents();
-  sh.getRange(1, 1, rows.length, def.cols.length).setNumberFormat('@').setValues(rows);
+  sh.getRange(1, 1, rows.length, def.cols.length).setNumberFormat('@').setValues(rows);           // 先覆寫再清尾端，不留空快照空窗
+  var last = sh.getLastRow();
+  if (last > rows.length) sh.getRange(rows.length + 1, 1, last - rows.length, def.cols.length).clearContent();
 }
 
 function makeStore_(files) {
-  var book = null, memo = {}, gen = null;                              // gen 惰性讀取：寫入動作在鎖內才第一次讀
+  var book = null, memo = {}, gen = null, snapDirty = false;                              // gen 惰性讀取：寫入動作在鎖內才第一次讀
   function sheet(key) { if (!book) book = ss_(); return book.getSheetByName(SHEETS_[key].name); }
   function rows(key, fresh) {
     if (memo[key] && !fresh) return memo[key];
@@ -103,7 +113,7 @@ function makeStore_(files) {
     }
     bumpGen_(); gen = dataGen_();                                    // 資料變了：快取世代換新
     if (memo[key]) cachePut_('rows:' + key + ':' + gen, memo[key]);
-    if (key === 'staff' && memo[key]) writeSnap_(book || ss_(), memo[key]);
+    if (key === 'staff') snapDirty = true;                          // 快照在請求結束時寫一次（批次同步不必每人重寫）
   }
   // 寫回既有列之前，確認那一列的 id 還是它（有人手動刪列／排序過試算表時，快取裡的列號會錯）；對不上就重讀試算表
   function upsert(key, obj) {
@@ -168,6 +178,12 @@ function makeStore_(files) {
         ADMIN_FAIL: String(a.fail || 0), ADMIN_LOCK: String(a.lockUntil || 0) });
       if (!a.init) pr.deleteProperty('ADMIN_INIT');          // 初始通行碼轉成雜湊後刪除原文
     },
-    secret: function () { return props_().getProperty('TOKEN_SECRET'); }
+    secret: function () { return props_().getProperty('TOKEN_SECRET'); },
+    // 請求結束：有同仁異動才重寫名單快照；快照失敗只記紀錄，不影響已成功的寫入
+    endRequest: function () {
+      if (!snapDirty) return; snapDirty = false;
+      try { writeSnap_(rows('staff')); } catch (e) { console.error('名單快照寫入失敗：' + e); }
+    },
+    refreshSnap: function () { writeSnap_(rows('staff')); }
   };
 }

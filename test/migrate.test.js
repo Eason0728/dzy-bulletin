@@ -219,6 +219,37 @@ async function main() {
     eq('--batch 7：45 張打 7 次 sigs', [res.code, FG.st.hits.sigs], [0, 7]); }
   eq('參數：--batch 超過 20 一律 20、未知參數擋下', [parseArgs(['--batch', '50']).batch, !!parseArgs(['--nope']).bad, !!parseArgs(['--from']).bad], [20, true, true]);
 
+  // ================= 已讀重複：照 GAS 語意去重（與 GAS 自己的 board／getSigs 看到的一致） =================
+  { const sheet = FG.book.getSheetByName('已讀'), orig = sheet.data.map((r) => r.slice());
+    const r0 = sheet.data[1], r1 = sheet.data[2];                          // 第 1、2 筆已讀（表頭是 data[0]）
+    sheet.data.push([r0[0], r0[1], r0[2], r0[3], '2026-10-01T09:00:00.000Z', '']);          // 同一人同一則：較晚、沒簽名檔 id
+    sheet.data.push([r1[0], r1[1], r1[2], r1[3], '2026-10-01T09:30:00.000Z', sheet.data[3][5]]);   // 同一人同一則：換成另一張 Drive 圖
+    FG.G.bumpGen_ && FG.G.bumpGen_();
+    FG.props.EXPORT_ONCE = '1';
+    const d = path.join(tmp(), 'data'), f = path.join(path.dirname(d), 'dup.json');
+    const res = await quietRun({ dir: d, from: '', save: f });
+    eq('重複已讀：exit 0、六項全 ✅、印出去重筆數', [res.code, status(res), /已讀有 2 列重複/.test(res.out)], [0, ALL, true]);
+    eq('重複已讀：Mac mini 只留一筆（45）', n(d, 'reads'), 45);
+    const tok0 = tokens[staff.indexOf(r0[1])], tok1 = tokens[staff.indexOf(r1[1])];
+    const gasAt0 = doPost({ action: 'board', token: tok0 }).data.myReads[r0[0]], gasAt1 = doPost({ action: 'board', token: tok1 }).data.myReads[r1[0]];
+    const gs = FG.store(), gasSig0 = gs.getSigs(r0[0])[r0[1]], gasSig1 = gs.getSigs(r1[0])[r1[1]];
+    const st = makeSqliteStore(d), at = (p, sid) => st.getReads().find((x) => x.postId === p && x.staffId === sid).at;
+    eq('簽名時間＝GAS board 看到的（最後一列）', [at(r0[0], r0[1]), at(r1[0], r1[1])], [gasAt0, gasAt1]);
+    eq('簽名圖＝GAS getSigs 看到的（最後一張有簽名的；最後一列沒簽名檔 id 時沿用前面的）', [st.getSigs(r0[0])[r0[1]] === gasSig0, st.getSigs(r1[0])[r1[1]] === gasSig1, !!gasSig0, gasSig1 === PNG(posts[0] + 2)], [true, true, true, true]);
+    st.close();
+    sheet.data = orig; FG.G.bumpGen_ && FG.G.bumpGen_(); }
+
+  // ================= 簽名圖下載可續跑：中斷後重跑只補沒下載的 =================
+  { const d = path.join(tmp(), 'data');
+    let calls = 0;
+    const dieAfter1 = { call: async (op, p, t) => { if (op === 'sigs' && ++calls > 1) throw Object.assign(new Error('x'), { code: 'BRIDGE' }); return bridge.call(op, p, t); } };
+    const r1 = await quietRun({ dir: d, bridge: dieAfter1 });
+    eq('第 2 批起掛掉：exit 5、資料庫沒建、第 1 批 20 張留在暫存', [r1.code, fs.existsSync(path.join(d, 'bulletin.db')), fs.readdirSync(path.join(d, '.migrate-dl')).length], [5, false, 20]);
+    const cnt = { n: 0, call: async (op, p, t) => { if (op === 'sigs') cnt.n++; return bridge.call(op, p, t); } };
+    const r2 = await quietRun({ dir: d, bridge: cnt });
+    eq('重跑：只補剩下 25 張（2 次 sigs）、六項全 ✅、暫存刪掉', [r2.code, cnt.n, status(r2), fs.existsSync(path.join(d, '.migrate-dl')), /上次已下載 20 張/.test(r2.out)], [0, 2, ALL, false, true]);
+    eq('非 0 結束也提醒刪匯出檔', /匯出檔仍在/.test(r1.out), true); }
+
   // ================= mirror.js 空庫保險：切換日 PRIMARY=mini 後、搬遷前，空庫不可蓋掉試算表 =================
   { const d = tmp(); makeSqliteStore(d).close();
     const calls = []; const B = { call: async (op) => { calls.push(op); return { counts: {} }; } };
@@ -227,7 +258,7 @@ async function main() {
     eq('空庫：mirror 拒絕（ok:false）、一次橋接都沒打', [res.ok, calls, /資料庫是空的/.test(res.error)], [false, [], true]); }
 
   // ================= server/latency.js（切換後量測，CUTOVER.md 步驟 9） =================
-  { const { fromLog, fromValues } = require('../server/latency.js');
+  { const { fromLog, fromValues, valuesPass } = require('../server/latency.js');
     const log = Array.from({ length: 100 }, (_, i) => `2026-10-01T07:00:${String(i % 60).padStart(2, '0')}.000Z board ${i + 1}ms ok`)
       .concat(['2026-10-01T07:01:00.000Z ack 30ms ok', '2026-10-01T07:01:01.000Z ack 5000ms SERVER', '2026-09-30T07:00:00.000Z ack 999ms ok', '佈告欄伺服器 v0.5.4 啟動', 'garbage']).join('\n');
     const r0 = fromLog(log, { actions: ['board', 'ack'] });
@@ -236,6 +267,19 @@ async function main() {
     eq('latency：--since 過濾', fromLog(log, { actions: ['ack'], since: '2026-10-01T00:00:00Z' }).ack.n, 1);
     const v = fromValues(Array.from({ length: 30 }, (_, i) => ((i + 1) / 10).toFixed(3)).join('\n'));
     eq('latency --values：30 筆中位數＝第 15、16 筆平均，p90＝第 27 筆', [v.n, v.median, v.p90], [30, 1.55, 2.7]);
+    const v3 = fromValues('1.2\n1.3\n1.4\n');
+    eq('latency --values：結尾換行不會多出一筆 0（3 筆、中位數 1.3）', [v3.n, v3.failed, v3.median], [3, 0, 1.3]);
+    const good = Array.from({ length: 30 }, () => '200 0.400').join('\n') + '\n';
+    eq('latency --values：30 次 200、0.4 秒 → 達標', [fromValues(good).n, valuesPass(fromValues(good), 30)], [30, true]);
+    const mixed = good + '000 0.000\n\n';
+    const vm = fromValues(mixed);
+    eq('latency --values：混進 1 次連不上（000 0.000）→ 失敗另列、不進百分位、不達標', [vm.n, vm.failed, vm.median, valuesPass(vm, 30)], [30, 1, 0.4, false]);
+    eq('latency --values：http_code 500 也算失敗；舊格式耗時 0 也算失敗', [fromValues('500 0.2\n200 0.3').failed, fromValues('0.000\n0.3').failed], [1, 1]);
+    eq('latency --values：成功次數不足 --expect 不達標', valuesPass(fromValues(good.split('\n').slice(0, 29).join('\n')), 30), false);
+    const dead = await new Promise((ok) => { const c = spawn(process.execPath, [path.join(ROOT, 'server/latency.js'), '--values', '--expect', '3'], { stdio: ['pipe', 'pipe', 'ignore'] }); let o = ''; c.stdout.on('data', (x) => { o += x; }); c.on('exit', (code) => ok({ code, o })); c.stdin.end('000 0.000\n000 0.000\n000 0.000\n'); });
+    eq('latency.js --values：3 次全連不上 → exit 1、不印達標', [dead.code, /✅/.test(dead.o), /失敗 3 次/.test(dead.o)], [1, false, true]);
+    const nh = await runJob('latency.js', ['--hours'], {});
+    eq('latency.js --hours 沒接數字 → exit 2、不丟 RangeError', [nh.code, /RangeError/.test(nh.err)], [2, false]);
     // 真伺服器的每請求紀錄格式要能被 latency.js 讀到（index.js 的格式一改這裡就會紅）
     const p = spawn(process.execPath, [path.join(ROOT, 'server/index.js')], { env: { PATH: process.env.PATH, HOME: tmp('dzyb-home-'), PORT: String(await freePort()), DATA_DIR: path.join(tmp(), 'lat'), ALLOW_ORIGIN: '' }, stdio: ['ignore', 'pipe', 'ignore'] });
     procs.push(p);

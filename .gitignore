@@ -15,3 +15,8 @@ __pycache__/
 server/.env
 server/.env.*
 !server/.env.example
+
+# M5 搬遷：匯出檔與 --force 備份都含全部密碼雜湊＋登入金鑰（預設存在 repo 外，--save／DATA_DIR 指進 repo 時的保險）
+dzy-bulletin-export-*.json
+bulletin.db.before-migrate-*
+.migrate-dl/

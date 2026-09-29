@@ -13,7 +13,7 @@
 硬規則：
 
 - **`BRIDGE_KEY` 只有 Eason 經手**。Claude 不經手、不印出、不寫進任何檔案或留言。
-- **Funnel 網址不貼進 repo、issue、留言**。量測時放在本機環境變數。
+- **Funnel 網址只出現在一個地方：切換那個 commit 的 `js/config.js`**（前端本來就得知道它，repo 是公開的，這無法避免）。除此之外不貼進 issue、PR、留言、手冊或其他檔案；量測時放在本機環境變數。
 - 匯出檔（`dzy-bulletin-export-*.json`）內含全部密碼雜湊與登入金鑰。切換驗證完成後刪掉，而且**不 commit、不外傳**。
 
 回退一律照 [`ROLLBACK.md`](ROLLBACK.md)。
@@ -22,7 +22,11 @@
 
 ```sh
 cd ~/dzy-bulletin
+NODE="$HOME/.local/node/bin/node"; node() { "$NODE" "$@"; }   # Mac mini 沒把 Node 放進 PATH（DEPLOY.md〈交接給 M5〉），用函式包起來，下面的 node 指令才打得動
 export DATA_DIR="$(sed -n 's/^DATA_DIR=//p' server/.env | tr -d "\"'")"; DATA_DIR="${DATA_DIR:-$HOME/dzy-bulletin-data}"; DATA_DIR="${DATA_DIR/#\~/$HOME}"
+U="gui/$(id -u)"
+job_off() { launchctl disable "$U/$1"; launchctl bootout "$U/$1" 2>/dev/null; launchctl print "$U/$1" >/dev/null 2>&1 && echo "✗ $1 還在跑" || echo "✓ $1 已停、已 disable"; }   # disable 撐得過重開機
+job_on()  { launchctl enable "$U/$1"; launchctl bootstrap "$U" "$HOME/Library/LaunchAgents/$1.plist" && echo "✓ $1 已 enable＋載入"; }
 counts() { node -e "const{DatabaseSync}=require('node:sqlite');const d=new DatabaseSync(process.argv[1]+'/bulletin.db',{readOnly:true});console.log(['posts','staff','reads','log'].map(t=>t+' '+d.prepare('SELECT COUNT(*) n FROM '+t).get().n).join('  '))" "$DATA_DIR"; }
 ```
 
@@ -35,15 +39,19 @@ counts() { node -e "const{DatabaseSync}=require('node:sqlite');const d=new Datab
 | 0-1 | M2 的 GAS（橋接、`PRIMARY`、`EXPORT_ONCE`、`sigs` get）已 clasp 部署 | MacBook 的 Claude（clasp）＋Eason 核准 | 部署後 `doGet` 回的版本號＝`gas/Code.js` 的 `VERSION_` |
 | 0-2 | 含 `MOVED` 處理的前端**已上線滿 1 天**（#7【Opus】） | MacBook 的 Claude | Pages 上的 `js/config.js` 版本號＝含 MOVED 處理的版本 |
 | 0-3 | Mac mini 部署完成（M4 `DEPLOY.md`）：伺服器常駐、Funnel 通、`server/.env` 有 `DATA_DIR`／`BRIDGE_URL`／`BRIDGE_KEY` | Mac mini 的 Claude（`.env` 的金鑰由 Eason 親手貼） | `curl -s http://127.0.0.1:8793/health` 回 JSON；`grep -c '^BRIDGE_KEY=' server/.env` 回 `1`（只數行數，不印內容） |
-| 0-4 | **停掉每小時鏡像 job**（M4 已經裝好並載入，見 DEPLOY.md〈交接給 M5〉第 1 條），並確認目標庫是空的 | Mac mini 的 Claude | `launchctl bootout gui/$(id -u)/com.dzy.bulletin.mirror`；之後 `launchctl list \| grep com.dzy.bulletin.mirror` 沒有東西；`counts` 四個數字都是 0（M4 前景試跑建的空庫只有 kv 裡的一把 secret，migrate.js 不算它、搬遷時會被換掉） |
+| 0-4 | **停掉每小時鏡像 job**（M4 已經裝好並載入，見 DEPLOY.md〈交接給 M5〉第 1 條；這裡多做 `disable`，重開機也不會回來），並確認目標庫是空的、沒有 `ADMIN_INIT.txt` | Mac mini 的 Claude | `job_off com.dzy.bulletin.mirror` 印「已停、已 disable」；`counts` 四個數字都是 0（M4 前景試跑建的空庫只有 kv 裡的一把 secret，migrate.js 不算它、搬遷時會被換掉）；`ls "$DATA_DIR/ADMIN_INIT.txt"` 要回「No such file」（這個檔在的話，主管第一次登入會把搬過來的管理雜湊換掉） |
 | 0-5 | Mac mini 上 `bash tools/build.sh` 全綠 | Mac mini 的 Claude | 最後一行 `build OK` |
 | 0-6 | 記下切換前的 `js/config.js` 三行（`VERSION`／`ROSTER_CSV`／`GAS_URL`），回退時要用 | MacBook 的 Claude | 貼在 #10 留言（`GAS_URL` 本來就在 repo 裡，可以貼；Funnel 網址不貼） |
+| 0-7 | 先估簽名圖下載時間，決定公告的時段 | Eason 數列數、Mac mini 的 Claude 算 | Eason 看試算表「已讀」分頁「簽名檔 id」有值的列數 N；下載約 ⌈N÷20⌉ 次橋接，每次 5～30 秒。例：N＝2000 → 100 次 → 約 8～50 分鐘。公告時段＝這個上限＋15 分鐘（搬遷與 Pages 快取）。第 3 步 dry-run 印出的預估若超出公告時段：還沒開始下載，可以中止（Eason 設回 `PRIMARY=gas`，改天用更長的時段），或在 LINE 補一則延長公告 |
 
 為什麼 0-4 要特別注意：第 2 步設下 `PRIMARY=mini` 之後，GAS 就會接受 `mirror`。若這時每小時鏡像先跑到，會把 Mac mini 的空庫整份蓋掉試算表，之後的 export 也就是空的。
 
 - 已有兩道保險：GAS 端（M2）拒收四份全空的鏡像；`server/mirror.js`（本 PR）在 Mac mini 端也拒絕鏡像空庫（沒有同仁也沒有公告）。
-- 保險之外，程序上仍要求：**第 2 步之前先 bootout，搬遷驗證完成（第 4 步）之後才 bootstrap 回來**。
-- M4 之後每小時鏡像都被 `PRIMARY=gas` 擋下，`/health` 會是 yellow「鏡像連續失敗」，這是預期；第 4 步鏡像成功後自動轉綠。
+- 保險之外，程序上仍要求：**第 2 步之前先 disable＋bootout，搬遷驗證完成（第 4 步）之後才 enable＋bootstrap 回來**。
+- `/health` 燈號的預期變化（**都不是故障，不要處理**）：
+  - M4 部署後到 0-4 之前：每小時鏡像都被 `PRIMARY=gas` 擋下，約 2 小時後 `/health` 轉 **yellow**「鏡像連續失敗」。
+  - 0-4 停掉鏡像後：鏡像不再跑，`mirror.at` 停住，超過 6 小時轉 **red**（#8：`mirror.at` > 6h → 紅）。切換日早上看到紅燈是預期的。
+  - 第 4 步鏡像成功後自動轉綠。
 
 ---
 
@@ -58,7 +66,7 @@ counts() { node -e "const{DatabaseSync}=require('node:sqlite');const d=new Datab
 > 15:20 之後請把佈告欄關掉再重新打開（或下拉重新整理），**不用重新登入**，之前簽過的紀錄都在。
 > 有任何問題直接在群組說，謝謝！
 
-搬家完成（第 7 步通過）後發：
+搬家完成（第 6 步四個動作都通過）後發：
 
 > 【佈告欄搬家完成】
 > 佈告欄已經搬好了，請關掉再重新打開一次就能正常使用，不用重新登入。如果畫面還是顯示「搬家中」，請等 10 分鐘再重新打開。
@@ -68,7 +76,7 @@ counts() { node -e "const{DatabaseSync}=require('node:sqlite');const d=new Datab
 > 【佈告欄暫時換回舊主機】
 > 佈告欄暫時換回原本的系統，請關掉再重新打開一次，不用重新登入，資料都在。〈Mac mini 死了才加這句：〉○月○日 ○○:○○ 之後簽過名的同仁，麻煩再簽一次。
 
-**預期行為（不是故障）**：從凍結（第 2 步）到新 `config.js` 生效（第 6 步），中間包含搬遷時間，加上 Pages 快取約 10 分鐘。這段時間寫入一律回 MOVED，讀取照常。
+**預期行為（不是故障）**：從凍結（第 2 步）到新 `config.js` 生效（第 5 步），中間包含搬遷時間，加上 Pages 快取約 10 分鐘。這段時間寫入一律回 MOVED，讀取照常。
 
 ---
 
@@ -80,7 +88,7 @@ Apps Script →「專案設定」→「指令碼屬性」：新增或修改 `PRI
 
 **驗證**
 - Eason 用手機打開佈告欄簽一筆，應該顯示「系統已搬家」並自動重新整理一次；之後 5 分鐘內不會再重載。看公告照常。
-- Eason 記下試算表「操作紀錄」分頁**最後一列的時間與總列數**，第 5 步要用。
+- Eason 記下試算表「操作紀錄」分頁**最後一列的時間與總列數**，第 4 步要用。
 
 **失敗怎麼辦**
 - 簽名仍然成功：屬性沒存成功，重新整理 Apps Script 頁面再設一次。
@@ -100,6 +108,8 @@ node server/migrate.js --dry-run
 - 會呼叫 GAS `export`，**這一次就把 `EXPORT_ONCE` 用掉了**，GAS 成功後會自動刪掉它。
 - 結果立刻存成 `<DATA_DIR 上一層>/dzy-bulletin-export-<台北時間>.json`，權限 600。
 - 接著印出：各表筆數、簽名圖張數、`sigs` 批次呼叫次數（一批 20 張）、預估下載時間、目標資料夾是否為空。
+- 已讀若有重複（同一人同一則兩列，只有手動改過試算表才會發生），會印「已讀有 N 列重複…照 GAS 語意去重」。migrate 會自動照 GAS 的看法去重：簽名時間取最後一列、簽名圖取最後一張有簽名的，和 GAS 畫面上看到的一致。比對也以去重後為準，**不需要處理**，但把那幾筆 id 記在 #10。
+- 預估時間超出公告時段：見 0-7。
 - 最後一行印出下一步要用的指令。
 
 看過沒問題（筆數合理、目標是空的、沒有「缺 secret」）就接著跑：
@@ -126,9 +136,9 @@ node server/migrate.js --from <dry-run 印出的匯出檔>
 | 「缺 secret」或「缺 admin.hash」 | 3（GAS 端擋下時是 4） | **不要繼續**。這種狀態搬過去，所有人都要重新登入、主管也進不去。請 Eason 檢查 GAS 指令碼屬性 `TOKEN_SECRET`／`ADMIN_HASH`，補好後重設 `EXPORT_ONCE=1` 再從頭跑。 |
 | export 回 AUTH | 4 | 通常是 `EXPORT_ONCE` 已被用掉：手上有存檔就用 `--from`，沒有就請 Eason 重設 `EXPORT_ONCE=1`。也可能是 `PRIMARY` 不是 `mini`，或 `BRIDGE_KEY` 兩邊不一致（請 Eason 核對，Claude 不看金鑰）。 |
 | export 逾時 | 4 | GAS 可能已刪掉 `EXPORT_ONCE`，但結果沒收到。請 Eason 重設 `EXPORT_ONCE=1` 再跑 dry-run。 |
-| 「目標已有資料」 | 2 | 0-4 沒做好。先弄清楚那是什麼資料：測試資料就移走整個 DATA_DIR，確定可以覆蓋才加 `--force`（會先備份）。 |
-| 簽名圖某批下載失敗 3 次 | 5 | 資料庫沒有動，直接 `--from <同一個檔>` 重跑。 |
-| 有 ❌ | 1 | **不要切前端**。把整段輸出貼到 #10（只含筆數與 id，不含雜湊），先回報。只有「簽名圖」❌、而且原因是 Drive 上本來就讀不到的圖時，由 Eason 決定是否接受（那幾筆的 Drive id 仍保留）。 |
+| 「目標已有資料」 | 2 | 0-4 沒做好。先弄清楚那是什麼資料。確定可以覆蓋：加 `--force`，會先備份、在原檔上寫入，伺服器不用停。想整個資料夾換掉：**先停伺服器**（`job_off com.dzy.bulletin`），否則伺服器手上還開著舊庫，會繼續讀寫被搬走的那一份；然後 `mv "$DATA_DIR" "$DATA_DIR.old-$(date +%s)"` → 重跑 `--from` → `job_on com.dzy.bulletin` → `curl -s http://127.0.0.1:8793/health` 確認起來了。 |
+| 簽名圖某批下載失敗 3 次 | 5 | 資料庫沒有動，直接 `--from <同一個檔>` 重跑。已下載的圖存在 `$DATA_DIR/.migrate-dl/`，重跑只補沒下載的。 |
+| 有 ❌ | 1 | **不要切前端**。把整段輸出貼到 #10（只含筆數與 id，不含雜湊），先回報。這時資料**已經寫進庫**：查明原因後重跑要加 `--force`（`--from <同一個檔> --force`，會先備份），否則會被「目標已有資料」擋下。只有「簽名圖」❌、而且原因是 Drive 上讀不到的圖（sigs.get 回 null：不在簽名資料夾、不是 png/jpeg、檔案不見）時，由 Eason 決定是否接受。那幾筆的 Drive id 仍保留，但 Mac mini 上沒有圖。 |
 
 ---
 
@@ -137,18 +147,20 @@ node server/migrate.js --from <dry-run 印出的匯出檔>
 **負責人**：Eason（看試算表）＋Mac mini 的 Claude
 
 - [ ] GAS 試算表四個分頁的列數（扣掉表頭）＝ `counts` 的四個數字。
+  - 例外一：分頁中間有空白列時，export 會略過它們（`gas/Store.js` 的 `dump()` 只收有 id 的列），目測列數會比 `counts` 多。差的列數＝空白列數就算對。
+  - 例外二：已讀有重複時，`counts` 是去重後的數字，會少掉第 3 步印出的重複列數。
 - [ ] 試算表「操作紀錄」的總列數與最後一列時間，**與第 2 步記下的相同**，代表凍結後 GAS 0 筆新增。
-- [ ] Mac mini 的 Claude 裝回每小時鏡像（與 DEPLOY.md〈交接給 M5〉第 1 條相同）：
-  `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.dzy.bulletin.mirror.plist && launchctl kickstart gui/$(id -u)/com.dzy.bulletin.mirror`
-  - 等它跑完（`logs/mirror.lock` 消失），`logs/mirror-last.json` 要是 `ok:true`、`pending:0`。
-  - 剛搬來的已讀都已經有 Drive id，所以 pending 是 0。
+- [ ] Mac mini 的 Claude 裝回每小時鏡像（與 DEPLOY.md〈交接給 M5〉第 1 條相同，另外多一個 enable）：
+  `job_on com.dzy.bulletin.mirror`（plist 設了 RunAtLoad，載入就會跑一輪）
+  - 等它跑完（`logs/mirror.lock` 消失），`logs/mirror-last.json` 要是 `ok:true`、`pending:0`。剛搬來的已讀都已經有 Drive id，所以 pending 是 0。
+  - 第 3 步有 Drive 讀不到的圖時，`missing` 會等於那幾筆（有 `sigId` 但本機沒有圖），這是預期。
 
 **失敗怎麼辦**
 - 操作紀錄有新增：代表凍結沒生效期間有人寫入，而且在 export 之後。
   - 把新增的那幾列記下來（誰、做了什麼）。
   - 切換完成後，請當事人在新系統重做一次（通常是簽名）。
   - 數量多就中止：Eason 設回 `PRIMARY=gas`，查明原因再從頭來。
-- 鏡像失敗：不影響切換，可以繼續第 5 步，下一輪會自動重做。但第 8 步觀察日要盯 `/health`。
+- 鏡像失敗：不影響切換，可以繼續第 5 步，下一輪會自動重做。但第 9 步觀察日要盯 `/health`。
 
 ---
 
@@ -171,8 +183,15 @@ bash tools/build.sh
 git add js/config.js gas/Code.js index.html && git commit -m "切換：前端改指 Mac mini（#10）" && git push
 ```
 
-**驗證**
-- `curl -s "https://dzy-bulletin.github.io/js/config.js?v=<新版本>" | grep VERSION` 看到新版本號。
+**驗證**：檢查頁面**實際載入**的那一份。自己加 `?v=<新版>` 會繞過快取，一定看得到新版，驗不出同仁那邊的狀況。
+
+```sh
+V=$(curl -s https://dzy-bulletin.github.io/ | grep -o 'js/config.js?v=[0-9.]*' | head -1); echo "index.html 引用：$V"
+curl -s "https://dzy-bulletin.github.io/$V" | grep -c "script.google.com"   # 要回 0（已不再指向 Apps Script）
+curl -s "https://dzy-bulletin.github.io/$V" | grep VERSION                  # 新版本號（只看版本號這行，GAS_URL 那行不印，網址不留在輸出裡）
+```
+
+- `index.html` 引用的 `?v=` 要是新版本號，那份 `config.js` 也要是新版本號。
 - 在 MacBook 的瀏覽器用無痕視窗打開佈告欄：名單出得來、Network 面板的請求打向 Funnel 網址。
 - Mac mini 的 Claude 同時看 `tail -f "$DATA_DIR/logs/server.log"`，要出現 `roster …ms ok`。
 
@@ -236,9 +255,44 @@ P="$(sed -n 's/^BRIDGE_KEY=//p' server/.env | tr -d "\"'" | cut -c1-8)"; if [ ${
 
 ---
 
-## 8. 觀察 1 天＋效能量測
+## 8. 守門、指揮台、run.py（切換後當天）
 
-**負責人**：Mac mini 的 Claude（a）、MacBook 的 Claude＋Eason 的手機熱點（b）、MacBook 的 Claude（守門）
+**負責人**：MacBook 的 Claude　**時機**：第 6 步通過後當天做完（#10〈範圍〉與〈監看〉，不另開 issue）
+
+**8-1　排程守門加「佈告欄伺服器」**
+- 改哪裡：版控正本 `~/mala-fortune/tools/gas-watchdog/Code.js`，改完同步到雲端 Apps Script `~/mala-gas/schedule-watchdog/Code.js`（clasp push，走 dispatch-rules 第 5 節的 clasp 工作流），兩邊內容一致並 commit。
+- 做法：
+  - 新增一項檢查，用 `UrlFetchApp` GET `<Funnel 網址>/health`（`muteHttpExceptions: true`，失敗重試 3 次）。
+  - 網址放守門的指令碼屬性（例如 `BULLETIN_HEALTH_URL`），由 Eason 貼。**網址不進 repo**。
+  - 沿用守門現有的 07:30／09:30／10:30 三班，不改頻率（#10【Opus】已知限制）。
+- 判定照 #8：
+  - 打不通、非 200、回應不是 JSON、`mirror.at` 超過 6 小時、`backup.at` 超過 26 小時 → **紅**，發 LINE 告警（沿用守門現有的告警管道）。
+  - `/health` 的 `level` 是 `yellow` → **黃**，`why` 原文帶進訊息，不含網址。
+  - 其餘 → **綠**。
+
+**8-2　指揮台艦隊加「佈告欄伺服器」一格**
+- 走 `mala-command-deck` skill 的艦隊格新增流程。
+- 格名「佈告欄伺服器」，紅黃綠與 8-1 同一套判定，資料來源用守門寫下的最新結果，不要另打一次 `/health`。
+
+**8-3　run.py 加「後端打不通時不白屏」**
+- 在 `e2e/run.py` 加一條：用 `?mode=cloud&api=http://127.0.0.1:<沒有程式在聽的埠>` 打開首頁。
+- 預期：畫面出現「連不上伺服器，請確認網路」（`js/api.js` 的 `NET`），頁面有內容、沒有 pageerror。
+- 跑 `python3 e2e/run.py` 與 `python3 e2e/judge.py` 全綠後 commit。M4 已在 Mac mini 本機手動驗過同一件事（DEPLOY.md 9-2），這條是把它變成可重跑的測試。
+
+**驗收**
+- 請 Eason 關掉 Mac mini（或 `job_off com.dzy.bulletin`），24 小時內守門發 LINE 告警、艦隊那格變紅。
+- 開回來（`job_on com.dzy.bulletin`）後，下一班轉綠。
+- run.py 新那條 PASS。
+
+**失敗怎麼辦**
+- 守門打不到 Funnel（Google 的出口 IP 被擋、憑證問題）：先用手機 4G 打 `/health` 確認 Funnel 本身正常，再查守門的 `UrlFetchApp` 錯誤原文。
+- 這一步的任何問題都**不需要回退**佈告欄本身。
+
+---
+
+## 9. 觀察 1 天＋效能量測
+
+**負責人**：Mac mini 的 Claude（a）、Eason 在 MacBook 的終端機＋手機熱點（b）
 
 **健康**（隔天早上）
 - `curl -s http://127.0.0.1:8793/health` 的 `level` 是 `green`。
@@ -253,13 +307,19 @@ node server/latency.js --hours 24 "$DATA_DIR/logs/server.log"
 # 例：✅ board：312 次，p50 18ms、p95 64ms、最慢 410ms（門檻 p95 < 200ms）
 ```
 
-**(b) 端到端**：MacBook 接手機 4G 熱點（**關掉 Wi‑Fi**），對 `roster` 打 30 次，看中位數與 90 百分位（門檻：中位數 < 1 秒、p90 < 1.5 秒）。網址放環境變數，不貼出來：
+**(b) 端到端**：MacBook 接手機 4G 熱點（**關掉 Wi‑Fi**），對 `roster` 打 30 次，看中位數與 90 百分位（門檻：中位數 < 1 秒、p90 < 1.5 秒）。
+- **這段由 Eason 在 MacBook 的「終端機」App 裡自己打**。`read -rs` 要從鍵盤讀網址，Claude 的 Bash 沒辦法接收鍵盤輸入；網址也因此不會經過 Claude。
+- 網址放環境變數，不貼出來。
 
 ```sh
+cd ~/dzy-bulletin
 read -rs DZYB_URL   # 貼上 Funnel 網址後按 Enter（不回顯）
-for i in $(seq 30); do curl -s -o /dev/null -w '%{time_total}\n' -X POST -H 'Content-Type: text/plain' --data '{"action":"roster"}' "$DZYB_URL"; done | node server/latency.js --values
+for i in $(seq 30); do curl -s -o /dev/null -w '%{http_code} %{time_total}\n' -X POST -H 'Content-Type: text/plain' --data '{"action":"roster"}' "$DZYB_URL"; done | node server/latency.js --values
 unset DZYB_URL
 ```
+
+- `latency.js --values` 只收 `http_code` 為 200 的那幾筆。連不上時 curl 印 `000 0.000`，這種算失敗、另外列出。
+- **只要有 1 次失敗，或成功不到 30 次，就不算達標**。有失敗就先查網路，再整組重量一次。
 
 (a)、(b) 兩個結果貼到 #5 留言，只貼數字，網址不貼。
 
@@ -276,14 +336,16 @@ unset DZYB_URL
 
 ---
 
-## 9. 回退演練（觀察日結束後，必做）
+## 10. 回退演練（觀察日結束後，必做）
 
 照 [`ROLLBACK.md`](ROLLBACK.md) 第 1～6 步回退，再照附錄 A 切回。驗收項目列在 ROLLBACK.md 最後。
 
-## 10. 收尾
+## 11. 收尾
 
 - [ ] **Mac mini 的 Claude**：刪除匯出檔 `rm <匯出檔>`，並確認 `ls "$(dirname "$DATA_DIR")"/dzy-bulletin-export-*.json` 沒有殘留。
   - 回退演練附錄 A 產生的第二份匯出檔也要刪。
+  - `--force` 產生的 `$DATA_DIR/bulletin.db.before-migrate-*` 也含全部密碼雜湊，觀察期過後一併刪。
+  - Mac mini 若有開 Time Machine，刪掉的檔仍留在備份裡。告知 Eason，由他決定要不要在 Time Machine 刪除那幾個檔的備份。
 - [ ] **Eason**：GAS 指令碼屬性確認 `EXPORT_ONCE` 不存在、`PRIMARY=mini`。
 - [ ] #10 驗收勾選。
 
@@ -295,7 +357,7 @@ unset DZYB_URL
 | 步驟 5 凍結後 GAS 0 筆新增、筆數相等 | 第 4 步 |
 | 步驟 7 四個動作成功、不重新登入 | 第 6 步（`test/migrate.test.js` 另外驗過「搬遷前的 token／atoken 直接能用」） |
 | 步驟 8 grep 回 0 或換鑰成功 | 第 7 步 |
-| 步驟 10 回退演練 | 第 9 步＋ROLLBACK.md |
-| 守門告警、艦隊變紅 | 第 8 步（守門改動另案） |
-| 效能 p95／中位數／p90 | 第 8 步＋`server/latency.js` |
-| 前端打不通時不白屏（run.py） | 另案（本 PR 不含） |
+| 步驟 10 回退演練 | 第 10 步＋ROLLBACK.md |
+| 守門告警、艦隊變紅 | 第 8 步 8-1、8-2（MacBook 的 Claude，切換後當天） |
+| 效能 p95／中位數／p90 | 第 9 步＋`server/latency.js` |
+| 前端打不通時不白屏（run.py） | 第 8 步 8-3 |

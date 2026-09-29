@@ -16,6 +16,9 @@
  *   --batch <n>     簽名圖每批張數（預設 20，上限 20＝gas/Code.js SIGS_MAX_）
  * 環境變數：DATA_DIR  BRIDGE_URL  BRIDGE_KEY（server/.env；--from 時不需要 BRIDGE_*，除非有簽名圖要下載）
  *
+ * 已讀重複（同一人同一則兩列）照 GAS 語意去重（見 dedupeReads）；簽名圖下載暫存在 DATA_DIR/.migrate-dl/，中斷後 --from 重跑只補沒下載的。
+ * 比對有 ❌（exit 1）時資料已寫進庫，查明原因後重跑要加 --force。
+ *
  * 結束碼：0＝六項全 ✅（或 dry-run 檢查通過）；1＝比對有 ❌；2＝用法錯誤／目標已有資料／檔案問題；
  *         3＝匯出內容不完整（缺 secret 或 admin.hash 等，拒絕寫入）；4＝export 呼叫失敗；5＝簽名圖下載中斷
  * 絕不印出金鑰、密碼雜湊、secret（只印筆數、id）。 */
@@ -77,11 +80,23 @@ function problems(d) {
   if (!d.admin || !d.admin.hash) p.push('缺 admin.hash（管理通行碼雜湊）：搬過去後主管進不去');
   return p;
 }
-// 不擋但要讓人看到的：重複的已讀（同一人同一則兩筆，INSERT OR IGNORE 會吃掉一筆 → 已讀比對會 ❌）、缺 id
+// 重複的已讀（同一人同一則兩列，只有手動改過試算表才會發生）照 GAS 的語意去重，否則 SQLite 的主鍵會吃掉一筆、比對永遠 ❌：
+//   gas/Service.js myReadAt 逐列覆寫 → 簽名時間、姓名、單位取「最後一列」；Store.getSigs 只看有簽名檔 id 的列、同樣後蓋前
+//   → 簽名取「最後一張有簽名檔 id 的」（最後一列沒簽名檔 id 時沿用前面的）。位置保留第一次出現的地方（rowid 順序與試算表一致）。
+// 比對（verify）拿去重後的結果當標準，所以重複列不會造成 ❌；去重了幾筆會印出來。
+function dedupeReads(reads) {
+  const m = new Map(), dups = [];
+  reads.forEach((r) => {
+    const k = readKey(r), prev = m.get(k);
+    if (!prev) { m.set(k, Object.assign({}, r)); return; }
+    dups.push(k);
+    m.set(k, Object.assign({}, r, { sigId: str(r.sigId) || str(prev.sigId) }));   // Map.set 覆寫不改變位置
+  });
+  return { reads: [...m.values()], dups };
+}
+// 不擋但要讓人看到的：缺 id
 function warnings(d) {
-  const w = [], seen = new Set(), dup = [];
-  d.reads.forEach((r) => { const k = readKey(r); if (seen.has(k)) dup.push(k); seen.add(k); });
-  if (dup.length) w.push(`已讀有 ${dup.length} 筆重複（同一人同一則），例如 ${dup.slice(0, 3).join('、')}`);
+  const w = [];
   const noId = d.posts.filter((p) => !p.id).length + d.staff.filter((s) => !s.id).length;
   if (noId) w.push(`公告／同仁有 ${noId} 筆沒有 id`);
   return w;
@@ -96,7 +111,12 @@ function writeSecretFile(file, obj) {
 async function runMigrate(o) {
   const say = o.say || console.log;
   const dir = o.dir, batch = Math.min(Math.max(1, Math.floor(o.batch) || SIGS_MAX), SIGS_MAX);
-  const done = (code, extra) => Object.assign({ code }, extra || {});
+  const done = (code, extra) => {
+    const r = Object.assign({ code }, extra || {});
+    // 非 0 結束時匯出檔一樣已經存了（內含密碼雜湊與登入金鑰）：提醒處理完要刪（成功路徑在最後另外提醒）
+    if (code !== 0 && r.file && fs.existsSync(r.file)) say(`⚠️ 匯出檔仍在 ${r.file}（含密碼雜湊與登入金鑰）：重跑用 --from 它；整件事處理完後請刪除（rm ${r.file}）`);
+    return r;
+  };
   const t0 = Date.now();
 
   // ---- 0. 正式匯入：先確認目標是空的（在呼叫 export 之前，免得白白用掉一次）----
@@ -139,12 +159,15 @@ async function runMigrate(o) {
     say('✗ 匯出內容不完整，拒絕寫入（資料庫沒有動）');
     return done(3, { file });
   }
+  const nRaw = d.reads.length, dd = dedupeReads(d.reads);
+  d = Object.assign({}, d, { reads: dd.reads });            // 之後一律用去重後的已讀（寫入與比對同一份）
   const sigReads = d.reads.filter((r) => str(r.sigId));
   const driveIds = [...new Set(sigReads.map((r) => str(r.sigId)))];
   const nBatch = Math.ceil(driveIds.length / batch);
   const est = (s) => (s < 90 ? Math.round(s) + ' 秒' : Math.round(s / 60) + ' 分鐘');
-  say(`2/5 匯出內容：公告 ${d.posts.length}、同仁 ${d.staff.length}、已讀 ${d.reads.length}、操作紀錄 ${d.log.length}；登入金鑰 ✓、管理通行碼雜湊 ✓`);
+  say(`2/5 匯出內容：公告 ${d.posts.length}、同仁 ${d.staff.length}、已讀 ${nRaw}${dd.dups.length ? `（去重後 ${d.reads.length}）` : ''}、操作紀錄 ${d.log.length}；登入金鑰 ✓、管理通行碼雜湊 ✓`);
   say(`   簽名圖 ${driveIds.length} 張 → ${nBatch} 次 sigs 橋接呼叫（每批 ${batch} 張），預估下載 ${est(nBatch * EST_SEC[0])}～${est(nBatch * EST_SEC[1])}`);
+  if (dd.dups.length) say(`⚠️ 已讀有 ${dd.dups.length} 列重複（同一人同一則，例如 ${dd.dups.slice(0, 3).join('、')}）：照 GAS 語意去重（時間取最後一列、簽名取最後一張有簽名的），比對以去重後為準`);
   warnings(d).forEach((x) => say('⚠️ ' + x));
 
   if (o.dry) {
@@ -165,13 +188,22 @@ async function runMigrate(o) {
   }
 
   // ---- 4. 下載簽名圖（sigs 批次 get）----
+  // 下載到的圖先依 Drive id 存進 DATA_DIR/.migrate-dl/（暫存、可續跑）：中途斷掉用 --from 重跑時跳過已下載的，
+  // 不必在 GAS 凍結的窗口裡從第 1 批重來。六項全 ✅ 後刪掉暫存資料夾。讀不到（null）的不存，重跑會再試。
   fs.mkdirSync(path.join(dir, 'sigs'), { recursive: true });
+  const dl = path.join(dir, '.migrate-dl');
+  fs.mkdirSync(dl, { recursive: true });
+  const cacheName = (id, type) => path.join(dl, crypto.createHash('sha1').update(id).digest('hex') + (type === 'png' ? '.png' : '.jpg'));
   const got = {};                                           // Drive id → { type, buf } | null
-  if (driveIds.length && !o.bridge) { say('✗ 有簽名圖要下載，但沒有設定 BRIDGE_URL／BRIDGE_KEY'); return done(2, { file }); }
-  say(`3/5 下載簽名圖 ${driveIds.length} 張…`);
+  driveIds.forEach((id) => {
+    for (const type of ['png', 'jpeg']) { try { got[id] = { type, buf: fs.readFileSync(cacheName(id, type)) }; break; } catch (e) {} }
+  });
+  const todo = driveIds.filter((id) => !got[id]), nTodo = Math.ceil(todo.length / batch);
+  if (todo.length && !o.bridge) { say('✗ 有簽名圖要下載，但沒有設定 BRIDGE_URL／BRIDGE_KEY'); return done(2, { file }); }
+  say(`3/5 下載簽名圖 ${driveIds.length} 張` + (todo.length < driveIds.length ? `（上次已下載 ${driveIds.length - todo.length} 張，這次補 ${todo.length} 張）` : '') + '…');
   const tDl = Date.now();
-  for (let i = 0; i < driveIds.length; i += batch) {
-    const part = driveIds.slice(i, i + batch), k = i / batch + 1;
+  for (let i = 0; i < todo.length; i += batch) {
+    const part = todo.slice(i, i + batch), k = i / batch + 1;
     let out = null, lastErr = null;
     for (let tries = 0; tries < 3 && !out; tries++) {         // 搬遷只做一次，值得重試；每批最多 3 次
       try {
@@ -180,13 +212,15 @@ async function runMigrate(o) {
         out = r.sigs;
       } catch (e) { lastErr = e; }
     }
-    if (!out) { say(`✗ 第 ${k}/${nBatch} 批下載失敗 3 次（${J.errText(lastErr)}），中斷；資料庫沒有動。可用 --from ${file} 重跑`); return done(5, { file }); }
+    if (!out) { say(`✗ 第 ${k}/${nTodo} 批下載失敗 3 次（${J.errText(lastErr)}），中斷；資料庫沒有動、已下載的圖留在暫存可續跑。用 --from ${file} 重跑`); return done(5, { file }); }
     part.forEach((id) => {
+      // sigs.get 讀不到（不在簽名資料夾、不是 png/jpeg、檔案不見）回 null → 這張當作讀不到，比對時列入「簽名圖」失敗清單
       const m = /^data:image\/(png|jpeg);base64,(.+)$/.exec(str(out[id]));
       got[id] = m ? { type: m[1], buf: Buffer.from(m[2], 'base64') } : null;
+      if (got[id]) { const f = cacheName(id, m[1]); fs.writeFileSync(f + '.tmp', got[id].buf); fs.renameSync(f + '.tmp', f); }
     });
-    const sec = (Date.now() - tDl) / 1000, left = (nBatch - k) * sec / k;
-    if (k === nBatch || k % 5 === 0 || nBatch <= 10) say(`   第 ${k}/${nBatch} 批完成（${Math.min(i + batch, driveIds.length)} 張），已用 ${est(sec)}${k < nBatch ? '，估計還要 ' + est(left) : ''}`);
+    const sec = (Date.now() - tDl) / 1000, left = (nTodo - k) * sec / k;
+    if (k === nTodo || k % 5 === 0 || nTodo <= 10) say(`   第 ${k}/${nTodo} 批完成（${Math.min(i + batch, todo.length)} 張），已用 ${est(sec)}${k < nTodo ? '，估計還要 ' + est(left) : ''}`);
   }
   // 每筆已讀：sigId＝Mac mini 本機檔名（與伺服器新簽的同一套命名），driveSigId＝GAS 原本的 Drive id（回退後 readSig 讀得到，#7）
   const want = {};                                          // readKey → { sha, len }（下載當下的內容，比對用）
@@ -216,9 +250,14 @@ async function runMigrate(o) {
   const checks = verify(dir, d, want);
   checks.forEach((c) => say(`   ${c.ok ? '✅' : '❌'} ${c.name}：${c.detail}`));
   const nBad = checks.filter((c) => !c.ok).length;
-  say(nBad ? `✗ 搬遷完成但有 ${nBad} 項不一致（exit 1）。不要切換前端，先回報。` : `✓ 六項全部一致（${est((Date.now() - t0) / 1000)}）`);
+  if (nBad) {
+    say(`✗ 搬遷完成但有 ${nBad} 項不一致（exit 1）。不要切換前端，先回報。資料已寫進庫：查明原因後重跑要加 --force（會先備份）`);
+    return done(1, { file, checks });
+  }
+  try { fs.rmSync(dl, { recursive: true, force: true }); } catch (e) {}
+  say(`✓ 六項全部一致（${est((Date.now() - t0) / 1000)}）`);
   say(`⚠️ 匯出檔含全部密碼雜湊與登入金鑰：切換驗證完成後請刪除 → rm ${file}`);
-  return done(nBad ? 1 : 0, { file, checks });
+  return done(0, { file, checks });
 }
 
 function verify(dir, d, want) {
@@ -279,4 +318,4 @@ async function main() {
 }
 
 if (require.main === module) main().catch((e) => { console.error('✗ 搬遷出錯：' + J.errText(e)); process.exit(1); });
-module.exports = { runMigrate, verify, problems, parseArgs, targetCounts, SIGS_MAX };
+module.exports = { runMigrate, verify, problems, dedupeReads, parseArgs, targetCounts, SIGS_MAX };

@@ -50,7 +50,7 @@ var Admin = (function () {
       '<div class="seg">' + tabs.map(function (t) { return '<button data-at="' + t[0] + '" class="' + (a.tab === t[0] ? 'on' : '') + '">' + t[1] + '</button>'; }).join('') + '</div>';
     h += a.tab === 'posts' ? postsHTML() : a.tab === 'new' ? formHTML() : staffHTML();
     var s = UI.sheet(h + '</div>');
-    s.querySelector('#lock').onclick = function () { UI.store.del('atoken'); a.data = null; UI.closeSheet(); UI.toast('已登出設定'); };
+    s.querySelector('#lock').onclick = function () { UI.store.del('atoken'); a.data = null; a.edit = null; a.draft = null; a.files = []; UI.closeSheet(); UI.toast('已登出設定'); };   // 登出清草稿：之後同仁端收到 MOVED 才會照常重載
     s.querySelectorAll('[data-at]').forEach(function (b) {
       b.onclick = function () { if (b.dataset.at !== 'new') { a.edit = null; a.draft = null; a.files = []; } a.tab = b.dataset.at; render(); };
     });
@@ -304,6 +304,6 @@ var Admin = (function () {
     };
   }
 
-  function hasDraft() { return !!a.draft; }                          // api.js：收到 MOVED 時有草稿就不自動重載
+  function hasDraft() { return !!a.draft && !!UI.store.get('atoken'); }   // api.js：收到 MOVED 時，登入中且有草稿就不自動重載
   return { open: open, needLogin: needLogin, takeDirty: takeDirty, hasDraft: hasDraft };
 })();

@@ -41,6 +41,15 @@ const TIP = '系統搬家中，約 10 分鐘後請重新整理';
   eq('sessionStorage 存取丟錯：不重載、只提示', await run('ack', { ss: () => { throw new Error('SecurityError'); } }), { m: TIP, reloads: 0, clearedLastBad: true });
   eq('sessionStorage 是 null（WebView 關掉 DOM storage）：不重載', (await run('ack', { ss: () => null })).reloads, 0);
   eq('setItem 丟錯（額度滿）：不重載', (await run('ack', { ss: () => ({ getItem: () => null, setItem() { throw new Error('Quota'); } }) })).reloads, 0);
+  // js/config.js 的 ?api=：本機（localhost／127.0.0.1）才放行，而且只能指向本機埠；正式網址一律忽略
+  const CFGSRC = fs.readFileSync(path.join(__dirname, '../js/config.js'), 'utf8') + ';this.CFG = CFG;';
+  const cfgAt = (hostname, search) => { const G = { location: { hostname, search }, URLSearchParams }; vm.createContext(G); vm.runInContext(CFGSRC, G); return G.CFG; };
+  const OFFICIAL = cfgAt('dzy-bulletin.github.io', '').GAS_URL;
+  eq('（前提）正式 GAS 網址', /^https:\/\/script\.google\.com\//.test(OFFICIAL), true);
+  eq('?api=：localhost 開頁 → 用本機後端', cfgAt('localhost', '?api=http://127.0.0.1:8993/').GAS_URL, 'http://127.0.0.1:8993/');
+  eq('?api=：127.0.0.1 開頁 → 用本機後端（不會悄悄打正式 GAS）', [cfgAt('127.0.0.1', '?mode=cloud&api=http://127.0.0.1:9/').GAS_URL, cfgAt('127.0.0.1', '?api=http://localhost:8993').GAS_URL], ['http://127.0.0.1:9/', 'http://localhost:8993']);
+  eq('?api=：正式網址開頁 → 忽略', cfgAt('dzy-bulletin.github.io', '?api=http://127.0.0.1:8993/').GAS_URL, OFFICIAL);
+  eq('?api=：指向非本機 → 忽略', [cfgAt('localhost', '?api=http://evil.example:80/').GAS_URL, cfgAt('127.0.0.1', '?api=https://127.0.0.1:1/').GAS_URL, cfgAt('127.0.0.2', '?api=http://127.0.0.1:1/').GAS_URL], [OFFICIAL, OFFICIAL, OFFICIAL]);
   console.log(`api: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

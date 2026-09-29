@@ -33,6 +33,14 @@ def srv(path, body):
     req = urllib.request.Request(SERVER + path, data=json.dumps(body, ensure_ascii=False).encode(), headers={'Content-Type': 'text/plain'})
     return json.loads(urllib.request.urlopen(req, timeout=30).read())
 results, cm = [], ClickMap()
+# 出網防呆（#13 第 2 輪）：任何指向 Google Apps Script 的請求一律攔下（abort）並記下來，最後讓測試失敗——測試絕不能打到正式 GAS
+import re as _re
+GOOGLE = _re.compile(r'^https?://([^/]*\.)?(script\.google\.com|googleusercontent\.com)(/|$)')
+NET_HITS = []
+def guard_google(ctx):
+    def block(route):
+        NET_HITS.append(route.request.method + ' ' + route.request.url[:120]); route.abort()
+    ctx.route(GOOGLE, block)
 
 
 def check(name, ok, detail=''):
@@ -46,6 +54,8 @@ DATE_SHIFT_JS = """(() => { const off = +(localStorage.getItem('e2e_off') || 0) 
 
 
 def main():
+    if BACKEND == 'server' and not _re.match(r'^http://(127\.0\.0\.1|localhost):\d+/?$', SERVER):
+        print(f'✗ E2E_BACKEND=server 時 SERVER 必須是 http://127.0.0.1:埠 或 http://localhost:埠（現在是 {SERVER}），拒絕執行'); sys.exit(2)
     data = D.make(SEED, TODAY)
     W = D.World(data)
     td = D.iso(TODAY)
@@ -55,6 +65,7 @@ def main():
         b = p.chromium.launch()
         ctx = b.new_context(viewport={'width': 390, 'height': 844}, locale='zh-TW', timezone_id='Asia/Taipei')
         ctx.grant_permissions(['clipboard-read', 'clipboard-write'], origin=BASE)
+        guard_google(ctx)
         ctx.add_init_script('window.__E2E_DATA = ' + json.dumps(data, ensure_ascii=False) + ';')
         ctx.add_init_script(DATE_SHIFT_JS)
         pg = ctx.new_page()
@@ -404,6 +415,7 @@ def main():
     print(f'\n按鈕稽核：畫面上出現 {rep["total"]} 種可點元素，已點過驗證 {rep["clicked"]} 種')
     if rep['missed']: print('  漏點：', rep['missed'])
     if rep['extra']: print('  key 不一致（點過但沒掃描到）：', rep['extra'])
+    check('Z 沒有任何請求打到 Google Apps Script（已攔截）', not NET_HITS, NET_HITS[:5])
     check('Z 每一顆按鈕都點過（clickmap 稽核）', not rep['missed'] and not rep['extra'], rep['missed'] or rep['extra'])
     bad = [r for r in results if not r[1]]
     print(f'\n共 {len(results)} 項檢查，通過 {len(results) - len(bad)}，失敗 {len(bad)}｜種子 {SEED}' + ('' if not bad else f'（重現：E2E_SEED={SEED} python3 e2e/run.py）'))
@@ -417,6 +429,7 @@ def moved_check(b):
     print('— 後端搬家（MOVED）—')
     fake = 'http://127.0.0.1:9/'
     ctx = b.new_context(viewport={'width': 390, 'height': 844}, locale='zh-TW', timezone_id='Asia/Taipei')
+    guard_google(ctx)
     pg = ctx.new_page()
     errs, calls, loads = [], [], [0]
     pg.on('pageerror', lambda e: errs.append(str(e)))
@@ -435,6 +448,8 @@ def moved_check(b):
         pg.wait_for_selector('[data-pu]', timeout=8000); pg.wait_for_timeout(300)
         pg.click('[data-pu="mala"]'); pg.click('[data-pick="S-001"]'); pg.fill('#pv', '2580'); pg.click('#pfGo')
     pg.goto(BASE + '/?mode=cloud&api=' + fake); wait_loads(1)
+    got = pg.evaluate('CFG.GAS_URL')
+    if got != fake: raise RuntimeError(f'?api= 沒生效（CFG.GAS_URL={got}），為免打到正式 GAS 中止；E2E_BASE 請用 localhost 或 127.0.0.1')
     pg.evaluate("localStorage.setItem('dzyb_lastBad', 'x')")
     try_login()
     n1 = wait_loads(2)

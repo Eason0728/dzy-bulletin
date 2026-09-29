@@ -12,7 +12,8 @@ function eq(name, got, want) {
 
 // ---------- 假 Google 服務 ----------
 const props = {}, cache = {};
-let lockFree = true, throwOnWrite = null, onTryLock = null, failRename = null;   // onTryLock：等鎖期間發生的事（S2）；failRename：改成這個名稱時丟錯一次（還原時同名可以成功）                       // throwOnWrite：寫到這個分頁名稱時丟錯（模擬 mirror 寫到一半逾時）
+let lockFree = true, throwOnWrite = null, onTryLock = null, failRename = null, failDelete = null;   // failDelete：{name, n} 刪這個名稱的分頁時丟錯 n 次
+   // onTryLock：等鎖期間發生的事（S2）；failRename：改成這個名稱時丟錯一次（還原時同名可以成功）                       // throwOnWrite：寫到這個分頁名稱時丟錯（模擬 mirror 寫到一半逾時）
 function makeSheet(name, maxRows) {
   const sh = { name, data: [], max: maxRows || 1000, frozen: 0 };
   const cell = (r, c) => ((sh.data[r - 1] || [])[c - 1] ?? '');
@@ -48,7 +49,7 @@ function freshBook() {
     getSheetByName: (n) => sheets.find((s) => s.name === n) || null,
     getSheets: () => sheets.slice(),
     insertSheet: (n, idx) => { if (sheets.some((s) => s.name === n)) throw new Error('分頁已存在'); const s = makeSheet(n); sheets.splice(idx === undefined ? sheets.length : idx, 0, s); return s; },
-    deleteSheet: (s) => { const i = sheets.indexOf(s); if (i >= 0) sheets.splice(i, 1); }
+    deleteSheet: (s) => { if (failDelete && failDelete.n > 0 && s.name === failDelete.name) { failDelete.n--; throw new Error('模擬刪除中斷：' + s.name); } const i = sheets.indexOf(s); if (i >= 0) sheets.splice(i, 1); }
   };
 }
 // Drive：資料夾與檔案
@@ -115,6 +116,7 @@ vm.createContext(G);
 ['gas/Auth.js', 'gas/Service.js', 'gas/Store.js', 'gas/Files.js', 'gas/Code.js'].forEach((f) => vm.runInContext(fs.readFileSync(path.join(__dirname, '..', f), 'utf8'), G, { filename: f }));
 const doPost = (body) => JSON.parse(G.doPost({ postData: { contents: JSON.stringify(body) } }).getContent());
 const store = () => vm.runInContext('makeStore_(makeFiles_())', G);
+const bumpGen = () => vm.runInContext('bumpGen_()', G);   // 測試直接改試算表後讓快取失效
 
 // 主試算表四分頁（與 setup() 相同表頭）＋一位同仁、一則公告
 function seedBook() {
@@ -215,6 +217,9 @@ const srv = http.createServer((req, res) => {
   eq('share：簽名資料夾裡的圖 → BAD_REQ、分享狀態不變', [(await raw({ action: 'bridge', key: KEY, op: 'share', ids: [up.ids[3]] })).code, drive.files[up.ids[3]].sharing], ['BAD_REQ', 'PRIVATE']);
   await B.files.revoke([other, up.ids[3], sheetLike]);
   eq('revoke：範圍外的檔案（根目錄 PDF、簽名圖、試算表）不會被丟垃圾桶', [drive.files[other].trashed, drive.files[up.ids[3]].trashed, drive.files[sheetLike].trashed], [undefined, undefined, undefined]);
+  { const sf = props.SIG_FOLDER_ID, nf = Object.keys(drive.folders).length; delete props.SIG_FOLDER_ID;
+    eq('讀取路徑不建資料夾：SIG_FOLDER_ID 遺失時 sig 回 null、沒有新建資料夾', [await B.call('sig', { id: up.ids[4] }), 'SIG_FOLDER_ID' in props, Object.keys(drive.folders).length], [null, false, nf]);
+    props.SIG_FOLDER_ID = sf; }
   eq('物件型別的 key → AUTH（不是錯誤網頁）', [(await raw({ action: 'bridge', key: { toString: 1 }, op: 'quota' })).code, (await raw({ action: 'bridge', key: [KEY], op: 'quota' })).code], ['AUTH', 'AUTH']);
 
   // ===== 驗收 5：PRIMARY≠mini 時 mirror 回 AUTH（實際經 HTTP 打一次） =====
@@ -273,10 +278,12 @@ const srv = http.createServer((req, res) => {
   mini.load({ posts: demo.posts.map((p) => Object.assign({ createdAt: '2026-09-29T00:00:00.000Z', updatedAt: '' }, p)), staff: staffIn, reads: readsIn,
     log: [{ at: '2026-09-30T01:00:00.000Z', action: 'ack', target: 'P-1', summary: '簽名' }, { at: '2026-09-30T02:00:00.000Z', action: 'savePost', target: 'P-2', summary: '' }] });
   const dump = mini.dump(); mini.close();
-  dump.reads.forEach((x, i) => { x.driveSigId = i % 5 === 4 ? '' : 'DRV-' + i; });   // 每 5 筆留 1 筆「還沒回填」
+  const mkSig = (fid) => newFile({ name: 'sig.png', mime: 'image/png', bytes: signed(Buffer.from('簽名圖')) }, fid || props.SIG_FOLDER_ID);   // 簽名資料夾裡的真簽名檔
+  dump.reads.forEach((x, i) => { x.driveSigId = i % 5 === 4 ? '' : mkSig(); });   // 每 5 筆留 1 筆「還沒回填」；回填的都是簽名資料夾裡的真檔（sigs.put 產生的）
   props.PRIMARY = 'mini';
   hits = 0;
-  const mres = await B.call('mirror', { data: { posts: dump.posts, staff: dump.staff, reads: dump.reads, log: dump.log } });
+  const full = { posts: dump.posts, staff: dump.staff, reads: dump.reads, log: dump.log };
+  const mres = await B.call('mirror', { data: full });
   eq('mirror：1 次呼叫、回報四分頁筆數', [hits, mres.counts], [1, { posts: dump.posts.length, staff: dump.staff.length, reads: dump.reads.length, log: dump.log.length }]);
   const S2 = store();
   const pick = (o, ks) => ks.reduce((a, k) => (a[k] = o[k], a), {});
@@ -289,20 +296,20 @@ const srv = http.createServer((req, res) => {
   eq('（確認資料含未回填列）', dump.reads.some((x) => !x.driveSigId) && dump.reads.some((x) => x.driveSigId), true);
   eq('mirror 後操作紀錄逐筆一致', S2.dump().log, dump.log);
   eq('mirror 後分頁順序與名稱不變、沒有殘留暫存分頁', book.getSheets().map((s) => s.name), ['公告', '同仁', '已讀', '操作紀錄']);
-  eq('mirror 後分頁凍結表頭', book.getSheets().map((s) => s.frozen), [1, 1, 1, 1]);
+  eq('mirror 後分頁凍結表頭、MIRROR_PHASE=done', [book.getSheets().map((s) => s.frozen), props.MIRROR_PHASE], [[1, 1, 1, 1], 'done']);
   eq('mirror 換世代（快取失效）', !!props.DATA_GEN, true);
 
   // mirror 寫到一半丟錯（已讀寫完、寫操作紀錄時逾時）→ 正式四分頁仍是上一輪的完整資料；下一輪成功並清掉殘留暫存分頁
   const good = snapshot();
-  const d2 = JSON.parse(JSON.stringify({ posts: dump.posts, staff: dump.staff, reads: dump.reads.slice(0, 2), log: [] }));
+  const d2 = Object.assign({}, full, { log: [{ at: 'x', action: 'y', target: '', summary: '' }] });
   throwOnWrite = '操作紀錄__鏡像中';
   eq('mirror 中途丟錯 → 回錯誤', (await raw({ action: 'bridge', key: KEY, op: 'mirror', data: d2 })).ok, false);
   eq('mirror 中途丟錯 → 正式四分頁仍是上一輪完整資料', snapshot(), good);
   eq('（殘留暫存分頁存在，正式分頁不受影響）', book.getSheets().some((s) => s.name === '已讀__鏡像中'), true);
   throwOnWrite = null;
   eq('下一輪 mirror 成功', (await raw({ action: 'bridge', key: KEY, op: 'mirror', data: d2 })).ok, true);
-  eq('下一輪清掉殘留暫存分頁、已讀換成新資料', [book.getSheets().map((s) => s.name), book.getSheetByName('已讀').data.length], [['公告', '同仁', '已讀', '操作紀錄'], 3]);
-  eq('mirror 缺任一份（例如沒帶 reads）→ BAD_REQ、正式分頁不被清空', [(await raw({ action: 'bridge', key: KEY, op: 'mirror', data: { posts: [], staff: [], log: [] } })).code, book.getSheetByName('已讀').data.length], ['BAD_REQ', 3]);
+  eq('下一輪清掉殘留暫存分頁、操作紀錄換成新資料', [book.getSheets().map((s) => s.name), book.getSheetByName('操作紀錄').data.length], [['公告', '同仁', '已讀', '操作紀錄'], 2]);
+  eq('mirror 缺任一份（例如沒帶 reads）→ BAD_REQ、正式分頁不被清空', [(await raw({ action: 'bridge', key: KEY, op: 'mirror', data: { posts: [], staff: [], log: [] } })).code, book.getSheetByName('已讀').data.length], ['BAD_REQ', dump.reads.length + 1]);
   lockFree = false;
   eq('mirror 拿不到 ScriptLock → SERVER 忙碌', (await raw({ action: 'bridge', key: KEY, op: 'mirror', data: d2 })).code, 'SERVER');
   lockFree = true;
@@ -318,9 +325,7 @@ const srv = http.createServer((req, res) => {
     props.PRIMARY = 'mini'; }
 
   // #13 S1：全空、posts／staff 少一半以上 → 拒絕（force:true 才放行）
-  { const before = snapshot(), cur = { posts: dump.posts, staff: dump.staff, reads: d2.reads, log: [] };
-    await B.call('mirror', { data: cur });
-    const base = snapshot();
+  { const cur = d2, base = snapshot();
     eq('mirror 四份全空 → BAD_REQ、四分頁沒動', [(await raw({ action: 'bridge', key: KEY, op: 'mirror', data: { posts: [], staff: [], reads: [], log: [] } })).code, snapshot() === base], ['BAD_REQ', true]);
     eq('mirror 全空帶 force 也拒絕', (await raw({ action: 'bridge', key: KEY, op: 'mirror', force: true, data: { posts: [], staff: [], reads: [], log: [] } })).code, 'BAD_REQ');
     const halfS = Math.floor(dump.staff.length / 2) - 1, halfP = Math.floor(dump.posts.length / 2) - 1;
@@ -330,38 +335,80 @@ const srv = http.createServer((req, res) => {
     await B.call('mirror', { data: cur });
     eq('mirror 少一半以上帶 force:true → 放行', [(await raw({ action: 'bridge', key: KEY, op: 'mirror', force: true, data: Object.assign({}, cur, { staff: dump.staff.slice(0, 1) }) })).ok, book.getSheetByName('同仁').data.length], [true, 2]);
     eq('force 必須是 true（字串 "true" 不算）', (await raw({ action: 'bridge', key: KEY, op: 'mirror', force: 'true', data: Object.assign({}, cur, { staff: [] }) })).code, 'BAD_REQ');
-    await B.call('mirror', { data: cur, force: true });
-    void before; }
+    await B.call('mirror', { data: cur, force: true }); }
 
-  // #13 S3：新資料沒帶 driveSigId 時保留分頁裡原本的簽名 id——搬遷前的舊簽名第一次鏡像後不會消失
-  { const pre = [{ postId: 'P-OLD', staffId: 'S-001', name: '陳大安', unit: 'mala', at: '2026-09-29T00:00:00.000Z', sigId: 'DRV-OLD-1' },
-      { postId: 'P-OLD', staffId: 'S-002', name: '林雅婷', unit: 'mala', at: '2026-09-29T00:00:00.000Z', sigId: 'DRV-OLD-2' }];
-    const sh = book.getSheetByName('已讀'); sh.data = [G.SHEETS_.reads.head.slice()].concat(pre.map((r) => G.SHEETS_.reads.cols.map((c) => r[c])));   // 模擬 GAS 時代留下的已讀（Drive id）
-    // Mac mini 端：搬遷後 SQLite 只有 sigId（本機檔名）、driveSigId 還沒回填／欄位名對不上；另有一筆 Mac mini 新簽的已回填
-    const minis = pre.map((r) => Object.assign({}, r, { sigId: r.postId + '_' + r.staffId + '.png' })).concat([{ postId: 'P-NEW', staffId: 'S-001', name: '陳大安', unit: 'mala', at: '2026-09-30T00:00:00.000Z', sigId: 'P-NEW_S-001.png', driveSigId: 'DRV-NEW' }]);
-    minis[1].driveSigId = 'DRV-CHANGED';
-    await B.call('mirror', { data: { posts: dump.posts, staff: dump.staff, reads: minis, log: [] } });
-    eq('第一次鏡像後舊簽名 Drive id 保留、有新值就用新值、Mac mini 檔名不會寫進來', store().getReads().map((r) => r.sigId), ['DRV-OLD-1', 'DRV-CHANGED', 'DRV-NEW']);
-    await B.call('mirror', { data: { posts: dump.posts, staff: dump.staff, reads: minis.map((r) => Object.assign({}, r, { driveSigId: '' })), log: [] } });
-    eq('再鏡像一次（全部沒帶 driveSigId）id 仍在', store().getReads().map((r) => r.sigId), ['DRV-OLD-1', 'DRV-CHANGED', 'DRV-NEW']); }
+  // #13 S6：已讀比現有少一筆就拒絕（不會被硬刪），force:true 才放行
+  { const base = snapshot();
+    eq('mirror reads:[]（posts／staff 正常）→ BAD_REQ、已讀沒被洗掉', [(await raw({ action: 'bridge', key: KEY, op: 'mirror', data: Object.assign({}, d2, { reads: [] }) })).code, snapshot() === base], ['BAD_REQ', true]);
+    eq('mirror 已讀少 1 筆 → BAD_REQ', (await raw({ action: 'bridge', key: KEY, op: 'mirror', data: Object.assign({}, d2, { reads: d2.reads.slice(1) }) })).code, 'BAD_REQ');
+    eq('mirror 已讀多 1 筆 → 接受', (await raw({ action: 'bridge', key: KEY, op: 'mirror', data: Object.assign({}, d2, { reads: d2.reads.concat([{ postId: 'P-X', staffId: 'S-001', name: 'a', unit: 'mala', at: 't', driveSigId: '' }]) }) })).ok, true);
+    eq('mirror 已讀少帶 force:true → 放行', [(await raw({ action: 'bridge', key: KEY, op: 'mirror', force: true, data: Object.assign({}, d2, { reads: d2.reads.slice(2) }) })).ok, book.getSheetByName('已讀').data.length], [true, d2.reads.length - 1]);
+    await B.call('mirror', { data: d2 }); }
 
-  // 建議 3：換名中途失敗 → 還原成上一輪，正式分頁不會不見；GAS 讀取照常
-  { await B.call('mirror', { data: d2 });
-    const base = snapshot(); failRename = '同仁';                 // 第二張（同仁）的暫存分頁改成正式名稱時丟錯
-    eq('換名中途失敗 → 回錯誤', (await raw({ action: 'bridge', key: KEY, op: 'mirror', data: Object.assign({}, d2, { log: [{ at: 'x', action: 'y' }] }) })).ok, false);
-    failRename = null;
-    eq('換名中途失敗 → 四個正式分頁都在且是上一輪資料、沒有「__上一輪」殘留', [snapshot() === base, book.getSheets().filter((x) => /__上一輪$/.test(x.name)).length], [true, 0]);
+  // #13 N1：mirror 只接受「分頁既有」或「目前簽名資料夾裡的圖」當簽名檔 id；否則整份拒絕，回條也讀不出雲端硬碟的其他檔案
+  { const base = snapshot(), legacyDir = newFolder('舊簽名資料夾', 'ROOT');
+    const inject = async (id) => (await raw({ action: 'bridge', key: KEY, op: 'mirror', data: Object.assign({}, d2, { reads: d2.reads.map((r, i) => (i === 0 ? Object.assign({}, r, { driveSigId: id }) : r)) }) })).code;
+    eq('mirror 注入根目錄試算表／PDF／不在簽名資料夾的圖／簽名資料夾裡的 PDF／不存在的 id → 全部 BAD_REQ',
+      [await inject(sheetLike), await inject(other), await inject(rootPng), await inject(sigPdf), await inject(mkSig(legacyDir)), await inject('G-不存在')], ['BAD_REQ', 'BAD_REQ', 'BAD_REQ', 'BAD_REQ', 'BAD_REQ', 'BAD_REQ']);
+    eq('注入被拒後四分頁沒動', snapshot(), base);
+    eq('bridge.js 看到的是業務錯誤 BAD_REQ（M3 會記 fail）', await biz(B.call('mirror', { data: Object.assign({}, d2, { reads: [Object.assign({}, d2.reads[0], { driveSigId: other })].concat(d2.reads.slice(1)) }) })), ['BAD_REQ', true]);
+    // 就算分頁被人手動改成非圖檔的 id，GAS 自己的回條（receipts→getSigs→readSig）也只回 PNG／JPEG
+    const sh = book.getSheetByName('已讀'), r0 = sh.data[1].slice(), r1 = sh.data[2].slice();
+    const postOf = r0[0]; sh.data[1][5] = sheetLike; sh.data[2][5] = other;
+    const au = vm.runInContext('makeAuth_(gasCrypto_(), DZYB)', G), atok = au.makeAdminToken(props.TOKEN_SECRET, props.ADMIN_VER, Date.now() + 3600e3);
+    props.PRIMARY = 'gas'; bumpGen();
+    const rc = doPost({ action: 'receipts', atoken: atok, postId: postOf });
+    const sigOf = (sid) => (rc.data.rows.find((x) => x.staffId === sid) || {}).sig;
+    eq('receipts：分頁上的非圖檔 id → sig 是 null（試算表、PDF 都讀不出）', [rc.ok, sigOf(r0[1]), sigOf(r1[1])], [true, null, null]);
+    sh.data[1] = r0; sh.data[2] = r1; bumpGen();
+    eq('receipts：正常簽名照常讀得到', doPost({ action: 'receipts', atoken: atok, postId: postOf }).data.rows.find((x) => x.staffId === r0[1]).sig, png);
+    props.PRIMARY = 'mini'; }
+
+  // #13 S3＋S5：資料夾重建過的舊簽名（分頁既有 id）第一次鏡像後不會消失，sig／sigs.get 也搬得走；不在分頁的舊資料夾檔案仍是 null
+  { const oldDir = newFolder('簽名（重建前）', props.FOLDER_ID), o1 = mkSig(oldDir), o2 = mkSig(oldDir), stranger = mkSig(oldDir);
+    const pre = [{ postId: 'P-OLD', staffId: 'S-001', name: '陳大安', unit: 'mala', at: '2026-09-29T00:00:00.000Z', sigId: o1 },
+      { postId: 'P-OLD', staffId: 'S-002', name: '林雅婷', unit: 'mala', at: '2026-09-29T00:00:00.000Z', sigId: o2 }];
+    const sh = book.getSheetByName('已讀'); sh.data = [G.SHEETS_.reads.head.slice()].concat(pre.map((r) => G.SHEETS_.reads.cols.map((c) => r[c]))); bumpGen();   // 模擬 GAS 時代留下的已讀
+    const gg = await B.call('sigs', { get: [o1, o2, stranger] });
+    eq('S5：sigs.get 放行分頁既有的舊資料夾簽名、不在分頁的舊資料夾檔案仍是 null', [gg.sigs[o1], gg.sigs[o2], gg.sigs[stranger], await B.call('sig', { id: o1 }), await B.call('sig', { id: stranger })], [png, png, null, png, null]);
+    // Mac mini 端：搬遷後 SQLite 只有 sigId（本機檔名）、driveSigId 還沒回填；一筆改成新回填的；另有一筆 Mac mini 新簽的已回填
+    const changed = mkSig(), fresh = mkSig();
+    const minis = pre.map((r) => Object.assign({}, r, { sigId: r.postId + '_' + r.staffId + '.png' })).concat([{ postId: 'P-NEW', staffId: 'S-001', name: '陳大安', unit: 'mala', at: '2026-09-30T00:00:00.000Z', sigId: 'P-NEW_S-001.png', driveSigId: fresh }]);
+    minis[1].driveSigId = changed;
+    await B.call('mirror', { data: Object.assign({}, d2, { reads: minis }) });
+    eq('S3：第一次鏡像後舊簽名 Drive id 保留、有新值就用新值、Mac mini 檔名不會寫進來', store().getReads().map((r) => r.sigId), [o1, changed, fresh]);
+    await B.call('mirror', { data: Object.assign({}, d2, { reads: minis.map((r) => Object.assign({}, r, { driveSigId: '' })) }) });
+    eq('S3：再鏡像一次（全部沒帶 driveSigId）id 仍在', store().getReads().map((r) => r.sigId), [o1, changed, fresh]);
+    eq('S3：分頁既有的舊資料夾 id 可以原樣再送（不被 N1 擋）', (await raw({ action: 'bridge', key: KEY, op: 'mirror', data: Object.assign({}, d2, { reads: minis.map((r, i) => Object.assign({}, r, { driveSigId: [o1, changed, fresh][i] })) }) })).ok, true);
+    await B.call('mirror', { data: d2, force: true }); }
+
+  // 建議 3＋S7：換名的進度寫進 MIRROR_PHASE，heal 依標記還原（沒做完）或往前完成（只差刪備份）
+  { const base = snapshot(); failRename = '同仁';                 // 第二張（同仁）的暫存分頁改成正式名稱時丟錯
+    eq('換名中途失敗 → 回錯誤', (await raw({ action: 'bridge', key: KEY, op: 'mirror', data: Object.assign({}, d2, { log: [] }) })).ok, false);
+    eq('換名中途失敗 → 四個正式分頁都在且是上一輪資料、沒有「__上一輪」殘留、標記回 done', [snapshot() === base, book.getSheets().filter((x) => /__上一輪$/.test(x.name)).length, props.MIRROR_PHASE], [true, 0, 'done']);
     eq('換名失敗後 GAS roster 照常', doPost({ action: 'roster' }).ok, true);
-    // 更慘的情況（還原也沒做完）：手動做出「同仁」不見、只剩「同仁__上一輪」→ 下一輪 mirror 開頭先修好
-    book.getSheetByName('同仁').setName('同仁__上一輪');
+    // 換名成功、刪「同仁__上一輪」時中斷兩次（mirror 本身與 catch 內的 heal 都失敗）→ 標記停在 tmp_renamed；手動 heal 往前完成、不改資料
+    failDelete = { name: '同仁__上一輪', n: 2 };
+    const d3 = Object.assign({}, d2, { log: [{ at: 'new', action: 'round', target: '', summary: '' }] });
+    eq('刪備份時中斷 → 回錯誤、標記停在 tmp_renamed', [(await raw({ action: 'bridge', key: KEY, op: 'mirror', data: d3 })).ok, props.MIRROR_PHASE], [false, 'tmp_renamed']);
+    const mid = snapshot();
+    eq('（前提）四張正式分頁都是新一輪、還留著「同仁__上一輪」', [book.getSheetByName('操作紀錄').data[1][1], !!book.getSheetByName('同仁__上一輪')], ['round', true]);
+    eq('手動 mirrorHeal()：往前完成（只刪備份、四分頁資料不變）', [vm.runInContext('mirrorHeal_(ss_())', G), snapshot() === mid, book.getSheets().map((x) => x.name), props.MIRROR_PHASE], ['forward', true, ['公告', '同仁', '已讀', '操作紀錄'], 'done']);
+    // 同樣的中斷狀態，下一輪鏡像先 heal（往前完成）、接著被防呆擋下 → 分頁仍一致是新一輪，不會混合
+    failDelete = { name: '同仁__上一輪', n: 2 };
+    await raw({ action: 'bridge', key: KEY, op: 'mirror', data: Object.assign({}, d3, { log: [{ at: 'new2', action: 'round2', target: '', summary: '' }] }) });
+    const mid2 = snapshot();
+    eq('下一輪先 heal 再被防呆擋：分頁一致是上一輪成功換上的資料', [(await raw({ action: 'bridge', key: KEY, op: 'mirror', data: Object.assign({}, d3, { reads: [] }) })).code, book.getSheetByName('操作紀錄').data[1][1], book.getSheets().map((x) => x.name), snapshot() === mid2], ['BAD_REQ', 'round2', ['公告', '同仁', '已讀', '操作紀錄'], true]);
+    // 還原路徑：換名做到一半（標記 renaming、同仁已改成「__上一輪」）→ 下一輪開頭整組還原後成功
+    book.getSheetByName('同仁').setName('同仁__上一輪'); props.MIRROR_PHASE = 'renaming';
     eq('（前提）正式同仁分頁不見', book.getSheetByName('同仁'), null);
     eq('下一輪 mirror 開頭自我修復後成功', [(await raw({ action: 'bridge', key: KEY, op: 'mirror', data: d2 })).ok, book.getSheets().map((x) => x.name)], [true, ['公告', '同仁', '已讀', '操作紀錄']]); }
 
   eq('鏡像後重寫公開名單快照（只有遮罩姓名）', [snapSheet.data.length - 1, snapSheet.data.slice(1).every((r) => r[1].includes('O') || r[1].length <= 2), JSON.stringify(snapSheet.data).includes('h1')], [d2.staff.filter((x) => x.active).length, true, false]);
   // 鏡像後回退（PRIMARY=gas）：GAS 的 readSig 讀得到鏡像寫回的 Drive id（用上面 sigs 上傳得到的真 id）
-  await B.call('mirror', { data: { posts: dump.posts, staff: dump.staff, reads: [Object.assign({}, dump.reads[0], { driveSigId: up.ids[0] })], log: [] } });
+  await B.call('mirror', { data: Object.assign({}, d2, { reads: [Object.assign({}, dump.reads[0], { driveSigId: up.ids[0] })].concat(d2.reads.slice(1)) }) });
   props.PRIMARY = 'gas';
-  eq('回退後 GAS 用鏡像的簽名檔 id 讀得到簽名圖', Object.values(store().getSigs(dump.reads[0].postId)), [png]);
+  eq('回退後 GAS 用鏡像的簽名檔 id 讀得到簽名圖', store().getSigs(dump.reads[0].postId)[dump.reads[0].staffId], png);
 
   // ===== 驗收 9：備份檔落在獨立備份資料夾、分享狀態為「限制」 =====
   const b64 = Buffer.from('gzip-bytes').toString('base64');

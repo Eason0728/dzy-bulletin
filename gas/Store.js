@@ -89,18 +89,32 @@ function mirrorRows_(d, fromPost, oldSig) {
     log: d.log.map(function (e) { return { at: e.at, action: e.action, target: e.target || '', summary: e.summary || '' }; })
   };
 }
-// 鏡像換名中途失敗的修復：「__上一輪」還在就代表換名沒做完 → 已換上來的新分頁退回「__鏡像中」、上一輪改回正式名稱。
-// 鏡像開頭與換名失敗時都跑一次；回退（#10）前手動執行 mirrorHeal() 也行。
+// 鏡像換名的進度標記（指令碼屬性 MIRROR_PHASE），mirrorHeal_ 依標記決定還原或往前完成，不用猜（#13 S7）：
+//   renaming        正式分頁正改名成「__上一輪」→ 可能只改了一部分 → 整組還原成上一輪
+//   backup_renamed  正式分頁都已改成「__上一輪」、暫存分頁正換上來 → 整組還原成上一輪
+//   tmp_renamed     四張新分頁都已換上正式名稱，只差刪「__上一輪」→ 往前完成（只刪舊分頁、不動資料）
+//   done／未設      沒有進行中的換名；若還留著「__上一輪」：四張正式分頁都在就只刪舊的，缺任何一張才整組還原
+// 鏡像開頭與換名失敗時各跑一次；回退（#10）前也可以在編輯器手動執行 mirrorHeal()。
 function mirrorHeal_(book) {
-  MIRROR_KEYS_.forEach(function (k) {
-    var n = SHEETS_[k].name, old = book.getSheetByName(n + MIRROR_OLD_);
+  var phase = props_().getProperty('MIRROR_PHASE') || 'done';
+  var named = function (sfx) { return MIRROR_KEYS_.map(function (k) { return book.getSheetByName(SHEETS_[k].name + sfx); }); };
+  var olds = named(MIRROR_OLD_);
+  if (!olds.some(Boolean)) { if (phase !== 'done') props_().setProperty('MIRROR_PHASE', 'done'); return 'clean'; }
+  var allCur = named('').every(Boolean);
+  if (phase === 'tmp_renamed' || (phase === 'done' && allCur)) {
+    olds.forEach(function (x) { if (x) book.deleteSheet(x); });
+    props_().setProperty('MIRROR_PHASE', 'done'); return 'forward';
+  }
+  MIRROR_KEYS_.forEach(function (k, i) {                               // 整組還原：已換上來的新分頁退回「__鏡像中」、上一輪改回正式名稱
+    var n = SHEETS_[k].name, old = olds[i];
     if (!old) return;
     var cur = book.getSheetByName(n);
     if (cur) { var t = book.getSheetByName(n + MIRROR_TMP_); if (t) book.deleteSheet(t); cur.setName(n + MIRROR_TMP_); }
     old.setName(n);
   });
+  props_().setProperty('MIRROR_PHASE', 'done'); return 'restore';
 }
-function mirrorHeal() { mirrorHeal_(ss_()); }   // 編輯器手動執行用
+function mirrorHeal() { Logger.log('鏡像修復：' + mirrorHeal_(ss_())); }   // 編輯器手動執行用（clean／forward／restore）
 
 function makeStore_(files) {
   var book = null, memo = {}, gen = null, snapDirty = false;                              // gen 惰性讀取：寫入動作在鎖內才第一次讀
@@ -214,6 +228,12 @@ function makeStore_(files) {
     // 鏡像（橋接 mirror，PRIMARY=mini 時每小時一次）：Mac mini 的正本整份覆寫回四分頁（給人看＋回退到 GAS 用）。
     // 先寫到暫存分頁「<名稱>__鏡像中」，四份都寫完、筆數核對過才換名：中途逾時（6 分鐘上限）或丟錯時，正式四分頁仍是上一輪的完整資料（#7、#8）。
     // 已讀的「簽名檔 id」只寫 driveSigId（Drive 檔案 id），還沒回填的留空——Mac mini 的本機檔名寫進來，回退後 readSig(id) 會全部失敗（#7）。
+    // 已讀分頁裡既有的簽名檔 id（fresh）：橋接 sig／sigs.get 放行舊資料夾的簽名用（#13 S5）
+    sigIds: function () {
+      var o = Object.create(null);
+      rows('reads', true).forEach(function (r) { if (r.sigId) o[r.sigId] = true; });
+      return o;
+    },
     mirror: function (d, opt) {
       d = d || {}; opt = opt || {};
       var bad = function (m) { var e = new Error(m); e.code = 'BAD_REQ'; return e; };
@@ -222,15 +242,27 @@ function makeStore_(files) {
       mirrorHeal_(book);                                                    // 上一輪換名做一半 → 先救回正式分頁
       // 防呆（#13 S1）：Mac mini 開到空 DB 或 DATA_DIR 設錯時，每小時鏡像會把回退唯一的正本蓋掉
       if (MIRROR_KEYS_.every(function (k) { return !d[k].length; })) throw bad('鏡像資料全空，拒絕覆寫');
+      var oldReads = rows('reads', true).filter(function (r) { return r.postId; });
       if (!opt.force) {                                                     // force 只由 Eason 手動帶，mirror.js 預設不帶
         ['posts', 'staff'].forEach(function (k) {
           var sh = book.getSheetByName(SHEETS_[k].name), have = sh ? Math.max(sh.getLastRow() - 1, 0) : 0;
           if (d[k].length * 2 < have) throw bad('鏡像的' + SHEETS_[k].name + '筆數（' + d[k].length + '）比現有（' + have + '）少一半以上，拒絕覆寫（確認無誤請帶 force）');
         });
+        // 已讀不會被硬刪（每人每則一次），筆數只增不減 → 少一筆就拒絕（#13 S6）
+        if (d.reads.length < oldReads.length) throw bad('鏡像的已讀筆數（' + d.reads.length + '）比現有（' + oldReads.length + '）少，拒絕覆寫（確認無誤請帶 force）');
       }
-      var oldSig = {};
-      rows('reads', true).forEach(function (r) { if (r.postId && r.sigId) oldSig[r.postId + '|' + r.staffId] = r.sigId; });
+      var oldSig = {}, known = Object.create(null);
+      oldReads.forEach(function (r) { if (r.sigId) { oldSig[r.postId + '|' + r.staffId] = r.sigId; known[r.sigId] = true; } });
       var objs = mirrorRows_(d, fromPost, oldSig), counts = {};
+      // 簽名檔 id 只能是「分頁裡本來就有的值」或「目前簽名資料夾裡的圖」（sigs.put 產生的都是）；
+      // 否則持有金鑰的一方能把任意 Drive id 塞進已讀分頁，再經回條（receipts→getSigs）讀出雲端硬碟的檔案（#13 N1 a）
+      var checked = Object.create(null), badN = 0;
+      objs.reads.forEach(function (r) {
+        var id = r.sigId; if (!id || known[id]) return;
+        if (!(id in checked)) checked[id] = files.isSigFile(id);
+        if (!checked[id]) badN++;
+      });
+      if (badN) throw bad('鏡像的簽名檔 id 有 ' + badN + ' 筆不在簽名資料夾，拒絕覆寫');
       MIRROR_KEYS_.forEach(function (k) {                                   // 清掉上一輪失敗留下的暫存分頁
         var x = book.getSheetByName(SHEETS_[k].name + MIRROR_TMP_); if (x) book.deleteSheet(x);
       });
@@ -246,15 +278,22 @@ function makeStore_(files) {
       MIRROR_KEYS_.forEach(function (k) {                                   // 筆數核對：少一列就不換名
         if (book.getSheetByName(SHEETS_[k].name + MIRROR_TMP_).getLastRow() !== counts[k] + 1) throw new Error('鏡像筆數不符：' + k);
       });
-      // 換名：正式分頁先改名成「__上一輪」（備份）、暫存分頁改成正式名稱，最後才刪備份；中途失敗就還原成上一輪
+      // 換名：正式分頁先改名成「__上一輪」（備份）、暫存分頁改成正式名稱，最後才刪備份；每一步前後寫 MIRROR_PHASE，
+      // 中途失敗由 mirrorHeal_ 依標記還原（換名沒做完）或往前完成（只差刪備份）
+      var pr = props_();
       try {
+        pr.setProperty('MIRROR_PHASE', 'renaming');
         MIRROR_KEYS_.forEach(function (k) { var cur = book.getSheetByName(SHEETS_[k].name); if (cur) cur.setName(SHEETS_[k].name + MIRROR_OLD_); });
+        pr.setProperty('MIRROR_PHASE', 'backup_renamed');
         MIRROR_KEYS_.forEach(function (k) { book.getSheetByName(SHEETS_[k].name + MIRROR_TMP_).setName(SHEETS_[k].name); });
+        pr.setProperty('MIRROR_PHASE', 'tmp_renamed');
+        MIRROR_KEYS_.forEach(function (k) { var x = book.getSheetByName(SHEETS_[k].name + MIRROR_OLD_); if (x) book.deleteSheet(x); });
+        pr.setProperty('MIRROR_PHASE', 'done');
       } catch (e) {
-        try { mirrorHeal_(book); } catch (x) { console.error('鏡像還原失敗：' + x); }
+        try { mirrorHeal_(book); } catch (x) { console.error('鏡像修復失敗：' + x); }
+        SpreadsheetApp.flush(); bumpGen_();                                 // 往前完成時資料已換新：快取世代也要換
         throw e;
       }
-      MIRROR_KEYS_.forEach(function (k) { var x = book.getSheetByName(SHEETS_[k].name + MIRROR_OLD_); if (x) book.deleteSheet(x); });
       SpreadsheetApp.flush(); bumpGen_(); gen = null; memo = {};
       try { writeSnap_(rows('staff', true)); } catch (e) { console.error('鏡像後名單快照寫入失敗：' + e); }   // 回退後若填回 ROSTER_CSV 也不是凍結的舊名單
       return counts;

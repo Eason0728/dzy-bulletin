@@ -103,9 +103,9 @@ function bridgeCore_(req, d) {
     if (op === 'revoke') { d.files().revoke(Array.isArray(req.ids) ? req.ids.map(String) : []); return ok({}); }
     if (op === 'quota') return ok(d.files().quota());
     if (op === 'clock') return ok(d.clock());
-    if (op === 'sig') return ok(d.files().readSigSafe(String(req.id || '')));   // 只讀簽名資料夾裡的圖，其他回 null（#13 B1）
+    if (op === 'sig') return ok(d.files().readSigSafe(String(req.id || ''), d.store().sigIds()));   // 只讀簽名資料夾或分頁既有的簽名圖，其他回 null（#13 B1、S5）
     // 批次簽名圖（一次最多 20 張，一次橋接呼叫）：put＝上傳到簽名資料夾、依序回傳 Drive id（M3 回填 driveSigId）；
-    // get＝依 Drive id 讀回 data URL，讀不到或不在簽名資料夾的給 null（M5 搬遷批次下載）。兩者擇一。
+    // get＝依 Drive id 讀回 data URL（M5 搬遷批次下載）；只放行「在簽名資料夾內或已讀分頁既有」的 PNG／JPEG，其他給 null。兩者擇一。
     if (op === 'sigs') {
       var put = req.put, get = req.get;
       if (Array.isArray(put) === Array.isArray(get)) return bad('sigs 需要 put 或 get 其中一個');
@@ -113,8 +113,8 @@ function bridgeCore_(req, d) {
       if (!list.length || list.length > SIGS_MAX_) return bad('sigs 一次 1～' + SIGS_MAX_ + ' 張');
       var fs = d.files();
       if (put) return ok({ ids: fs.saveSigs(put) });                // 逐張處理，失敗的那張是 null（呼叫端下一輪只重傳 null 的）
-      var out = {}, sfid = d.sigFolderId();
-      get.forEach(function (id) { id = String(id); out[id] = fs.readSigSafe(id, sfid); });
+      var out = {}, known = d.store().sigIds();
+      get.forEach(function (id) { id = String(id); out[id] = fs.readSigSafe(id, known); });
       return ok({ sigs: out });
     }
     // 搬遷匯出：交出全部密碼雜湊＋TOKEN_SECRET，不能是常駐能力 → 只在 PRIMARY=mini 且 EXPORT_ONCE=1 時接受，成功一次就刪掉 EXPORT_ONCE。
@@ -162,7 +162,6 @@ function gasBridgeDeps_() {
     store: function () { return store || (store = makeStore_(files || (files = makeFiles_()))); },
     lock: function (ms) { var l = LockService.getScriptLock(); return l.tryLock(ms) ? function () { l.releaseLock(); } : null; },
     clock: function () { var cs = clockSource_(); return cs ? cs.read() : { rows: [], errors: ['未設定打卡來源'], sources: [], counts: {} }; },
-    sigFolderId: function () { return sigFolder_().getId(); },
     backup: saveBackup_
   };
 }

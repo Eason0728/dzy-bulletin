@@ -148,7 +148,7 @@ var Admin = (function () {
         done();
         if (!r.ok) { if (r.code !== 'AUTH') q('fErr').textContent = r.message; return; }
         var st = r.data.post.status.state;
-        UI.toast(a.edit ? '已儲存' : st === 'plan' ? '已排定，' + L.fmtMD(r.data.post.publishOn) + ' 上架' : '已上架');
+        UI.toast(st === 'off' ? '已儲存（這則目前是下架狀態）' : a.edit ? '已儲存' : st === 'plan' ? '已排定，' + L.fmtMD(r.data.post.publishOn) + ' 上架' : '已上架');
         a.edit = null; a.draft = null; a.files = []; a.tab = 'posts'; a.filter = st; a.dirty = true; load();
       });
     };

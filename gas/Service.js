@@ -115,12 +115,13 @@ function makeService_(L, store, files, auth, clock, clockSrc) {
       // 偵測到 ADMIN_INIT：轉成雜湊、刪掉原文；若是更換（原本已有通行碼），版本 +1 讓所有舊的管理登入失效。
       // 有待生效的 ADMIN_INIT 時：只接受新通行碼（舊的立即失效），輸對才轉成雜湊；輸錯不會消化它
       if (a.init) {
-        if (Number(a.lockUntil) > clock.nowMs()) throw err('ADMIN_LOCKED', '錯誤太多次，請 15 分鐘後再試');   // 鎖定中一律不比對
+        if (Number(a.lockUntil) > clock.nowMs()) { var le = err('ADMIN_LOCKED', '錯誤太多次，請 15 分鐘後再試'); le.until = Number(a.lockUntil); throw le; }   // 鎖定中一律不比對
         if (a.hash && String(a.init).length < 6) throw err('AUTH', '新的管理通行碼至少要 6 碼，請到 Apps Script 指令碼屬性 ADMIN_INIT 修改');   // 更換時才檢查長度
         if (!auth.safeEq(String(q.pass || ''), String(a.init))) {
           var bad = auth.adminLogin({ hash: '-', salt: '', fail: a.fail, lockUntil: a.lockUntil }, '', clock.nowMs());   // 沿用連錯鎖定
           a.fail = bad.st.fail; a.lockUntil = bad.st.lockUntil; store.setAdmin(a);
-          throw err(bad.code === 'ADMIN_LOCKED' ? 'ADMIN_LOCKED' : 'AUTH', bad.code === 'ADMIN_LOCKED' ? '錯誤太多次，請 15 分鐘後再試' : '通行碼錯誤');
+          var be = err(bad.code === 'ADMIN_LOCKED' ? 'ADMIN_LOCKED' : 'AUTH', bad.code === 'ADMIN_LOCKED' ? '錯誤太多次，請 15 分鐘後再試' : '通行碼錯誤');
+          if (bad.until) be.until = bad.until; throw be;
         }
         var replacing = !!a.hash;
         a.salt = auth.newSalt(); a.hash = auth.hashPin(a.salt, String(a.init)); a.init = '';
@@ -186,6 +187,7 @@ function makeService_(L, store, files, auth, clock, clockSrc) {
       requireAdmin(q);
       var d = q.post || {};
       // 冪等：前端每次按下儲存帶一個 reqId；逾時重送同一個 reqId 時回傳第一次的結果，不重複建立公告
+      var bad0 = L.postProblem(d); if (bad0) throw err('BAD_REQ', bad0);   // 先驗證格式，畸形請求不會走到指紋計算
       var rid = String(q.reqId || ''), fp = fingerprint(d), prev = null;
       if (rid && store.getReq) { try { prev = JSON.parse(store.getReq(rid) || 'null'); } catch (e) { prev = null; } }
       if (prev && prev.id) {

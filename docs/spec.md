@@ -112,7 +112,7 @@ Apps Script Web App（madesiaosinla，以擁有者身分執行、任何人可呼
 ### 管理者
 - 輸入管理通行碼 → `adminLogin` → 發一張 12 小時有效的管理憑證。憑證綁 `ADMIN_VER`，變更通行碼後舊憑證全部失效。
 - 管理通行碼連錯 5 次，鎖 15 分鐘。
-- **通行碼只有 Eason 能設定與更換**（2026-09-29 定案，網頁不提供變更功能、API 也沒有 `changePass`）：在指令碼屬性填 `ADMIN_INIT`。**填入當下起**：所有舊的管理登入立即失效、舊通行碼不再接受，只接受新通行碼；有人用新通行碼登入成功時才轉成雜湊並刪除原文（輸錯不會消化它），`ADMIN_VER`+1，寫操作紀錄「更換通行碼」。我不會經手正式通行碼。
+- **通行碼只有 Eason 能設定與更換**（2026-09-29 定案，網頁不提供變更功能、API 也沒有 `changePass`）：在指令碼屬性填 `ADMIN_INIT`。**填入當下起**：所有舊的管理登入立即失效、舊通行碼不再接受，只接受新通行碼；有人用新通行碼登入成功時才轉成雜湊並刪除原文（輸錯不會消化它；鎖定中不比對；更換時新通行碼至少 6 碼），`ADMIN_VER`+1，寫操作紀錄「更換通行碼」。我不會經手正式通行碼。
 
 ## 四、附件（依 ② 探的實測結果）
 1. 管理者在新增或編輯頁選檔。前端先檢查：副檔名只能是 doc、docx、pdf、xls、xlsx，最多 5 個，單檔 ≤ 20MB。
@@ -141,7 +141,7 @@ Apps Script Web App（madesiaosinla，以擁有者身分執行、任何人可呼
 | `adminData` | 管理憑證 | — | `{today, posts:[每則含 status、readCount、targetCount], staff:[{id,name(全名),unit,hasPin,locked}], quota:{limit,usage}\|null}` |
 | `receipts` | 管理憑證 | `postId` | `{rows:[{staffId, name, unit, active, inTarget, read, at, sig}]}`（應讀名單＋不在應讀名單但簽過的人；`active`＝同仁是否在職，`inTarget`＝是否屬於公告目前的單位；簽名圖只在展開時才載入） |
 | `uploadFile` | 管理憑證 | `name, data(base64)`（類型與 MIME 一律由後端依副檔名判斷） | `{id, name, type, size}` |
-| `savePost` | 管理憑證 | `post:{id?, title, body, units, publishOn, expiresOn, pinned, files}`, `reqId`（冪等鍵：同一 reqId 6 小時內重送回傳第一次結果） | `{post}` |
+| `savePost` | 管理憑證 | `post:{id?, title, body, units, publishOn, expiresOn, pinned, files}`, `reqId`（冪等鍵，綁一份草稿：同 reqId＋同內容指紋＝重送，回傳第一次結果；同 reqId 但內容不同＝改為編輯第一次建立的那則；6 小時內有效） | `{post}` |
 | `setPublished` | 管理憑證 | `postId, on` | `{post}` |
 | `setPinned` | 管理憑證 | `postId, on` | `{post}` |
 | `staffAdd` | 管理憑證 | `name, unit` | `{staff}` |

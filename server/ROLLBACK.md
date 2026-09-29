@@ -32,11 +32,11 @@
    - 只做 `bootout` 撐不過重開機：`~/Library/LaunchAgents/` 的 plist 重開機後會自動載入。
    - `disable` 會記在 launchd 的覆寫表裡，重開機也不會自動跑起來。
 
-下面的指令都在 **Mac mini、repo 根目錄**執行。先設好共用的變數與小工具：
+下面的指令都在 **Mac mini、repo 根目錄**執行。**每一段指令前都要先貼下面這段**：Claude 每次 Bash 呼叫都是新的 shell，上一次設的變數和函式都不在了。
 
 ```sh
 cd ~/dzy-bulletin
-NODE="$HOME/.local/node/bin/node"; node() { "$NODE" "$@"; }   # Mac mini 沒把 Node 放進 PATH（DEPLOY.md〈交接給 M5〉），用函式包起來，下面的 node 指令才打得動
+export PATH="$HOME/.local/node/bin:$PATH"; command -v node   # Mac mini 沒把 Node 放進 PATH（DEPLOY.md〈交接給 M5〉）；export PATH 讓子程序（build.sh、restore.js）也吃得到。這行要印出 …/.local/node/bin/node，印別的（例如 Homebrew 的 /opt/homebrew/bin/node）就停下來查
 export DATA_DIR="$(sed -n 's/^DATA_DIR=//p' server/.env | tr -d "\"'")"; DATA_DIR="${DATA_DIR:-$HOME/dzy-bulletin-data}"; DATA_DIR="${DATA_DIR/#\~/$HOME}"
 U="gui/$(id -u)"
 counts() { node -e "const{DatabaseSync}=require('node:sqlite');const d=new DatabaseSync(process.argv[1]+'/bulletin.db',{readOnly:true});console.log(['posts','staff','reads','log'].map(t=>t+' '+d.prepare('SELECT COUNT(*) n FROM '+t).get().n).join('  '))" "$DATA_DIR"; }
@@ -46,14 +46,19 @@ job_on()  { launchctl enable "$U/$1"; launchctl bootstrap "$U" "$HOME/Library/La
 
 ---
 
-## 1. 建立 READONLY（凍結 Mac mini）
+## 1. 停掉每小時鏡像、建立 READONLY（凍結 Mac mini）
 
 **負責人**：Mac mini 的 Claude
 
+順序與 DEPLOY.md〈交接給 M5〉的回退說明相同：**先停每小時鏡像，再建 READONLY**。第 2 步的 `--all` 是手動跑的，不需要 launchd；launchd 那一輪如果剛好拿著工作鎖，`--all` 會直接跳過並印 `pending=null`，容易誤讀成完成。
+
 ```sh
+job_off com.dzy.bulletin.mirror
 touch "$DATA_DIR/READONLY"
 counts | tee /tmp/dzyb-rollback-counts.txt
 ```
+
+- 停鏡像用 `disable`，重開機也不會回來：之後若要「再切回」，`PRIMARY=mini` 設下去的那一刻，每小時鏡像若搶先把舊的 Mac mini 庫推上去，會蓋掉 GAS 回退期間的新資料。附錄 A 會再打開。
 
 **驗證**
 - `curl -s -X POST http://127.0.0.1:8793/ -H 'Content-Type: text/plain' --data '{"action":"ack"}'` 要回 `"code":"MOVED"`。凍結檢查在驗 token 之前，所以不帶 token 也會回 MOVED。
@@ -96,10 +101,13 @@ node -e "const j=require(process.argv[1]+'/logs/mirror-last.json');console.log({
   - 網路正常卻一直失敗：停在這裡回報，**不要跳到第 4 步**，否則 Mac mini 期間的資料會丟。
 - `另一輪鏡像還在跑`：每小時鏡像剛好在跑。等它結束（`logs/mirror.lock` 消失）再跑。
 - `mirror` 回 AUTH：代表有人已經把 GAS 的 `PRIMARY` 改成 `gas`。
-  - **只有在第 5 步還沒做**（前端仍指向 Mac mini）時，才可以請 Eason 暫時改回 `PRIMARY=mini` 再重跑。這時 GAS 不會收到新寫入：舊頁面寫入會回 MOVED，新頁面打的是 READONLY 的 Mac mini，所以是安全的。
+  - **只有在第 5 步還沒做**（前端仍指向 Mac mini）時，才可以請 Eason 暫時改回 `PRIMARY=mini` 再重跑。
+  - 改回之前，請 Eason 先確認試算表「操作紀錄」**列數沒有變**（等於第 1 步 `counts` 的 log 數字）。`PRIMARY` 曾經是 `gas` 的那段時間，還開著舊頁面（舊 config.js、指向 GAS）的人可能已經寫進 GAS；有新列就**不可以**改回 mini（鏡像會把它蓋掉），停下來找 MacBook 的 Claude。
+  - 沒有新列才改回：這時舊頁面寫入會回 MOVED，新頁面打的是 READONLY 的 Mac mini，所以是安全的。
+- `mirror` 被拒絕（`BAD_REQ`，例如「筆數比現有少」「少一半以上」「全空」）：GAS 的防呆擋下了這次覆寫。mirror.js 沒有可以傳下去的 `--force`，重跑也一樣。**停下來回報，不進第 3 步**：把 `error` 原文、第 1 步 `counts`、試算表四個分頁的列數貼給 MacBook 的 Claude 判斷（例如試算表被人手動加了列，或 Mac mini 庫不對）。Mac mini 維持 READONLY，資料不會丟。
   - 第 5 步已經做了就**禁止**這樣做（鐵則 3），改照第 6 步〈失敗怎麼辦〉處理。
 
-## 3. 硬關卡：確認簽名檔 id 都是 Drive id，然後停掉每小時鏡像
+## 3. 硬關卡：確認簽名檔 id 都是 Drive id、每小時鏡像已停
 
 **負責人**：Mac mini 的 Claude 查資料庫，Eason 看試算表。
 
@@ -121,14 +129,7 @@ node -e "const{DatabaseSync}=require('node:sqlite');const d=new DatabaseSync(pro
   - 只有 3-1 清單裡的那幾筆可以是空白。
 - 沒有 `…__鏡像中` 或 `…__上一輪` 分頁。
 
-**3-3　停掉每小時鏡像（Mac mini 的 Claude）**：兩項都通過後才做。
-
-```sh
-job_off com.dzy.bulletin.mirror
-```
-
-- 為什麼要停：之後若要「再切回」，`PRIMARY=mini` 設下去的那一刻，每小時鏡像若搶先把舊的 Mac mini 庫推上去，會蓋掉 GAS 回退期間的新資料。
-- 用 `disable`，重開機也不會回來。附錄 A 會再打開。
+**3-3　每小時鏡像確實已停（Mac mini 的 Claude）**：`launchctl print gui/$(id -u)/com.dzy.bulletin.mirror` 要回「找不到」（第 1 步已 disable＋bootout）。還在就 `job_off com.dzy.bulletin.mirror`。
 
 **失敗怎麼辦**
 - 列數對不上，或「簽名檔 id」有本機檔名：回第 2 步再跑一次 `--all`。
@@ -146,7 +147,7 @@ Apps Script 編輯器 →「專案設定」→「指令碼屬性」：
 
 **驗證**（Mac mini 的 Claude）
 - `launchctl print gui/$(id -u)/com.dzy.bulletin.mirror` 應該回「找不到」，代表每小時鏡像確實已停。
-- **不要**為了驗證 `AUTH` 而再跑 `mirror.js`。第 3 步之後 Mac mini 就不再鏡像，這一步只看屬性。
+- **不要**為了驗證 `AUTH` 而再跑 `mirror.js`。第 3 步之後 Mac mini 就不再鏡像（鐵則 3 從第 5 步起禁止；第 4 步本身也不需要），這一步只看屬性。
 
 **失敗怎麼辦**
 - 屬性存不進去：重新整理 Apps Script 頁面再改。
@@ -191,7 +192,9 @@ curl -s "https://dzy-bulletin.github.io/$V" | grep -E "VERSION|GAS_URL"
 **負責人**：Eason 實測，Mac mini 的 Claude 查資料
 
 - [ ] 手機重新整理佈告欄，簽一筆，成功。這筆寫進 GAS：「已讀」多一列、「操作紀錄」多一列。
-- [ ] 打開一則**舊公告**的回條（最好是 Mac mini 期間有人簽的），簽名圖看得到，含 Mac mini 期間簽的。第 2 步 missing／bad 清單裡的那幾筆除外。
+- [ ] 打開一則**舊公告**的回條（最好是 Mac mini 期間有人簽的），簽名圖看得到，含 Mac mini 期間簽的。例外（本來就看不到，不算失敗）：
+  - 第 2 步 missing／bad 清單裡的那幾筆。
+  - 切換時 migrate「簽名圖」列為讀不到的那幾筆（CUTOVER 第 3 步記在 #10 的清單）：它們在 Mac mini 上 `sigId` 是空白，不會出現在 missing／bad 清單，但 GAS 上一樣讀不到。
 - [ ] 主管不重新登入就能開設定頁（secret 兩邊相同，舊的 atoken 仍有效）。
   - 例外：Mac mini 期間若用 `ADMIN_INIT.txt` 換過通行碼，GAS 不知道新通行碼，主管要用舊通行碼登入。
 - [ ] Mac mini：`counts` 與第 1 步相同，代表 Mac mini 沒再收到任何寫入。
@@ -223,16 +226,23 @@ curl -s "https://dzy-bulletin.github.io/$V" | grep -E "VERSION|GAS_URL"
 
 ## Mac mini 死了的回退
 
-1. **先處理鏡像換名做到一半的情況**（Eason 在編輯器執行，或 MacBook 的 Claude 用 `clasp run mirrorHeal`）。
+1. **先處理鏡像換名做到一半的情況**（**Eason** 在瀏覽器操作；`clasp run` 做不到，因為專案沒開 Execution API）。
    - 為什麼：Mac mini 若剛好死在鏡像換名那幾秒，正式分頁可能已經被改名或不見；Mac mini 死了，就不會有下一輪幫忙修。
-   - 做法：打開主試算表，看有沒有 `…__上一輪` 或 `…__鏡像中` 分頁。有的話，在 Apps Script 編輯器選 `mirrorHeal` 函式 →「執行」（`gas/Store.js` 的 `mirrorHeal()`）。
-   - 執行完檢查分頁名稱：四個正式分頁「公告」「同仁」「已讀」「操作紀錄」都在，沒有 `__上一輪`。只剩 `__鏡像中` 無妨。
+   - 做法：
+     1. 打開主試算表，看底下的分頁有沒有名稱結尾是 `__上一輪` 或 `__鏡像中` 的。都沒有就跳到第 2 步。
+     2. 有的話：打開 Apps Script 編輯器（script.google.com 的「鼎兆元｜電子佈告欄」專案）。
+     3. 左邊檔案清單點 `Store.gs`。
+     4. 上方工具列的函式下拉選單選 `mirrorHeal`，按「執行」。
+     5. 第一次執行會跳出「需要授權」視窗：選自己的帳號 →「允許」。
+     6. 下方「執行紀錄」會出現一行「鏡像修復：clean」「鏡像修復：forward」或「鏡像修復：restore」，三種都是正常結果。截圖給 MacBook 的 Claude。
+   - 執行完回試算表檢查分頁名稱：四個正式分頁「公告」「同仁」「已讀」「操作紀錄」都在，沒有 `__上一輪`。只剩 `__鏡像中` 無妨。
 2. **Eason**：GAS `PRIMARY=gas`（第 4 步）。
 3. **MacBook 的 Claude**：前端改回（第 5 步）。
 4. 驗證：做第 6 步的前兩項。
 5. **Eason** 在 LINE 公告：「〈上一次鏡像時間〉之後簽過名的同仁，請再簽一次。」
-   - 上一次鏡像時間：看試算表「操作紀錄」最後一列的時間，或守門、指揮台最後一次讀到的 `mirror.at`。
+   - 上一次鏡像時間：以守門、指揮台最後一次讀到的 `mirror.at` 為準。讀不到時，才用試算表「操作紀錄」最後一列的時間代替：那一列是最後一筆被鏡像過去的操作，比實際鏡像時間**早**，拿它當分界會多請一些人重簽，但不會漏人。
    - 這些人在 GAS 上沒有已讀紀錄，所以可以重簽。
+   - 另一種丟失：鏡像時簽名圖還沒回填上 Drive 的那幾筆（當時的 pending），GAS 上**有已讀、沒有圖**，同仁也不能重簽（會回「你已經簽過」）。Mac mini 修好後，這些圖還在它的 `sigs/` 裡。附錄 A 的 `--force` 會把資料庫換成 GAS 的版本，之後就沒有任何一筆資料指向那些圖。所以**做附錄 A 之前**，先由 Mac mini 的 Claude 把 `sigs/` 整個複製一份到 `$DATA_DIR/evidence-<時間>/`，再找 MacBook 的 Claude 評估怎麼補（同第 6 步狀況一）。
 6. **Mac mini 修好開機後**：伺服器（`RunAtLoad`＋`KeepAlive`）和每小時鏡像會自己跑起來。Mac mini 的 Claude 要**第一時間**執行：
    ```sh
    touch "$DATA_DIR/READONLY"
@@ -246,7 +256,7 @@ curl -s "https://dzy-bulletin.github.io/$V" | grep -E "VERSION|GAS_URL"
 
 ## 附錄 A：再切回 Mac mini（演練的後半段，#10 步驟 10d）
 
-前提：回退已完成，GAS 是正本；Mac mini 有 `READONLY`，每小時鏡像已 disable（第 3 步，或死機回退的第 6 步）。
+前提：回退已完成，GAS 是正本；Mac mini 有 `READONLY`，每小時鏡像已 disable（第 1 步，或死機回退的第 6 步）。
 
 1. **Mac mini 的 Claude**：確認每小時鏡像沒在跑。
    - `launchctl print gui/$(id -u)/com.dzy.bulletin.mirror` 要回「找不到」。

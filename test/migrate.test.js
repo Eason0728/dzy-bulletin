@@ -27,7 +27,8 @@ const tmps = [], procs = [];
 const tmp = (p) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), p || 'dzyb-mig-')); tmps.push(d); return d; };
 const q = (dir, sql) => { const db = new DatabaseSync(path.join(dir, 'bulletin.db'), { readOnly: true }); try { return db.prepare(sql).all().map((r) => Object.assign({}, r)); } finally { db.close(); } };
 const n = (dir, t) => q(dir, 'SELECT COUNT(*) AS n FROM ' + t)[0].n;
-const PNG = (s) => 'data:image/png;base64,' + Buffer.from('簽名-' + s).toString('base64');
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const PNG = (s) => 'data:image/png;base64,' + Buffer.concat([PNG_MAGIC, Buffer.from('簽名-' + s)]).toString('base64');   // 帶真的 PNG 檔頭（migrate 會檢查魔術數字）
 function freePort() { return new Promise((ok, no) => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => ok(p)); }); s.on('error', no); }); }
 function runJob(script, args, env) {
   return new Promise((ok) => {
@@ -224,12 +225,24 @@ async function main() {
     const r0 = sheet.data[1], r1 = sheet.data[2];                          // 第 1、2 筆已讀（表頭是 data[0]）
     sheet.data.push([r0[0], r0[1], r0[2], r0[3], '2026-10-01T09:00:00.000Z', '']);          // 同一人同一則：較晚、沒簽名檔 id
     sheet.data.push([r1[0], r1[1], r1[2], r1[3], '2026-10-01T09:30:00.000Z', sheet.data[3][5]]);   // 同一人同一則：換成另一張 Drive 圖
+    // 已刪除的同仁（不在名單裡）兩列：姓名／單位／時間都不同，第二列沒簽名檔 id → 回條（receipts）會顯示已讀列自己的姓名與單位
+    sheet.data.push([posts[0], 'S-999', '離職甲', 'mala', '2026-09-01T01:00:00.000Z', sheet.data[4][5]]);
+    sheet.data.push([posts[0], 'S-999', '離職乙', 'cf', '2026-09-02T01:00:00.000Z', '']);
     FG.G.bumpGen_ && FG.G.bumpGen_();
     FG.props.EXPORT_ONCE = '1';
     const d = path.join(tmp(), 'data'), f = path.join(path.dirname(d), 'dup.json');
     const res = await quietRun({ dir: d, from: '', save: f });
-    eq('重複已讀：exit 0、六項全 ✅、印出去重筆數', [res.code, status(res), /已讀有 2 列重複/.test(res.out)], [0, ALL, true]);
-    eq('重複已讀：Mac mini 只留一筆（45）', n(d, 'reads'), 45);
+    eq('重複已讀：exit 0、六項全 ✅、印出去重筆數', [res.code, status(res), /已讀有 3 列重複/.test(res.out)], [0, ALL, true]);
+    eq('重複已讀：Mac mini 每人每則只留一筆（45＋S-999 一筆）', n(d, 'reads'), 46);
+    // 回條：GAS 與 Mac mini 用同一份 Service，拿兩邊的 receipts 直接比（姓名、單位、時間、簽名圖）
+    const gasRc = doPost({ action: 'receipts', atoken, postId: posts[0] }).data.rows;
+    const S = await startServer(d);
+    const miniRc = (await api(S.port, 'receipts', { atoken, postId: posts[0] })).data.rows;
+    await S.stop();
+    const pick = (rows) => JSON.stringify(rows.map((x) => [x.staffId, x.name, x.unit, x.at, x.sig]).sort());
+    eq('回條（receipts）Mac mini＝GAS：含重複列的姓名／單位／時間／簽名圖', pick(miniRc) === pick(gasRc), true);
+    const g999 = gasRc.find((x) => x.staffId === 'S-999');
+    eq('S-999：姓名、單位、時間取最後一列，簽名沿用前一列那張', [g999.name, g999.unit, g999.at, !!g999.sig], ['離職乙', 'cf', '2026-09-02T01:00:00.000Z', true]);
     const tok0 = tokens[staff.indexOf(r0[1])], tok1 = tokens[staff.indexOf(r1[1])];
     const gasAt0 = doPost({ action: 'board', token: tok0 }).data.myReads[r0[0]], gasAt1 = doPost({ action: 'board', token: tok1 }).data.myReads[r1[0]];
     const gs = FG.store(), gasSig0 = gs.getSigs(r0[0])[r0[1]], gasSig1 = gs.getSigs(r1[0])[r1[1]];
@@ -239,16 +252,42 @@ async function main() {
     st.close();
     sheet.data = orig; FG.G.bumpGen_ && FG.G.bumpGen_(); }
 
-  // ================= 簽名圖下載可續跑：中斷後重跑只補沒下載的 =================
-  { const d = path.join(tmp(), 'data');
+  // ================= 簽名圖下載可續跑：中斷後重跑只補沒下載的；壞掉的暫存刪掉重下 =================
+  { const d = path.join(tmp(), 'data'), dl = path.join(d, '.migrate-dl');
     let calls = 0;
     const dieAfter1 = { call: async (op, p, t) => { if (op === 'sigs' && ++calls > 1) throw Object.assign(new Error('x'), { code: 'BRIDGE' }); return bridge.call(op, p, t); } };
     const r1 = await quietRun({ dir: d, bridge: dieAfter1 });
-    eq('第 2 批起掛掉：exit 5、資料庫沒建、第 1 批 20 張留在暫存', [r1.code, fs.existsSync(path.join(d, 'bulletin.db')), fs.readdirSync(path.join(d, '.migrate-dl')).length], [5, false, 20]);
-    const cnt = { n: 0, call: async (op, p, t) => { if (op === 'sigs') cnt.n++; return bridge.call(op, p, t); } };
+    const imgs = fs.readdirSync(dl).filter((f) => f.endsWith('.img')).sort();
+    eq('第 2 批起掛掉：exit 5、資料庫沒建、第 1 批 20 張＋20 份 manifest 留在暫存', [r1.code, fs.existsSync(path.join(d, 'bulletin.db')), imgs.length, fs.readdirSync(dl).filter((f) => f.endsWith('.json')).length], [5, false, 20, 20]);
+    const man = (f) => path.join(dl, f.replace(/\.img$/, '.json'));
+    const shaOf = (b) => require('crypto').createHash('sha256').update(b).digest('hex');
+    // 三種壞暫存，各自只觸發一種檢查：
+    fs.writeFileSync(path.join(dl, imgs[0]), Buffer.alloc(0));                                        // ① 0 byte（manifest 也改成一致，只剩「長度 > 0」擋得住）
+    fs.writeFileSync(man(imgs[0]), JSON.stringify({ type: 'png', sha: shaOf(Buffer.alloc(0)), len: 0 }));
+    const t1 = fs.readFileSync(path.join(dl, imgs[1])); fs.writeFileSync(path.join(dl, imgs[1]), t1.subarray(0, 6));   // ② 截斷（manifest 保持原樣＝長度／sha 不符）
+    const t2 = fs.readFileSync(path.join(dl, imgs[2])); t2[0] = 0x00; fs.writeFileSync(path.join(dl, imgs[2]), t2);    // ③ 魔術數字錯（manifest 改成一致，只剩檔頭擋得住）
+    fs.writeFileSync(man(imgs[2]), JSON.stringify({ type: 'png', sha: shaOf(t2), len: t2.length }));
+    const cnt = { n: 0, ids: 0, call: async (op, p, t) => { if (op === 'sigs') { cnt.n++; cnt.ids += p.get.length; } return bridge.call(op, p, t); } };
     const r2 = await quietRun({ dir: d, bridge: cnt });
-    eq('重跑：只補剩下 25 張（2 次 sigs）、六項全 ✅、暫存刪掉', [r2.code, cnt.n, status(r2), fs.existsSync(path.join(d, '.migrate-dl')), /上次已下載 20 張/.test(r2.out)], [0, 2, ALL, false, true]);
+    eq('重跑：3 張壞暫存（0 byte／截斷／魔術數字）被丟掉、重下 28 張（2 次 sigs）', [/暫存裡有 3 張簽名圖不完整/.test(r2.out), cnt.ids, cnt.n], [true, 28, 2]);
+    eq('重跑：六項全 ✅、暫存刪掉、提示上次已下載 17 張', [r2.code, status(r2), fs.existsSync(dl), /上次已下載 17 張/.test(r2.out)], [0, ALL, false, true]);
+    const rows2 = q(d, 'SELECT sigId, driveSigId FROM reads ORDER BY rowid');
+    eq('每張最後寫進 sigs/ 的檔＝Drive 原圖、副檔名與實際格式一致（.png＋PNG 檔頭）', rows2.every((x) => { const b = fs.readFileSync(path.join(d, 'sigs', x.sigId)); return x.sigId.endsWith('.png') && b.subarray(0, 4).equals(PNG_MAGIC.subarray(0, 4)) && b.equals(Buffer.from(FG.drive.files[x.driveSigId].bytes.map((v) => v & 255))); }), true);
     eq('非 0 結束也提醒刪匯出檔', /匯出檔仍在/.test(r1.out), true); }
+
+  // Drive 上那張不是有效的 PNG（檔頭不對）→ 當作讀不到，簽名圖 ❌
+  { const id = exp.reads[7].sigId, keep = FG.drive.files[id].bytes; FG.drive.files[id].bytes = Array.from(Buffer.from('not-a-png'));
+    const d = path.join(tmp(), 'data'), res = await quietRun({ dir: d });
+    FG.drive.files[id].bytes = keep;
+    eq('Drive 圖檔頭不對：exit 1、只有簽名圖 ❌、印出格式警告', [res.code, status(res), /不是有效的 PNG／JPEG/.test(res.out)], [1, ALL.map((x) => (x === '✅簽名圖' ? '❌簽名圖' : x)), true]); }
+
+  // 公告／同仁 id 重複：GAS 語意不一致（看板顯示兩筆、編輯只認第一列）→ 列出並停下，dry-run 也停
+  for (const [label, mut, want] of [['公告', (x) => { x.posts.push(Object.assign({}, x.posts[0], { title: '重複那列' })); }, posts[0]], ['同仁', (x) => { x.staff.push(Object.assign({}, x.staff[2], { name: '重複那列' })); }, staff[2]]]) {
+    const b2 = tmp(), f2 = path.join(b2, 'dupid.json'), d2 = path.join(b2, 'data'), x = JSON.parse(JSON.stringify(exp));
+    mut(x); fs.writeFileSync(f2, JSON.stringify(x), { mode: 0o600 });
+    const rd = await runJob('migrate.js', ['--from', f2, '--dry-run'], ENV(d2)), rr = await runJob('migrate.js', ['--from', f2], ENV(d2));
+    eq(`${label} id 重複：dry-run 與正式都 exit 3、列出重複的 id、沒寫入`, [rd.code, rr.code, rd.out.includes(label + ' id 重複 1 個：' + want), fs.existsSync(path.join(d2, 'bulletin.db'))], [3, 3, true, false]);
+  }
 
   // ================= mirror.js 空庫保險：切換日 PRIMARY=mini 後、搬遷前，空庫不可蓋掉試算表 =================
   { const d = tmp(); makeSqliteStore(d).close();

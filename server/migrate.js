@@ -56,6 +56,8 @@ function canon(v) {
 const str = (v) => (v === null || v === undefined ? '' : String(v));
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
 const readKey = (r) => str(r.postId) + '|' + str(r.staffId);
+// 檔頭魔術數字：PNG 89 50 4E 47、JPEG FF D8 FF
+const magicOk = (b, type) => (type === 'png' ? b.length >= 4 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47 : b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff);
 
 // 目標資料夾狀態：四張表的筆數（沒有庫＝全 0）。只數資料表，不算 kv（伺服器第一次啟動就會自己產生 secret）
 function targetCounts(dir) {
@@ -78,6 +80,15 @@ function problems(d) {
   TABLES.forEach((t) => { if (!Array.isArray(d[t])) p.push('缺 ' + t); });
   if (!d.secret || typeof d.secret !== 'string') p.push('缺 secret（TOKEN_SECRET）：搬過去後所有同仁都要重新登入');
   if (!d.admin || !d.admin.hash) p.push('缺 admin.hash（管理通行碼雜湊）：搬過去後主管進不去');
+  // 公告／同仁 id 重複：GAS 自己的語意就不一致——看板（boardFor）與名單（roster）逐列列出、兩筆都顯示；
+  // findPost／findStaff／upsert 卻用 filter()[0] 只認第一列。SQLite 主鍵只能留一筆，搬過去無論留哪筆都會跟 GAS 畫面不同，
+  // 所以不自動去重：列出重複的 id、拒絕寫入（dry-run 也停），由 Eason 確認後在試算表刪掉多的那列、重設 EXPORT_ONCE 重來（CUTOVER.md 第 3 步）。
+  [['posts', '公告'], ['staff', '同仁']].forEach(([t, label]) => {
+    if (!Array.isArray(d[t])) return;
+    const seen = new Set(), dup = new Set();
+    d[t].forEach((x) => { const id = str(x && x.id); if (!id) return; if (seen.has(id)) dup.add(id); seen.add(id); });
+    if (dup.size) p.push(`${label} id 重複 ${dup.size} 個：${[...dup].slice(0, 10).join('、')}（GAS 畫面會顯示兩筆、編輯只認第一列，無法自動判斷保留哪筆）`);
+  });
   return p;
 }
 // 重複的已讀（同一人同一則兩列，只有手動改過試算表才會發生）照 GAS 的語意去重，否則 SQLite 的主鍵會吃掉一筆、比對永遠 ❌：
@@ -156,7 +167,7 @@ async function runMigrate(o) {
   const bad = problems(d);
   if (bad.length) {
     bad.forEach((x) => say('✗ ' + x));
-    say('✗ 匯出內容不完整，拒絕寫入（資料庫沒有動）');
+    say('✗ 匯出內容不完整或有重複 id，拒絕寫入（資料庫沒有動）。id 重複：請 Eason 確認後在試算表刪掉多的那列，重設 EXPORT_ONCE=1，從 --dry-run 重來');
     return done(3, { file });
   }
   const nRaw = d.reads.length, dd = dedupeReads(d.reads);
@@ -193,15 +204,26 @@ async function runMigrate(o) {
   fs.mkdirSync(path.join(dir, 'sigs'), { recursive: true });
   const dl = path.join(dir, '.migrate-dl');
   fs.mkdirSync(dl, { recursive: true });
-  const cacheName = (id, type) => path.join(dl, crypto.createHash('sha1').update(id).digest('hex') + (type === 'png' ? '.png' : '.jpg'));
-  const got = {};                                           // Drive id → { type, buf } | null
+  // 暫存格式：<sha1(Drive id)>.img＝圖、<同名>.json＝manifest { type, sha, len }（sha／len＝GAS 回傳的 dataUrl 解碼後的來源值）。
+  // 兩個檔都 fsync＋暫存檔改名；續跑時圖檔要與 manifest 的 sha／長度相同、長度 > 0、檔頭是 PNG／JPEG 魔術數字，否則刪掉重下
+  // （斷電可能留下 0 byte 或截斷的檔）。最後的比對拿 manifest 的來源值跟寫進 sigs/ 的檔比，不是跟暫存自己比。
+  const base = (id) => path.join(dl, crypto.createHash('sha1').update(id).digest('hex'));
+  const writeSync = (f, data) => { const fd = fs.openSync(f + '.tmp', 'w'); try { fs.writeSync(fd, data); fs.fsyncSync(fd); } finally { fs.closeSync(fd); } fs.renameSync(f + '.tmp', f); };
+  const got = {};                                           // Drive id → { type, buf, sha, len } | null
+  let dropped = 0;
   driveIds.forEach((id) => {
-    for (const type of ['png', 'jpeg']) { try { got[id] = { type, buf: fs.readFileSync(cacheName(id, type)) }; break; } catch (e) {} }
+    const b = base(id);
+    let m = null, buf = null;
+    try { m = JSON.parse(fs.readFileSync(b + '.json', 'utf8')); buf = fs.readFileSync(b + '.img'); } catch (e) { if (!fs.existsSync(b + '.img') && !fs.existsSync(b + '.json')) return; }
+    if (m && buf && (m.type === 'png' || m.type === 'jpeg') && buf.length > 0 && buf.length === m.len && magicOk(buf, m.type) && sha(buf) === m.sha) { got[id] = { type: m.type, buf, sha: m.sha, len: m.len }; return; }
+    dropped++; [b + '.img', b + '.json'].forEach((f) => { try { fs.unlinkSync(f); } catch (e) {} });
   });
+  if (dropped) say(`⚠️ 暫存裡有 ${dropped} 張簽名圖不完整（0 byte、截斷、格式或 sha 不符），已刪掉、這次重新下載`);
   const todo = driveIds.filter((id) => !got[id]), nTodo = Math.ceil(todo.length / batch);
   if (todo.length && !o.bridge) { say('✗ 有簽名圖要下載，但沒有設定 BRIDGE_URL／BRIDGE_KEY'); return done(2, { file }); }
   say(`3/5 下載簽名圖 ${driveIds.length} 張` + (todo.length < driveIds.length ? `（上次已下載 ${driveIds.length - todo.length} 張，這次補 ${todo.length} 張）` : '') + '…');
   const tDl = Date.now();
+  let badFmt = 0;
   for (let i = 0; i < todo.length; i += batch) {
     const part = todo.slice(i, i + batch), k = i / batch + 1;
     let out = null, lastErr = null;
@@ -214,14 +236,18 @@ async function runMigrate(o) {
     }
     if (!out) { say(`✗ 第 ${k}/${nTodo} 批下載失敗 3 次（${J.errText(lastErr)}），中斷；資料庫沒有動、已下載的圖留在暫存可續跑。用 --from ${file} 重跑`); return done(5, { file }); }
     part.forEach((id) => {
-      // sigs.get 讀不到（不在簽名資料夾、不是 png/jpeg、檔案不見）回 null → 這張當作讀不到，比對時列入「簽名圖」失敗清單
+      // sigs.get 讀不到（不在簽名資料夾、不是 png/jpeg、檔案不見）回 null → 這張當作讀不到，比對時列入「簽名圖」失敗清單。
+      // 宣稱是 png／jpeg 但解碼後是空的或檔頭不對，也當作讀不到。
       const m = /^data:image\/(png|jpeg);base64,(.+)$/.exec(str(out[id]));
-      got[id] = m ? { type: m[1], buf: Buffer.from(m[2], 'base64') } : null;
-      if (got[id]) { const f = cacheName(id, m[1]); fs.writeFileSync(f + '.tmp', got[id].buf); fs.renameSync(f + '.tmp', f); }
+      const buf = m ? Buffer.from(m[2], 'base64') : null;
+      if (m && !(buf.length > 0 && magicOk(buf, m[1]))) badFmt++;
+      got[id] = m && buf.length > 0 && magicOk(buf, m[1]) ? { type: m[1], buf, sha: sha(buf), len: buf.length } : null;
+      if (got[id]) { const b = base(id); writeSync(b + '.img', buf); writeSync(b + '.json', JSON.stringify({ type: m[1], sha: got[id].sha, len: buf.length })); }
     });
     const sec = (Date.now() - tDl) / 1000, left = (nTodo - k) * sec / k;
     if (k === nTodo || k % 5 === 0 || nTodo <= 10) say(`   第 ${k}/${nTodo} 批完成（${Math.min(i + batch, todo.length)} 張），已用 ${est(sec)}${k < nTodo ? '，估計還要 ' + est(left) : ''}`);
   }
+  if (badFmt) say(`⚠️ ${badFmt} 張簽名圖內容不是有效的 PNG／JPEG（空的或檔頭不對），當作讀不到`);
   // 每筆已讀：sigId＝Mac mini 本機檔名（與伺服器新簽的同一套命名），driveSigId＝GAS 原本的 Drive id（回退後 readSig 讀得到，#7）
   const want = {};                                          // readKey → { sha, len }（下載當下的內容，比對用）
   const reads = d.reads.map((r) => {
@@ -230,7 +256,7 @@ async function runMigrate(o) {
     if (g) {
       local = require('./store-sqlite.js').sigFileName(r.postId, r.staffId, g.type);
       fs.writeFileSync(path.join(dir, 'sigs', local), g.buf);
-      want[readKey(r)] = { sha: sha(g.buf), len: g.buf.length };
+      want[readKey(r)] = { sha: g.sha, len: g.len };      // 來源值（下載當下由 GAS 的 dataUrl 算的，續跑時來自 manifest）
     }
     return { postId: str(r.postId), staffId: str(r.staffId), name: str(r.name), unit: str(r.unit), at: str(r.at), sigId: local, driveSigId: drive };
   });

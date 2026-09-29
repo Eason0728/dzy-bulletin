@@ -3,8 +3,24 @@
 global.DZYB = require('../js/logic.js');
 global.makeAuth_ = require('../gas/Auth.js').makeAuth_;
 global.makeService_ = require('../gas/Service.js').makeService_;
-const M = require('../js/mock.js');
-const C = (a, q) => M.callSync(a, q);
+global.DZYB_DEMO = require('../js/demo-data.js');
+// DRIVER=server：同一套契約測試改打真的 Mac mini 伺服器（需先以 E2E=1 啟動，SERVER=http://127.0.0.1:8793）
+let M, C;
+if (process.env.DRIVER === 'server') {
+  const { execFileSync } = require('child_process');
+  const S = process.env.SERVER || 'http://127.0.0.1:8793';
+  const post = (p, body) => JSON.parse(execFileSync('curl', ['-s', '-H', 'Content-Type: text/plain', '--data-binary', '@-', S + p], { input: JSON.stringify(body) }).toString());
+  post('/__seed', { demo: true });
+  C = (a, q) => post('/', Object.assign({}, q || {}, { action: a }));
+  M = {
+    blobOf: (id) => JSON.parse(execFileSync('curl', ['-s', S + '/__blob?id=' + encodeURIComponent(id)]).toString()).data,
+    setClockActive: (empId, on) => post('/__clockActive', { empId, on }),
+    setAdminInit: (pass) => post('/__adminInit', { pass })
+  };
+} else {
+  M = require('../js/mock.js');
+  C = (a, q) => M.callSync(a, q);
+}
 let pass = 0, fail = 0;
 function eq(name, got, want) {
   const g = JSON.stringify(got), w = JSON.stringify(want);
@@ -133,7 +149,7 @@ eq('staffDelete', call('staffDelete', { atoken: at, staffId: 'S-001' }).ok, true
 eq('deleted not in roster', C('roster').data.some(s => s.id === 'S-001'), false);
 r = C('receipts', { atoken: at, postId: 'P-20260920-001' });
 eq('deleted reader kept, inactive', [r.data.rows.find(x => x.staffId === 'S-001').active, r.data.rows.find(x => x.staffId === 'S-001').inTarget], [false, false]);
-eq('no debug field on server error', Object.keys(M.callSync('receipts', { atoken: at, postId: null })).includes('debug'), false);
+eq('no debug field on server error', Object.keys(C('receipts', { atoken: at, postId: null })).includes('debug'), false);
 eq('deleted not counted', C('adminData', { atoken: at }).data.posts.find(p => p.id === 'P-20260920-001').targetCount, 5);
 
 // 更換通行碼：只能經由 ADMIN_INIT（網頁沒有 changePass）
@@ -149,7 +165,7 @@ eq('old pass rejected', C('adminLogin', { pass: '1234' }).code, 'AUTH');
 eq('ADMIN_INIT consumed', C('adminLogin', { pass: 'pass5678' }).ok, true);
 
 // C15 總部：看得到／要簽
-{ const tk = id => { M.callSync('staffResetPin', { atoken: C('adminLogin', { pass: 'pass5678' }).data.atoken, staffId: id }); return C('setPin', { staffId: id, pin: '2580' }).data.token; };
+{ const tk = id => { C('staffResetPin', { atoken: C('adminLogin', { pass: 'pass5678' }).data.atoken, staffId: id }); return C('setPin', { staffId: id, pin: '2580' }).data.token; };
   const dzy = tk('S-016'), hmzt = tk('S-017'), hmala = tk('S-018');
   const ids = t => C('board', { token: t }).data.posts.map(p => p.id);
   eq('hq-dzy sees cf post', ids(dzy).includes('P-20260927-001'), true);
@@ -209,5 +225,5 @@ M.setAdminInit('newpass88');
 for (let i = 0; i < 5; i++) C('adminLogin', { pass: 'wrong' + i });
 eq('pending init locked after 5 wrong', C('adminLogin', { pass: 'newpass88' }).code, 'ADMIN_LOCKED');
 
-console.log(`service: ${pass} passed, ${fail} failed`);
+console.log(`service${process.env.DRIVER === 'server' ? '（伺服器）' : ''}: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

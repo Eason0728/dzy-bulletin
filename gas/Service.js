@@ -191,6 +191,7 @@ function makeService_(L, store, files, auth, clock, clockSrc) {
       var bad0 = L.postProblem(d); if (bad0) throw err('BAD_REQ', bad0);   // 先驗證格式，畸形請求不會走到指紋計算
       var rid = String(q.reqId || ''), fp = fingerprint(d), prev = null;
       if (rid && store.getReq) { try { prev = JSON.parse(store.getReq(rid) || 'null'); } catch (e) { prev = null; } }
+      if (prev && prev.id && !store.getPosts().some(function (x) { return x.id === prev.id; })) prev = null;   // 紀錄指向的公告不存在就當新請求
       if (prev && prev.id) {
         if (prev.fp === fp && (!d.id || d.id === prev.id)) return { post: withStatus(findPost(prev.id), clock.today()) };   // 真的重送：回第一次結果
         if (!d.id) d.id = prev.id;       // 第一次其實已建立、之後又改了內容：改成編輯那一則，不另建、也不丟掉修改

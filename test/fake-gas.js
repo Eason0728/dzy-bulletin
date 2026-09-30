@@ -1,5 +1,5 @@
 // 測試共用：假的 Google 服務（試算表／Drive／屬性／鎖／快取）＋把 gas/*.js 原封不動載進 vm＋本機 HTTP 假「Web App」包住 doPost。
-// 做法沿用 test/bridge.test.js（M2，同步到 316ef4e：failDelete、bumpGen），抽成工廠給 test/jobs.test.js（M3）端到端驗 mirror.js／daily.js 打過去的 op 格式。不連任何 Google。
+// 做法沿用 test/bridge.test.js（M2，同步到 b998db9：failDelete、bumpGen、Logger），抽成工廠給 test/jobs.test.js（M3）端到端驗 mirror.js／daily.js 打過去的 op 格式。不連任何 Google。
 'use strict';
 const fs = require('fs'), vm = require('vm'), path = require('path'), http = require('http'), crypto = require('crypto');
 
@@ -69,7 +69,8 @@ function makeFakeGas() {
   }
   const signed = (buf) => Array.from(buf).map((b) => (b > 127 ? b - 256 : b));
   const G = {
-    console: Object.assign({}, console, { error: () => {} }),
+    console: Object.assign({}, console, { error: () => {}, warn: () => {} }),
+    Logger: { log: () => {} },                                // 同 M2 b998db9：mirrorHeal 用 Logger.log
     DZYB: require('../js/logic.js'),
     PropertiesService: { getScriptProperties: () => ({
       getProperty: (k) => (k in props ? props[k] : null), setProperty: (k, v) => { props[k] = String(v); },

@@ -199,6 +199,7 @@ async function main() {
   await tamper('一張簽名圖（長度相同、內容不同）', (d) => { const f = path.join(d, 'sigs', q(d, 'SELECT sigId FROM reads WHERE rowid = 5')[0].sigId); const b = fs.readFileSync(f); b[0] ^= 1; fs.writeFileSync(f, b); }, '簽名圖');
   await tamper('一張簽名圖（檔案不見）', (d) => fs.unlinkSync(path.join(d, 'sigs', q(d, 'SELECT sigId FROM reads WHERE rowid = 6')[0].sigId)), '簽名圖');
   await tamper('登入金鑰', `UPDATE kv SET v = 'other' WHERE k = 'secret'`, '登入金鑰＋管理通行碼雜湊');
+  await tamper('管理通行碼的 salt（雜湊不變）', `UPDATE kv SET v = json_set(v, '$.salt', 'other-salt') WHERE k = 'admin'`, '登入金鑰＋管理通行碼雜湊');
   await tamper('少一筆已讀（筆數也不同；那筆的簽名圖也跟著對不上）', `DELETE FROM reads WHERE rowid = 3`, ['已讀', '簽名圖']);
 
   // Drive 上讀不到的簽名圖：Drive id 保留、簽名圖那項 ❌、exit 1
@@ -309,7 +310,8 @@ async function main() {
         if (u.pathname === '/exec' && req.method === 'POST') {           // 真的 Apps Script：/exec 處理完回 302 → echo 網址
           lastBody = b; let key = ''; try { key = JSON.parse(b).key; } catch (e) {}
           const out = key === 'OLD-KEY-0123456789012345678901234567' ? '{"ok":false,"code":"AUTH","message":"橋接金鑰錯誤"}'
-            : key === 'STILL-VALID-KEY-01234567890123456789' ? '{"ok":true,"data":{"limit":1,"usage":0}}' : '<html>Google 暫時錯誤</html>';
+            : key === 'STILL-VALID-KEY-01234567890123456789' ? '{"ok":true,"data":{"limit":1,"usage":0}}'
+            : key === 'BUSY-KEY-012345678901234567890123456' ? '{"ok":false,"code":"SERVER","message":"忙碌中"}' : '<html>Google 暫時錯誤</html>';
           store.set(String(++seq), out); res.writeHead(302, { Location: '/echo?id=' + seq }); return res.end();
         }
         if (u.pathname === '/echo') {                                       // echo 網址只收 GET（非 GET 回 405 HTML）
@@ -330,8 +332,18 @@ async function main() {
     eq('oldkey-check：回 ok:true → exit 1、請 Eason 確認屬性', [b.code, /舊金鑰仍然有效/.test(b.o)], [1, true]);
     const c = await run(envOf('WHATEVER-KEY-0123456789012345678901'));
     eq('oldkey-check：其他回應 → exit 3、停下並印原文', [c.code, /其他回應/.test(c.o), /Google 暫時錯誤/.test(c.o)], [3, true, true]);
+    const bz = await run(envOf('BUSY-KEY-012345678901234567890123456'));
+    eq('oldkey-check：JSON 但是別的錯誤碼（SERVER）→ exit 3、不當成通過', [bz.code, /其他回應/.test(bz.o), /"code":"SERVER"/.test(bz.o)], [3, true, true]);
     const nf = path.join(tmp(), '.env'); fs.writeFileSync(nf, 'PORT=1\n');
     eq('oldkey-check：.env 沒有金鑰 → exit 2', (await run(nf)).code, 2);
+    const two = path.join(tmp(), '.env'); fs.writeFileSync(two, `BRIDGE_URL=${W}\nBRIDGE_KEY=STILL-VALID-KEY-01234567890123456789\nBRIDGE_KEY=OLD-KEY-0123456789012345678901234567\n`);
+    const tw = await run(two);
+    eq('oldkey-check：.env 有兩行 BRIDGE_KEY → exit 3、說明原因、不送出（不會誤判通過）', [tw.code, /有 2 行 BRIDGE_KEY/.test(tw.o), tw.o.includes('KEY-0')], [3, true, false]);
+    const crlf = path.join(tmp(), '.env'); fs.writeFileSync(crlf, `BRIDGE_URL="${W}"\r\nBRIDGE_KEY=OLD-KEY-0123456789012345678901234567\r\n`);
+    eq('oldkey-check：CRLF 換行的 .env 也讀得到（去掉 \\r）', (await run(crlf)).code, 0);
+    const dead = path.join(tmp(), '.env'); fs.writeFileSync(dead, `BRIDGE_URL=http://127.0.0.1:${await freePort()}/exec\nBRIDGE_KEY=OLD-KEY-0123456789012345678901234567\n`);
+    const dd = await run(dead);
+    eq('oldkey-check：連不上 → exit 3、印出 curl 的錯誤原因、不印金鑰', [dd.code, /curl: \(\d+\)/.test(dd.o), dd.o.includes('OLD-KEY')], [3, true, false]);
     // 對照：第 2 輪手冊的寫法（-X POST）跟著 302 仍用 POST，echo 回 405，什麼 JSON 都拿不到
     const old = await new Promise((ok) => { const p2 = spawn('sh', ['-c', `printf '{"action":"bridge","key":"OLD-KEY-0123456789012345678901234567","op":"quota"}' | curl -sL -X POST -H 'Content-Type: text/plain' --data-binary @- "${W}"`], { stdio: ['ignore', 'pipe', 'ignore'] }); procs.push(p2); let o = ''; p2.stdout.on('data', (x) => { o += x; }); p2.on('exit', () => ok(o)); });
     eq('對照：加 -X POST 的舊寫法拿不到 AUTH（證明 R1 的問題存在）', /AUTH/.test(old), false);

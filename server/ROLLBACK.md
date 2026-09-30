@@ -87,8 +87,10 @@ node -e "const j=require(process.argv[1]+'/logs/mirror-last.json');console.log({
 **判準**（M3 語意，#14 S2）：**`--all` 結束時印出 `pending=0`、`ok:true`，而且這一輪是在 READONLY 建立之後才完成的，就算完成。**
 
 ```sh
-node -e "const fs=require('fs'),d=process.argv[1],j=require(d+'/logs/mirror-last.json'),r=fs.statSync(d+'/READONLY').mtimeMs;console.log((j.ok&&j.pending===0&&Date.parse(j.at)>r)?'✅ 最後一次鏡像成功、在 READONLY 之後':'❌ 還不算完成', {ok:j.ok,pending:j.pending,at:j.at,readonly:new Date(r).toISOString()})" "$DATA_DIR"
+node -e "const fs=require('fs'),d=process.argv[1];if(!fs.existsSync(d+'/READONLY')){console.log('❌ 沒有 READONLY 檔：先回第 1 步');process.exit(1)}if(!fs.existsSync(d+'/logs/mirror-last.json')){console.log('❌ 還沒有鏡像結果：先跑 --all');process.exit(1)}const j=JSON.parse(fs.readFileSync(d+'/logs/mirror-last.json','utf8')),r=fs.statSync(d+'/READONLY').mtimeMs;console.log((j.ok&&j.pending===0&&Date.parse(j.at)>r)?'✅ 最後一次鏡像成功、在 READONLY 之後開始':'❌ 還不算完成', {ok:j.ok,pending:j.pending,at:j.at,readonly:new Date(r).toISOString()})" "$DATA_DIR"
 ```
+
+- `at` 是那一輪**開始**的時間。這一輪在 READONLY 之後才開始，讀到的就一定包含凍結後的全部資料（READONLY 之後 Mac mini 不再有寫入）。
 
 - `pending`＝本機有圖、還沒回填，是 mirror.js 還能處理的部分。**必須是 0**，不是 0 就再跑一次 `--all`。
 - `missing`＝已讀有 `sigId`，但本機找不到圖檔。
@@ -106,11 +108,22 @@ node -e "const fs=require('fs'),d=process.argv[1],j=require(d+'/logs/mirror-last
 - `另一輪鏡像還在跑`：每小時鏡像剛好在跑。等它結束（`logs/mirror.lock` 消失）再跑。
 - `mirror` 回 AUTH：代表有人已經把 GAS 的 `PRIMARY` 改成 `gas`。
   - **第 5 步已經做了**：**禁止**改回 mini（鐵則 3），改照第 6 步〈失敗怎麼辦〉處理。
-  - **第 5 步還沒做**（前端仍指向 Mac mini）：可以請 Eason 暫時改回 `PRIMARY=mini` 再跑 `--all`，但成功與否**以 Mac mini 這邊為準**：
-    - 通過＝上面那段判準印出 ✅：`mirror-last.json` 是 `ok:true`、`pending=0`，而且 `at` 晚於 READONLY 建立時間。
-    - 被 GAS 拒絕（`BAD_REQ`，例如「操作紀錄筆數比現有少」，這是 M2 b998db9 的防呆）＝`PRIMARY` 是 `gas` 的那段時間，還開著舊頁面的人已經寫進 GAS。**不可以**想辦法硬蓋過去，照下一項 BAD_REQ 處理。
-    - 為什麼不用「試算表列數＝`counts`」判斷：試算表只到**上一次鏡像成功**為止，Mac mini 的 `counts` 是最新的，只要回退前有人簽名，兩邊本來就不相等（誤擋）；反過來，Mac mini 有 k 筆還沒鏡像、GAS 剛好又被寫進 k 筆時，列數會巧合相等（誤放，鏡像會把 GAS 那 k 筆蓋掉）。
-    - 補一道人工確認（改回 mini 之前）：Mac mini 的 Claude 印出 `logs/mirror.log` 最後一行「鏡像完成」的時間；Eason 看試算表「操作紀錄」最後幾列，**有任何一列的時間晚於那個時間**，就代表 GAS 被寫進了新資料，不可以改回 mini，停下來找 MacBook 的 Claude。
+  - **第 5 步還沒做**（前端仍指向 Mac mini）：照下面的順序，**先確認、再改回**。
+    1. **先確認 GAS 在 `PRIMARY=gas` 那段時間沒有收到新寫入**（做完這項才可以請 Eason 改回 mini）：
+       - Mac mini 的 Claude 印出最後一次鏡像成功的時間：
+         ```sh
+         grep '鏡像完成' "$DATA_DIR/logs/mirror.log" | tail -1 | cut -d' ' -f1
+         ```
+         印出的是 **UTC** 的 ISO 時間（例如 `2026-10-02T07:00:03.120Z`），**不是台北時間**，不要自己加 8 小時。試算表裡的時間也是同一種 UTC 格式，直接比字串就好。
+       - Eason 看主試算表兩個分頁的**最後幾列**（GAS 的新寫入一定接在最後面）：
+         - 「已讀」分頁的「簽名時間」欄（E 欄，`gas/Store.js` 的 `at`）。
+         - 「操作紀錄」分頁的「時間」欄（A 欄）。
+       - 兩邊**都沒有**任何一列晚於上面那個時間，才算通過。有任何一列比較晚，就代表 GAS 已經被寫進新資料，**不可以**改回 mini（鏡像會把它蓋掉），停下來找 MacBook 的 Claude。
+       - 為什麼一定要看「已讀」：同仁簽名（`ack`）、設密碼、登入**都不寫操作紀錄**（`log()` 只在主管動作呼叫）。`PRIMARY=gas` 那段時間最可能發生的，正是還開著舊頁面的同仁簽名，這只會出現在「已讀」分頁；只看操作紀錄一定漏掉。
+       - 為什麼不能靠 GAS 的防呆：b998db9 只在「送出的筆數比現有少」時才拒絕。Mac mini 還沒鏡像的筆數大於等於 GAS 新寫入的筆數時不會被拒絕，GAS 那幾筆會被直接蓋掉，之後的判準和 3-2 列數也都會照樣通過，沒有任何一步會發現。所以這道人工確認是唯一的關卡。
+    2. 確認通過後，才請 Eason 改回 `PRIMARY=mini`，再跑 `--all`。成功與否**以 Mac mini 這邊為準**：上面那段判準印出 ✅（`ok:true`、`pending=0`、`at` 晚於 READONLY 建立時間）。
+    3. 如果被 GAS 拒絕（`BAD_REQ`，例如「操作紀錄筆數比現有少」）：代表第 1 項漏看了新寫入。**不可以**想辦法硬蓋過去，照下一項 BAD_REQ 處理。
+    - 為什麼不用「試算表列數＝`counts`」判斷：試算表只到**上一次鏡像成功**為止，Mac mini 的 `counts` 是最新的，只要回退前有人簽名，兩邊本來就不相等（誤擋）；反過來，Mac mini 有 k 筆還沒鏡像、GAS 剛好又被寫進 k 筆時，列數會巧合相等（誤放）。
 - `mirror` 被拒絕（`BAD_REQ`，例如「筆數比現有少」「少一半以上」「全空」）：GAS 的防呆擋下了這次覆寫。mirror.js 沒有可以傳下去的 `--force`，重跑也一樣。
   - **停下來回報，不進第 3 步**：把 `error` 原文、第 1 步 `counts`、試算表四個分頁的列數貼給 MacBook 的 Claude 判斷（例如試算表被人手動加了列，或 Mac mini 庫不對）。Mac mini 維持 READONLY，資料不會丟。
   - 如果討論後決定**不回退了**（前端仍指向 Mac mini、GAS 仍是 `PRIMARY=mini`），要把 Mac mini 恢復成可寫，否則全員不能簽名會一直拖下去：

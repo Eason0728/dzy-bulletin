@@ -2,9 +2,9 @@
 'use strict';
 var CFG = (function () {
   var c = {
-    VERSION: '0.5.6',
+    VERSION: '0.6.0',
     ROSTER_CSV: '',   // 「鼎兆元｜電子佈告欄｜公開名單」試算表（獨立檔案，只有遮罩姓名）發布到網路的 CSV 網址（不經 Apps Script，秒開）；空白＝只用後端
-    GAS_URL: 'https://script.google.com/macros/s/AKfycbzQXAnMnrYGoUEMDzr6XbtsuIDYyGWbGLcFW1xVDpa64NcBrMzI9GaVKJhIlC-WxnGK5g/exec',
+    GAS_URL: 'https://dingzhaoyuandemac-mini.tailc27c34.ts.net',
     MODE: 'cloud',
     TIMEOUT: { _default: 30000, uploadFile: 120000, adminData: 40000, savePost: 40000, syncClock: 60000, receipts: 90000, login: 90000, setPin: 90000, ack: 90000 }
   };

@@ -45,7 +45,7 @@ const TIP = '系統搬家中，約 10 分鐘後請重新整理';
   const CFGSRC = fs.readFileSync(path.join(__dirname, '../js/config.js'), 'utf8') + ';this.CFG = CFG;';
   const cfgAt = (hostname, search) => { const G = { location: { hostname, search }, URLSearchParams }; vm.createContext(G); vm.runInContext(CFGSRC, G); return G.CFG; };
   const OFFICIAL = cfgAt('dzy-bulletin.github.io', '').GAS_URL;
-  eq('（前提）正式 GAS 網址', /^https:\/\/script\.google\.com\//.test(OFFICIAL), true);
+  eq('（前提）正式後端網址（Apps Script 或 Mac mini 的 Tailscale Funnel）', /^https:\/\/(script\.google\.com\/|[a-z0-9-]+\.[a-z0-9-]+\.ts\.net\/?$)/.test(OFFICIAL), true);
   eq('?api=：localhost 開頁 → 用本機後端', cfgAt('localhost', '?api=http://127.0.0.1:8993/').GAS_URL, 'http://127.0.0.1:8993/');
   eq('?api=：127.0.0.1 開頁 → 用本機後端（不會悄悄打正式 GAS）', [cfgAt('127.0.0.1', '?mode=cloud&api=http://127.0.0.1:9/').GAS_URL, cfgAt('127.0.0.1', '?api=http://localhost:8993').GAS_URL], ['http://127.0.0.1:9/', 'http://localhost:8993']);
   eq('?api=：正式網址開頁 → 忽略', cfgAt('dzy-bulletin.github.io', '?api=http://127.0.0.1:8993/').GAS_URL, OFFICIAL);

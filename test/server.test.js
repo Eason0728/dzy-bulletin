@@ -134,7 +134,7 @@ async function main() {
     fs.writeFileSync(path.join(P.dir, 'logs/mirror-last.json'), JSON.stringify({ at: '2026-09-30T01:00:00Z', ok: false, sigPending: 3, error: '/Users/secret/path 失敗' }));
     fs.writeFileSync(path.join(P.dir, 'logs/backup-last.json'), JSON.stringify({ at: '2026-09-30T03:00:00Z', ok: true, file: '/Users/x/b.db' }));
     const h = (await request(P.port, 'GET', '/health')).json;
-    eq('health mirror/backup status only', [h.mirror, h.backup], [{ at: '2026-09-30T01:00:00Z', ok: false, sigPending: 3, missing: 0, bad: 0, fails: 0 }, { at: '2026-09-30T03:00:00Z', ok: true, sharedWith: null }]);
+    eq('health mirror/backup status only', [h.mirror, h.backup], [{ at: '2026-09-30T01:00:00Z', ok: false, sigPending: 3, missing: 0, bad: 0, skipped: 0, fails: 0 }, { at: '2026-09-30T03:00:00Z', ok: true, sharedWith: null }]);
     eq('health why has no raw error text', /secret|Users/.test(JSON.stringify(h)), false); }
   { const big = Buffer.alloc(41 * 1024 * 1024, 0x41);
     eq('41MB body → 413', (await request(P.port, 'POST', '/', big)).status, 413);

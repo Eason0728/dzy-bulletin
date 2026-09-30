@@ -11,6 +11,8 @@ const crypto = require('crypto');
 function makeSqliteStore(dir) {
   const sigDir = path.join(dir, 'sigs');
   fs.mkdirSync(sigDir, { recursive: true });
+  // 啟動時清掉上次當機留下的簽名暫存檔（*.tmp-<pid>；正式檔名一定是 .png／.jpg 結尾）
+  fs.readdirSync(sigDir).filter((f) => /\.tmp-\d+$/.test(f)).forEach((f) => { try { fs.unlinkSync(path.join(sigDir, f)); } catch (e) {} });
   const db = new DatabaseSync(path.join(dir, 'bulletin.db'));
   db.exec(`
     PRAGMA busy_timeout = 5000;
@@ -59,8 +61,8 @@ function makeSqliteStore(dir) {
         sigId = safe(r.postId) + '_' + safe(r.staffId) + (m[2] === 'png' ? '.png' : '.jpg');
         // 先寫暫存再改名：寫到一半斷電／程序中止不會留下半張圖頂著正式檔名（#14 第 5 輪建議；mirror.js 也會驗結尾）
         const tmp = path.join(sigDir, sigId + '.tmp-' + process.pid);
-        fs.writeFileSync(tmp, Buffer.from(m[3], 'base64'));
-        fs.renameSync(tmp, path.join(sigDir, sigId));
+        try { fs.writeFileSync(tmp, Buffer.from(m[3], 'base64')); fs.renameSync(tmp, path.join(sigDir, sigId)); }
+        catch (e) { try { fs.unlinkSync(tmp); } catch (x) {} throw e; }   // 寫入失敗（磁碟滿等）不留暫存檔
       }
       insRead.run(r.postId, r.staffId, r.name, r.unit, r.at, sigId);
     },

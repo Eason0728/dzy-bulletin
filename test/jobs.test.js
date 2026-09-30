@@ -18,6 +18,7 @@ const { judgeHealth } = require('../server/health-rules.js');
 const { makeFakeGas } = require('./fake-gas.js');
 
 const ROOT = path.join(__dirname, '..');
+process.env.MIRROR_BACKOFF_MS = '0';                         // --all 退避（預設 30 秒）在測試裡關掉；另有一條專門測退避
 let pass = 0, fail = 0;
 function eq(name, got, want) {
   const g = JSON.stringify(got), w = JSON.stringify(want);
@@ -72,7 +73,7 @@ function seedDb(dir, nSig, noOld) {   // noOld：不放搬遷來的那筆（它�
 // 子程序：跑一支 server/*.js（只帶指定的環境變數＋PATH／HOME，不繼承 BRIDGE_* 等）
 function runJob(script, args, env) {
   return new Promise((ok) => {
-    const e = Object.assign({ PATH: process.env.PATH, HOME: env.HOME || tmp('dzyb-home-') }, env);
+    const e = Object.assign({ PATH: process.env.PATH, HOME: env.HOME || tmp('dzyb-home-'), MIRROR_BACKOFF_MS: '0' }, env);
     const p = spawn(process.execPath, [path.join(ROOT, 'server', script)].concat(args || []), { env: e, stdio: ['ignore', 'pipe', 'pipe'] });
     procs.push(p);
     let out = '', err = '';
@@ -269,11 +270,68 @@ async function main() {
     const r0 = await runMirror({ dir, bridge: B, all: true });
     fs.writeFileSync(path.join(dir, 'logs/sig-skip.json'), JSON.stringify({ 'P-1/S-007': '2026-10-01 Drive 一直拒收，Eason 同意略過' }));
     const r = await runMirror({ dir, bridge: B, all: true });
-    eq('人工略過：之前 ok:false；寫進 sig-skip.json 後 --all → ok、pending 0、bad 1（人工略過）、不再送那一張', [r0.ok, r.ok, r.pending, r.bad, r.badIds, B.names.filter((x) => x === 'P-1_S-007').length], [false, true, 0, 1, ['P-1/S-007（人工略過）'], 2]);
+    eq('人工略過：之前 ok:false；寫進 sig-skip.json 後 --all → ok、pending 0、另計 skipped 1（不算 bad）、不再送那一張', [r0.ok, r.ok, r.pending, r.bad, r.skipped, r.skippedIds, B.names.filter((x) => x === 'P-1_S-007').length], [false, true, 0, 0, 1, ['P-1/S-007（2026-10-01 Drive 一直拒收，Eason 同意略過）'], 2]);
+    const hs = judgeHealth({ mirror: { at: r.at, ok: true, sigPending: 0, missing: r.missing, bad: r.bad, skipped: r.skipped, fails: 0 }, backup: { at: r.at, ok: true }, disk: { freeMB: 99999 } });
+    eq('S14：只有 skipped → /health 綠燈', hs.level, 'green');
+    // S15：格式錯 → 照常上傳（好圖照樣回填）、這一輪不略過任何一張、ok:false 並寫原因
+    const st5 = makeSqliteStore(dir); st5.addRead({ postId: 'P-2', staffId: 'S-011', name: 'n', unit: 'mala', at: 'x', sig: PNG('new') }); st5.close();
     fs.writeFileSync(path.join(dir, 'logs/sig-skip.json'), '{"P-1/S-007": 1}');   // 原因不是字串
     const r2 = await runMirror({ dir, bridge: B, all: true });
-    eq('人工略過清單格式錯 → ok:false、這一輪不略過（不上傳，pending 回到 1）', [r2.ok, /sig-skip\.json 格式錯誤/.test(r2.error), r2.pending, r2.bad], [false, true, 1, 0]);
-    eq('程式從不自動寫人工略過清單', fs.readFileSync(path.join(dir, 'logs/sig-skip.json'), 'utf8'), '{"P-1/S-007": 1}'); }
+    eq('S15：人工略過清單格式錯 → ok:false 寫原因、這一輪不略過（S-007 又送一次、回到 pending）、好圖照常回填', [r2.ok, /sig-skip\.json 格式錯誤/.test(r2.error), r2.pending, r2.skipped, B.names.filter((x) => x === 'P-1_S-007').length > 2, r2.uploaded, B.names.includes('P-2_S-011')], [false, true, 1, 0, true, 1, true]);
+    eq('程式從不自動寫人工略過清單', fs.readFileSync(path.join(dir, 'logs/sig-skip.json'), 'utf8'), '{"P-1/S-007": 1}');
+    fs.writeFileSync(path.join(dir, 'logs/sig-skip.json'), JSON.stringify({ 'P-1/S-007': '略過', 'P-1/s-007': '打錯大小寫', 'P-9/S-001': '沒這則' }));
+    const r3 = await runMirror({ dir, bridge: B });
+    eq('建議 3：sig-skip 裡對不到任何已讀的鍵 → 警告列出、ok 不受影響', [r3.ok, r3.skipUnmatched, /有 2 個鍵對不到任何已讀/.test((r3.warnings || []).join())], [true, ['P-1/s-007', 'P-9/S-001'], true]); }
+  // S14：本機壞圖、缺圖寫進 sig-skip 也算 skipped（不算 bad／missing）；未略過的 bad／missing 仍亮黃
+  { const dir = tmp(); seedDb(dir, 4);
+    const f = (sid) => path.join(dir, 'sigs', q(dir, `SELECT sigId FROM reads WHERE staffId = '${sid}' AND postId = 'P-1'`)[0].sigId);
+    fs.writeFileSync(f('S-000'), ''); fs.unlinkSync(f('S-001')); fs.writeFileSync(f('S-002'), '');
+    const r0 = await runMirror({ dir, bridge: fakeBridge() });
+    fs.writeFileSync(path.join(dir, 'logs/sig-skip.json'), JSON.stringify({ 'P-1/S-000': '壞圖確認放棄', 'P-1/S-001': '缺圖確認放棄' }));
+    const r = await runMirror({ dir, bridge: fakeBridge() });
+    const H = (x) => judgeHealth({ mirror: { at: x.at, ok: x.ok, sigPending: x.pending, missing: x.missing, bad: x.bad, skipped: x.skipped, fails: 0 }, backup: { at: x.at, ok: true }, disk: { freeMB: 99999 } });
+    eq('S14：略過前 bad 2、missing 1 → 黃；略過壞圖與缺圖後 skipped 2、bad 1、missing 0 → 仍黃（還有 S-002 沒略過）', [[r0.bad, r0.missing, H(r0).level], [r.skipped, r.bad, r.missing, H(r).level, H(r).why]], [[2, 1, 'yellow'], [2, 1, 0, 'yellow', ['有壞簽名圖']]]);
+    fs.writeFileSync(path.join(dir, 'logs/sig-skip.json'), JSON.stringify({ 'P-1/S-000': 'x', 'P-1/S-001': 'y', 'P-1/S-002': 'z' }));
+    const r2 = await runMirror({ dir, bridge: fakeBridge() });
+    eq('S14：全部略過 → skipped 3、bad 0、missing 0 → 綠燈；/health 帶出 skipped', [r2.skipped, r2.bad, r2.missing, H(r2).level], [3, 0, 0, 'green']); }
+  // 建議 1：--all 每輪更新結果檔的 at（心跳）；失敗超過一半時退避
+  { const dir = tmp(); seedDb(dir, 6);
+    fs.mkdirSync(path.join(dir, 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'logs/mirror-last.json'), JSON.stringify({ at: '2026-01-01T00:00:00.000Z', ok: true, fails: 0 }));
+    const B = fakeBridge(); let call = 0, seenAt = null; B.onSigs = () => { call++; if (call === 2) seenAt = last(dir, 'mirror-last.json'); }; B.nullIf = (n) => call === 1 && n !== 'P-1_S-000';
+    const t0 = Date.now();
+    const r = await runMirror({ dir, bridge: B, all: true, backoffMs: 300 });
+    eq('建議 1：--all 第 1 輪後結果檔 at 已更新（running）、沿用上次 ok；失敗 5/6 → 退避 300ms 後第 2 輪補完', [!!seenAt && seenAt.at > '2026-01-02', seenAt && seenAt.running, seenAt && seenAt.ok, Date.now() - t0 >= 300, r.ok, r.pending], [true, true, true, true, true, 0]); }
+  // 建議 4：store-sqlite 寫簽名先寫暫存再改名；失敗時清掉暫存檔、啟動時清殘檔
+  { const dir = tmp(); fs.mkdirSync(path.join(dir, 'sigs'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'sigs', 'P-1_S-001.png.tmp-4242'), 'half');
+    const st = makeSqliteStore(dir);
+    const left0 = fs.readdirSync(path.join(dir, 'sigs'));
+    fs.mkdirSync(path.join(dir, 'sigs', 'P-1_S-002.png'));    // 正式檔名被一個資料夾佔住 → rename 失敗
+    const oe = console.error; console.error = () => {};
+    let threw = false; try { st.addRead({ postId: 'P-1', staffId: 'S-002', name: 'n', unit: 'u', at: 'x', sig: PNG('x') }); } catch (e) { threw = true; }
+    console.error = oe; st.close();
+    eq('建議 4：啟動時清掉 *.tmp-<pid> 殘檔；改名失敗時丟錯且不留暫存檔', [left0, threw, fs.readdirSync(path.join(dir, 'sigs')).filter((f) => /\.tmp-/.test(f))], [[], true, []]); }
+  // 建議 2：--all 結束時只要 pending > 0（或算不出來）就 exit 1，即使 ok（例如跑到一半伺服器又收到新簽名、下一輪才會補）
+  { const { exitCode } = require('../server/mirror.js');
+    const dir = tmp(); seedDb(dir, 2);
+    const r = await runMirror({ dir, bridge: fakeBridge(), all: true });
+    eq('建議 2：exitCode——--all pending 0 → 0；ok 但 pending 1 → 1；pending 算不出來 → 1；每小時模式只看 ok', [exitCode(r, true), exitCode({ ok: true, pending: 1 }, true), exitCode({ ok: true, pending: null }, true), exitCode({ ok: true, pending: 1 }, false), exitCode({ ok: false, pending: 0 }, false)], [0, 1, 1, 0, 1]); }
+  // carry 寫不進去 → 這一輪不上傳（免得重傳成孤兒檔）
+  { const dir = tmp(); seedDb(dir, 3);
+    fs.mkdirSync(path.join(dir, 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'logs/sig-state.json'), JSON.stringify({ unsaved: { 'P-1\tS-000\tP-1_S-000.png': 'DRV-X' } }));
+    const w = new DatabaseSync(path.join(dir, 'bulletin.db')); w.exec('BEGIN IMMEDIATE');
+    const B = fakeBridge();
+    const r = await runMirror({ dir, bridge: B, busyMs: 50 });
+    w.exec('ROLLBACK'); w.close();
+    eq('carry 寫庫失敗 → sigs 0 次、ok:false、unsaved 保留', [B.n('sigs'), r.ok, JSON.parse(fs.readFileSync(path.join(dir, 'logs/sig-state.json'), 'utf8')).unsaved['P-1\tS-000\tP-1_S-000.png']], [0, false, 'DRV-X']); }
+  // 表外：sig-state 損毀時這一輪不上傳（免得重傳成孤兒檔）
+  { const dir = tmp(); seedDb(dir, 3);
+    fs.mkdirSync(path.join(dir, 'logs'), { recursive: true }); fs.writeFileSync(path.join(dir, 'logs/sig-state.json'), '{"unsaved":');
+    const B = fakeBridge();
+    const r = await runMirror({ dir, bridge: B, all: true });
+    eq('sig-state 損毀時照樣上傳 → 不可以：sigs 0 次、uploaded 0、鏡像照做', [B.n('sigs'), r.uploaded, B.n('mirror'), r.ok], [0, 0, 1, false]); }
   // ---- 第 5 輪 (a)：回退情境——先 READONLY、不再有新簽名，只剩本機壞圖；--all 一次就要 pending=0、bad=N、exit 0 ----
   for (const [label0, bads] of [['1 張 0 位元組', ['zero']], ['5 張（2 張 0 位元組＋2 張壞檔頭＋1 張截斷）', ['zero', 'zero', 'head', 'head', 'cut']]]) {
     const FG = makeFakeGas(); const URL0 = await FG.listen(); const KEY = 'k'.repeat(40);
@@ -360,12 +418,12 @@ async function main() {
     const sleeper = spawn(process.execPath, ['-e', 'setInterval(()=>{},1e5)'], { stdio: 'ignore' }); procs.push(sleeper);
     const lf = path.join(dir, 'logs/mirror.lock'); fs.mkdirSync(path.dirname(lf), { recursive: true });
     fs.writeFileSync(lf, String(sleeper.pid));
-    eq('S7：鎖由活著的程序持有、未過期 → 跳過', (await runMirror({ dir, bridge: fakeBridge() })).skipped, true);
+    eq('S7：鎖由活著的程序持有、未過期 → 跳過', (await runMirror({ dir, bridge: fakeBridge() })).busy, true);
     const c = await runJob('mirror.js', ['--all'], { DATA_DIR: dir, BRIDGE_URL: 'http://127.0.0.1:9/exec', BRIDGE_KEY: 'x'.repeat(40) });
     eq('建議 1：--all 撞到鎖 → exit 1、印「已跳過」', [c.code, /另一輪鏡像正在跑.*已跳過/.test(c.out)], [1, true]);
     const old = (Date.now() - 7 * 3600e3) / 1000; fs.utimesSync(lf, old, old);   // PID 被重用的情形：程序活著，但鎖檔已 7 小時沒更新
     const r = await runMirror({ dir, bridge: fakeBridge() });
-    eq('S7：鎖檔超過 6 小時 → 視為殘留、照常跑', [r.skipped, r.ok], [undefined, true]);
+    eq('S7：鎖檔超過 6 小時 → 視為殘留、照常跑', [r.busy, r.ok], [undefined, true]);
     sleeper.kill(); }
   // ---- 建議 2／3：sig-state.json 損毀改名保留並 ok:false；存狀態失敗只記警告、鏡像照做 ----
   { const dir = tmp(); seedDb(dir, 1);
@@ -469,7 +527,7 @@ async function main() {
     fs.mkdirSync(path.join(target, 'logs'), { recursive: true }); fs.writeFileSync(path.join(target, 'logs/mirror.lock'), String(sleeper.pid));
     const rc = await tryRestore();
     eq('S3：mirror 正在跑（mirror.lock）→ 拒絕', [/mirror 工作正在跑/.test(rc), staffN()], [true, n0]);
-    eq('鎖由活著的程序持有時 mirror／daily 自己跳過（不寫結果檔、不開庫）', [(await runMirror({ dir: target, bridge: fakeBridge() })).skipped], [true]);
+    eq('鎖由活著的程序持有時 mirror／daily 自己跳過（不寫結果檔、不開庫）', [(await runMirror({ dir: target, bridge: fakeBridge() })).busy], [true]);
     sleeper.kill(); await new Promise((ok) => sleeper.on('exit', ok));
     // 建議 5：lsof 被 signal 殺掉或異常結束 → 一律「無法確認」、拒絕
     const fakeBin = tmp('dzyb-bin-');
@@ -571,7 +629,7 @@ async function main() {
     const bkFolder = FG.props.BACKUP_FOLDER_ID;
     eq('daily.js：ok、備份檔落在獨立備份資料夾、分享「限制」', [r.code, bl.ok, !!FG.drive.files[bl.driveId], FG.drive.files[bl.driveId].parent === bkFolder, FG.drive.files[bl.driveId].sharing], [0, true, true, true, 'PRIVATE']);
     let h = (await request(S.port, 'GET', '/health')).json;
-    eq('/health 讀兩個檔：mirror／backup 的 at 與結果檔一致', [h.mirror.at, h.mirror.ok, h.mirror.sigPending, h.mirror.fails, h.backup.at, h.backup.ok], [ml.at, true, 0, 0, bl.at, true]);
+    eq('/health 讀兩個檔：mirror／backup 的 at 與結果檔一致（含 missing／bad／skipped）', [h.mirror.at, h.mirror.ok, h.mirror.sigPending, h.mirror.fails, h.mirror.missing, h.mirror.bad, h.mirror.skipped, h.backup.at, h.backup.ok], [ml.at, true, 0, 0, 0, 0, 0, bl.at, true]);
     eq('備份資料夾僅 owner：sharedWith 0 記進結果檔、/health 帶出', [bl.sharedWith, h.backup.sharedWith], [0, 0]);
     eq('/health 兩個 job 剛跑完：沒有紅燈、沒有鏡像／快照相關的黃燈', [h.level !== 'red', h.why.filter((w) => /鏡像|快照|回填/.test(w))], [true, []]);
 

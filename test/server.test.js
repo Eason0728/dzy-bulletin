@@ -126,14 +126,16 @@ async function main() {
   eq('prod POST /__seed is 404', (await request(P.port, 'POST', '/__seed', { demo: true })).status, 404);
   eq('prod GET /__blob is 404', (await request(P.port, 'GET', '/__blob?id=x')).status, 404);
   { const h = await request(P.port, 'GET', '/health');
-    eq('health shape', Object.keys(h.json).sort(), ['backup', 'bridge', 'disk', 'e2e', 'mirror', 'ok', 'uptime', 'v']);
+    eq('health shape', Object.keys(h.json).sort(), ['backup', 'bridge', 'disk', 'e2e', 'level', 'mirror', 'ok', 'uptime', 'v', 'why']);
     eq('health prod values', [h.json.ok, h.json.e2e, h.json.bridge, h.json.mirror, h.json.backup, typeof h.json.disk.freeMB], [true, false, 'missing', null, null, 'number']);
+    eq('health level red when jobs never ran', [h.json.level, h.json.why.slice(0, 2)], ['red', ['沒有鏡像紀錄', '沒有快照紀錄']]);
     eq('response has Content-Length', Number(h.headers['content-length']) > 0, true); }
   { fs.mkdirSync(path.join(P.dir, 'logs'));
     fs.writeFileSync(path.join(P.dir, 'logs/mirror-last.json'), JSON.stringify({ at: '2026-09-30T01:00:00Z', ok: false, sigPending: 3, error: '/Users/secret/path 失敗' }));
     fs.writeFileSync(path.join(P.dir, 'logs/backup-last.json'), JSON.stringify({ at: '2026-09-30T03:00:00Z', ok: true, file: '/Users/x/b.db' }));
     const h = (await request(P.port, 'GET', '/health')).json;
-    eq('health mirror/backup status only', [h.mirror, h.backup], [{ at: '2026-09-30T01:00:00Z', ok: false, sigPending: 3 }, { at: '2026-09-30T03:00:00Z', ok: true }]); }
+    eq('health mirror/backup status only', [h.mirror, h.backup], [{ at: '2026-09-30T01:00:00Z', ok: false, sigPending: 3, missing: 0, bad: 0, skipped: 0, fails: 0 }, { at: '2026-09-30T03:00:00Z', ok: true, sharedWith: null }]);
+    eq('health why has no raw error text', /secret|Users/.test(JSON.stringify(h)), false); }
   { const big = Buffer.alloc(41 * 1024 * 1024, 0x41);
     eq('41MB body → 413', (await request(P.port, 'POST', '/', big)).status, 413);
     eq('41MB chunked body → 413', (await request(P.port, 'POST', '/', big, { chunked: true })).status, 413);

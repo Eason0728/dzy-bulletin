@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 鼎兆元｜電子佈告欄 — 伺服器本體（LaunchAgent，自動登入後啟動、當掉自動重起）。
+     範本：__NODE__＝node 絕對路徑（Node 24＋，固定主版本）、__REPO__＝repo 絕對路徑、__DATA_DIR__＝資料夾（預設 ~/dzy-bulletin-data 展開後的絕對路徑）。
+     金鑰不寫在這裡：BRIDGE_URL／BRIDGE_KEY 放 __REPO__/server/.env。__DATA_DIR__/logs 要先建好（launchd 開不了 log 檔就不會啟動）。
+     實際安裝步驟見 M4 的 DEPLOY.md（#9）。 -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.dzy.bulletin</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__NODE__</string>
+    <string>__REPO__/server/index.js</string>
+  </array>
+  <key>WorkingDirectory</key><string>__REPO__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>DATA_DIR</key><string>__DATA_DIR__</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>__DATA_DIR__/logs/server.log</string>
+  <key>StandardErrorPath</key><string>__DATA_DIR__/logs/server.err.log</string>
+</dict>
+</plist>

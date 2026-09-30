@@ -11,6 +11,8 @@ const crypto = require('crypto');
 function makeSqliteStore(dir) {
   const sigDir = path.join(dir, 'sigs');
   fs.mkdirSync(sigDir, { recursive: true });
+  // 啟動時清掉上次當機留下的簽名暫存檔（*.tmp-<pid>；正式檔名一定是 .png／.jpg 結尾）
+  fs.readdirSync(sigDir).filter((f) => /\.tmp-\d+$/.test(f)).forEach((f) => { try { fs.unlinkSync(path.join(sigDir, f)); } catch (e) {} });
   const db = new DatabaseSync(path.join(dir, 'bulletin.db'));
   db.exec(`
     PRAGMA busy_timeout = 5000;
@@ -18,10 +20,13 @@ function makeSqliteStore(dir) {
     CREATE TABLE IF NOT EXISTS posts (id TEXT PRIMARY KEY, json TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS staff (id TEXT PRIMARY KEY, json TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS reads (postId TEXT NOT NULL, staffId TEXT NOT NULL, name TEXT, unit TEXT, at TEXT, sigId TEXT,
-                                      PRIMARY KEY (postId, staffId));
+                                      driveSigId TEXT NOT NULL DEFAULT '', PRIMARY KEY (postId, staffId));
     CREATE TABLE IF NOT EXISTS log (seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, action TEXT, target TEXT, summary TEXT);
     CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
   `);
+  // 簽名圖的 Drive id（#7／#8）：sigId＝Mac mini 本機檔名；driveSigId＝鏡像工作（server/mirror.js）批次上傳後回填的 Drive id，
+  // 鏡像寫回試算表「已讀」分頁時用這一欄，回退到 GAS 後 readSig(id) 才讀得到。M1 建的舊庫沒有這欄 → 啟動時補上。
+  if (!db.prepare('PRAGMA table_info(reads)').all().some((c) => c.name === 'driveSigId')) db.exec("ALTER TABLE reads ADD COLUMN driveSigId TEXT NOT NULL DEFAULT ''");
   const kvGet = db.prepare('SELECT v FROM kv WHERE k = ?');
   const kvSet = db.prepare('INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v');
   const kvDel = db.prepare('DELETE FROM kv WHERE k = ?');
@@ -33,6 +38,7 @@ function makeSqliteStore(dir) {
   const upsertPost = db.prepare('INSERT INTO posts (id, json) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET json = excluded.json');
   const upsertStaff = db.prepare('INSERT INTO staff (id, json) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET json = excluded.json');
   const insRead = db.prepare('INSERT OR IGNORE INTO reads (postId, staffId, name, unit, at, sigId) VALUES (?, ?, ?, ?, ?, ?)');
+  const insReadFull = db.prepare('INSERT OR IGNORE INTO reads (postId, staffId, name, unit, at, sigId, driveSigId) VALUES (?, ?, ?, ?, ?, ?, ?)');
   const insLog = db.prepare('INSERT INTO log (at, action, target, summary) VALUES (?, ?, ?, ?)');
   const clone = (o) => JSON.parse(JSON.stringify(o));
   // 檔名只留安全字元；有字元被換掉時補原字串的短雜湊，避免 P/1 與 P_1 撞成同一個檔（#12 審查 N5）
@@ -53,7 +59,10 @@ function makeSqliteStore(dir) {
       const m = /^data:(image\/(png|jpeg));base64,(.+)$/.exec(String(r.sig || ''));
       if (m) {
         sigId = safe(r.postId) + '_' + safe(r.staffId) + (m[2] === 'png' ? '.png' : '.jpg');
-        fs.writeFileSync(path.join(sigDir, sigId), Buffer.from(m[3], 'base64'));
+        // 先寫暫存再改名：寫到一半斷電／程序中止不會留下半張圖頂著正式檔名（#14 第 5 輪建議；mirror.js 也會驗結尾）
+        const tmp = path.join(sigDir, sigId + '.tmp-' + process.pid);
+        try { fs.writeFileSync(tmp, Buffer.from(m[3], 'base64')); fs.renameSync(tmp, path.join(sigDir, sigId)); }
+        catch (e) { try { fs.unlinkSync(tmp); } catch (x) {} throw e; }   // 寫入失敗（磁碟滿等）不留暫存檔
       }
       insRead.run(r.postId, r.staffId, r.name, r.unit, r.at, sigId);
     },
@@ -95,8 +104,8 @@ function makeSqliteStore(dir) {
     // 所以資料層自己記「這筆交易裡有 store 動作失敗」（failed）：有就 ROLLBACK 並丟出例外，
     // 呼叫端（index.js）一律回 SERVER——就算 Service 自己吞掉錯誤回了 ok:true，也不能讓「已儲存」送出去（#12 S2、第 2 輪應修-1）。
     // 只包同步的程式碼：橋接（await）一律在 tx 外做完，寫鎖不會被 Google 佔住。
-    // 註：BEGIN IMMEDIATE 遇到 daily.js 持有寫鎖時會同步等最多 busy_timeout（5 秒），這段期間事件迴圈停住；
-    //     daily.js 只寫少量欄位、一天一次，量很小，接受。
+    // 註：BEGIN IMMEDIATE 遇到 mirror.js 回填 driveSigId 持有寫鎖時會同步等最多 busy_timeout（5 秒），這段期間事件迴圈停住；
+    //     mirror.js 每批只 UPDATE 10～20 列的一欄、每小時一次（daily.js 的 VACUUM INTO 只讀），量很小，接受。
     tx: (fn) => {
       db.exec('BEGIN IMMEDIATE');
       state.failed = false;
@@ -118,7 +127,7 @@ function makeSqliteStore(dir) {
         db.exec("DELETE FROM posts; DELETE FROM staff; DELETE FROM reads; DELETE FROM log; DELETE FROM kv WHERE k LIKE 'req:%';");
         (d.posts || []).forEach((p) => upsertPost.run(p.id, JSON.stringify(p)));
         (d.staff || []).forEach((s) => upsertStaff.run(s.id, JSON.stringify(s)));
-        (d.reads || []).forEach((r) => insRead.run(r.postId, r.staffId, r.name, r.unit, r.at, r.sigId || ''));
+        (d.reads || []).forEach((r) => insReadFull.run(r.postId, r.staffId, r.name, r.unit, r.at, r.sigId || '', r.driveSigId || ''));   // 搬遷時保留原 Drive id
         (d.log || []).forEach((e) => insLog.run(e.at, e.action, e.target || '', e.summary || ''));
         if (d.admin) set('admin', JSON.stringify(d.admin));
         if (d.secret) set('secret', d.secret);

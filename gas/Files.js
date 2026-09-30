@@ -4,6 +4,7 @@
 
 var FOLDER_NAME_ = '鼎兆元｜電子佈告欄附件';
 var SIG_FOLDER_NAME_ = '簽名';
+var SIG_MIME_ = ['image/png', 'image/jpeg'];   // 簽名圖實際用的型別（saveSig 只收這兩種）
 
 function folderByProp_(key, name, parent) {
   var pr = PropertiesService.getScriptProperties(), id = pr.getProperty(key);
@@ -12,6 +13,16 @@ function folderByProp_(key, name, parent) {
   pr.setProperty(key, nf.getId());
   return nf;
 }
+// 讀取路徑用：只讀屬性、不建資料夾（屬性遺失時回空字串，任何檔案都不會被當成在簽名資料夾裡）
+function sigFolderId_() { return PropertiesService.getScriptProperties().getProperty('SIG_FOLDER_ID') || ''; }
+function isSigImage_(f) { return SIG_MIME_.indexOf(f.getMimeType()) >= 0; }
+function inFolder_(f, fid) {
+  if (!fid) return false;
+  var ps = f.getParents();
+  while (ps.hasNext()) if (ps.next().getId() === fid) return true;
+  return false;
+}
+function dataUrl_(f) { var b = f.getBlob(); return 'data:' + b.getContentType() + ';base64,' + Utilities.base64Encode(b.getBytes()); }
 function attachFolder_() { return folderByProp_('FOLDER_ID', FOLDER_NAME_, null); }
 function sigFolder_() { return folderByProp_('SIG_FOLDER_ID', SIG_FOLDER_NAME_, attachFolder_()); }
 
@@ -22,6 +33,7 @@ function makeFiles_() {
   function ours(id) {
     var f;
     try { f = DriveApp.getFileById(id); } catch (e) { throw err('BAD_REQ', '找不到附件檔案'); }
+    if (f.isTrashed()) throw err('BAD_REQ', '找不到附件檔案');     // 已撤銷（在垃圾桶）的附件不可再 share 回公開（#13 第 3 輪 R1）
     // 只允許 Word／PDF／Excel：擋掉正本試算表、簽名圖、資料夾與任何 Google 文件類型
     if (OK_MIME.indexOf(f.getMimeType()) < 0 || id === PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID')) throw err('BAD_REQ', '附件格式錯誤');
     var fid = attachFolder_().getId(), ps = f.getParents();
@@ -57,9 +69,38 @@ function makeFiles_() {
       var ext = m[1] === 'image/png' ? '.png' : '.jpg';
       return sigFolder_().createFile(Utilities.newBlob(Utilities.base64Decode(m[2]), m[1], name + ext)).getId();
     },
+    // 橋接專用（sig／sigs.get）：只回 PNG／JPEG，而且必須「在簽名資料夾裡」或「是已讀分頁裡既有的簽名檔 id」（known）；
+    // 其他一律回 null、不丟錯（不洩漏檔名）。金鑰外洩時影響範圍只到簽名圖（#13 B1）；
+    // known 讓簽名資料夾重建過的舊簽名也搬得走（S5），而分頁的 id 只能由 GAS 自己或通過驗證的 mirror 寫入（N1）。
+    readSigSafe: function (id, known) {
+      try {
+        id = String(id || '');
+        var f = DriveApp.getFileById(id);
+        if (!isSigImage_(f)) return null;
+        if (!(known && known[id]) && !inFolder_(f, sigFolderId_())) return null;
+        return dataUrl_(f);
+      } catch (e) { return null; }
+    },
+    // mirror 驗證用：這個 id 是不是「目前簽名資料夾裡的圖」（sigs.put 新產生的都是）
+    isSigFile: function (id) {
+      try { var f = DriveApp.getFileById(String(id || '')); return isSigImage_(f) && inFolder_(f, sigFolderId_()); } catch (e) { return false; }
+    },
+    // 批次上傳簽名（橋接 sigs.put）：資料夾只找一次；逐張處理，失敗的那張回 null，不讓前面已建的檔變孤兒、下一輪也不整批重傳
+    saveSigs: function (items) {
+      var fo = sigFolder_();
+      return items.map(function (x) {
+        try {
+          var m = /^data:(image\/(?:png|jpeg));base64,(.+)$/.exec(String(x && x.data || ''));
+          if (!m) return null;
+          var name = String(x && x.name || 'sig').replace(/[^\w.-]/g, '_') + (m[1] === 'image/png' ? '.png' : '.jpg');
+          return fo.createFile(Utilities.newBlob(Utilities.base64Decode(m[2]), m[1], name)).getId();
+        } catch (e) { console.error('saveSigs: ' + e); return null; }
+      });
+    },
+    // GAS 自己的回條（getSigs，id 來自已讀分頁）：任何路徑都只回 PNG／JPEG，其他回 null（#13 N1 b）
     readSig: function (id) {
-      var b = DriveApp.getFileById(id).getBlob();
-      return 'data:' + b.getContentType() + ';base64,' + Utilities.base64Encode(b.getBytes());
+      var f = DriveApp.getFileById(id);
+      return isSigImage_(f) ? dataUrl_(f) : null;
     }
   };
 }

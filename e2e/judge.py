@@ -15,6 +15,9 @@ from playwright.async_api import async_playwright
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SAMPLE = os.path.join(ROOT, 'spike', 'sample')
 results = []
+# 出網防呆（#13 第 2 輪）：指向 Google Apps Script 的請求一律攔下並記錄，最後讓測試失敗
+GOOGLE = re.compile(r'^https?://([^/]*\.)?(script\.google\.com|googleusercontent\.com)(/|$)')
+NET_HITS = []
 
 
 def check(name, ok, detail=''):
@@ -27,6 +30,9 @@ async def main(base, brk):
         b = await p.chromium.launch()
         ctx = await b.new_context(viewport={'width': 390, 'height': 844}, locale='zh-TW', timezone_id='Asia/Taipei')
         await ctx.grant_permissions(['clipboard-read', 'clipboard-write'], origin=base)
+        async def block(route):
+            NET_HITS.append(route.request.method + ' ' + route.request.url[:120]); await route.abort()
+        await ctx.route(GOOGLE, block)
         pg = await ctx.new_page()
         errs = []
         pg.on('pageerror', lambda e: errs.append(str(e)))
@@ -198,6 +204,7 @@ async def main(base, brk):
         await q('[data-pick="S-013"]').click(); await wait(300)
         check('B20 返回名單後不會又標回鎖定、再點仍是設定密碼', '🔒' not in nm and '設定個人密碼' in await txt('.sheet .bar'), f'{nm} / {await txt(".sheet .bar")}')
         check('Z1 全程沒有頁面錯誤（pageerror）', not errs, errs)
+        check('Z2 沒有任何請求打到 Google Apps Script（已攔截）', not NET_HITS, NET_HITS[:5])
         await b.close()
 
 

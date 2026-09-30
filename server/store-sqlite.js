@@ -8,6 +8,11 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
+// 簽名圖檔名：檔名只留安全字元；有字元被換掉時補原字串的短雜湊，避免 P/1 與 P_1 撞成同一個檔（#12 審查 N5）。
+// server/migrate.js 搬遷下載的簽名圖也用這個（與 Mac mini 上新簽的同一套命名）。type＝'png'｜'jpeg'
+const safe = (s) => { s = String(s); const t = s.replace(/[^A-Za-z0-9_-]/g, '_'); return t === s ? t : t + '-' + crypto.createHash('sha1').update(s).digest('hex').slice(0, 8); };
+function sigFileName(postId, staffId, type) { return safe(postId) + '_' + safe(staffId) + (type === 'png' ? '.png' : '.jpg'); }
+
 function makeSqliteStore(dir) {
   const sigDir = path.join(dir, 'sigs');
   fs.mkdirSync(sigDir, { recursive: true });
@@ -41,8 +46,6 @@ function makeSqliteStore(dir) {
   const insReadFull = db.prepare('INSERT OR IGNORE INTO reads (postId, staffId, name, unit, at, sigId, driveSigId) VALUES (?, ?, ?, ?, ?, ?, ?)');
   const insLog = db.prepare('INSERT INTO log (at, action, target, summary) VALUES (?, ?, ?, ?)');
   const clone = (o) => JSON.parse(JSON.stringify(o));
-  // 檔名只留安全字元；有字元被換掉時補原字串的短雜湊，避免 P/1 與 P_1 撞成同一個檔（#12 審查 N5）
-  const safe = (s) => { s = String(s); const t = s.replace(/[^A-Za-z0-9_-]/g, '_'); return t === s ? t : t + '-' + crypto.createHash('sha1').update(s).digest('hex').slice(0, 8); };
   const adminInitFile = path.join(dir, 'ADMIN_INIT.txt');      // Eason 更換通行碼：在 Mac mini 建這個檔（內容＝新通行碼）
 
   if (!get('secret')) set('secret', crypto.randomBytes(32).toString('hex'));
@@ -58,7 +61,7 @@ function makeSqliteStore(dir) {
       let sigId = '';
       const m = /^data:(image\/(png|jpeg));base64,(.+)$/.exec(String(r.sig || ''));
       if (m) {
-        sigId = safe(r.postId) + '_' + safe(r.staffId) + (m[2] === 'png' ? '.png' : '.jpg');
+        sigId = sigFileName(r.postId, r.staffId, m[2]);
         // 先寫暫存再改名：寫到一半斷電／程序中止不會留下半張圖頂著正式檔名（#14 第 5 輪建議；mirror.js 也會驗結尾）
         const tmp = path.join(sigDir, sigId + '.tmp-' + process.pid);
         try { fs.writeFileSync(tmp, Buffer.from(m[3], 'base64')); fs.renameSync(tmp, path.join(sigDir, sigId)); }
@@ -154,4 +157,4 @@ function makeSqliteStore(dir) {
   return store;
 }
 
-module.exports = { makeSqliteStore };
+module.exports = { makeSqliteStore, sigFileName };

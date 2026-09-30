@@ -101,6 +101,10 @@ async function runMirror(o) {
   try {
     db = J.openDb(dir, { busyMs: o.busyMs });
     if (!db.prepare('PRAGMA table_info(reads)').all().some((c) => c.name === 'driveSigId')) throw new Error('資料庫還沒有 driveSigId 欄（伺服器升級後重新啟動一次即會補上）');
+    // 空庫不鏡像（#10）：切換日 PRIMARY=mini 之後、migrate.js 匯入之前，若每小時鏡像先跑到，會把空的 Mac mini 庫整份蓋掉試算表
+    // （之後的 export 也就是空的）。正式資料一定有同仁；沒有同仁也沒有公告＝還沒搬遷，拒絕。
+    const c0 = J.counts(db);
+    if (!c0.staff && !c0.posts) throw new Error('資料庫是空的（還沒搬遷？），拒絕鏡像以免蓋掉試算表');
     const sigDir = path.join(dir, 'sigs');
     const TODO_SQL = "SELECT postId, staffId, sigId FROM reads WHERE sigId <> '' AND driveSigId = '' ORDER BY rowid";
     const fileOf = (r) => path.join(sigDir, path.basename(r.sigId));   // sigId 由 store-sqlite.js 產生（只有安全字元），basename 是多一道保險

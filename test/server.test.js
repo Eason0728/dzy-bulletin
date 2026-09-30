@@ -364,11 +364,13 @@ async function main() {
 
   // ---- 真橋接（async fetch）對本機假 Apps Script：302 轉址、錯誤碼、逾時 ----
   { const { makeBridge } = require('../server/bridge.js');
-    let got = null;
+    let got = null; const hits = {};
     const gas = http.createServer((req, res) => {
       if (req.url === '/exec') { let b = ''; req.on('data', (c) => { b += c; }); req.on('end', () => { got = JSON.parse(b); res.writeHead(302, { Location: '/echo?op=' + got.op }); res.end(); }); return; }
       const op = new URL(req.url, 'http://x').searchParams.get('op');
       if (op === 'slow') return;                                              // 永不回應 → 逾時
+      hits[op] = (hits[op] || 0) + 1;
+      if (op === 'flaky' && hits[op] === 1 || op === 'html' || op === 'export') { res.writeHead(404, { 'Content-Type': 'text/html' }); return res.end('<html><title>找不到網頁</title></html>'); }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(op === 'bad' ? { ok: false, code: 'BAD_REQ', message: '不行' } : op === 'authbad' ? { ok: false, code: 'AUTH', message: '橋接金鑰錯誤' }
         : { ok: true, data: { op, method: req.method } }));
@@ -383,6 +385,12 @@ async function main() {
     eq('real bridge AUTH mapped to BRIDGE (detail kept for log)', e1b, ['BRIDGE', 'Google 雲端暫時連不上，請稍後再試', true]);
     const t0 = Date.now(); let e2 = null; try { await br.call('slow', {}, 0.3); } catch (e) { e2 = e.code; }
     eq('real bridge timeout via AbortSignal', [e2, Date.now() - t0 < 2000], ['BRIDGE_TIMEOUT', true]);
+    const rf = await br.call('flaky');
+    eq('real bridge retries once when Google returns a non-JSON 404 page', [rf.op, hits.flaky], ['flaky', 2]);
+    let eh = null; try { await br.call('html'); } catch (e) { eh = [e.code, /不是 JSON/.test(e.detail)]; }
+    eq('real bridge gives up after one retry (2 attempts, BRIDGE)', [eh, hits.html], [['BRIDGE', true], 2]);
+    let ex = null; try { await br.call('export'); } catch (e) { ex = e.code; }
+    eq('real bridge never retries export (EXPORT_ONCE)', [ex, hits.export], ['BRIDGE', 1]);
     let e3 = null; try { await makeBridge('', '').call('quota'); } catch (e) { e3 = e.code; }
     eq('real bridge missing config', e3, 'BRIDGE');
     gas.closeAllConnections(); gas.close(); }

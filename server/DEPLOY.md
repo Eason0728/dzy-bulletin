@@ -27,10 +27,10 @@
 
 - 所有路徑都從 `$HOME` 推導，手冊裡沒有任何人的帳號名稱。
 - `<...>` 是佔位：網址、金鑰、試算表 ID 一律不寫進本手冊、issue、commit。**Funnel 網址是部署時產生的，只在對話裡交給 Eason**（他轉給負責 M5 的人填 `js/config.js`），不寫進 #9 留言。
-- **每一段指令前都先貼這一行**（Claude 的每次 Bash 呼叫是新的 shell，變數不會留著）：
+- **每段指令前都要先貼這段**（Claude 的每次 Bash 呼叫是新的 shell，變數不會留著）。`export PATH` 讓子程序（`bash tools/build.sh`、`restore.js` 呼叫的程式等）也用 `~/.local/node` 的 Node 24，不會撿到 PATH 上別的 node；用 shell 函式包 node 做不到這點，因為函式不會傳給子程序：
 
 ```sh
-REPO="$HOME/dzy-bulletin"; DATA="$HOME/dzy-bulletin-data"; NODE="$HOME/.local/node/bin/node"; TS=/Applications/Tailscale.app/Contents/MacOS/Tailscale; U="gui/$(id -u)"; PORT=8793
+export PATH="$HOME/.local/node/bin:$PATH"; REPO="$HOME/dzy-bulletin"; DATA="$HOME/dzy-bulletin-data"; NODE="$HOME/.local/node/bin/node"; TS=/Applications/Tailscale.app/Contents/MacOS/Tailscale; U="gui/$(id -u)"; PORT=8793
 ```
 
 - Eason 要親手做的事只有**兩批**，都集中成一張清單：**第 3 步（部署前）**、**第 8 步（現場驗證）**。Claude 做到那裡就**停下來**，把那一批整段貼給 Eason，等他說「做完了」再跑驗證。其他步驟都是 Claude 自己做，不需要 sudo。
@@ -46,7 +46,7 @@ REPO="$HOME/dzy-bulletin"; DATA="$HOME/dzy-bulletin-data"; NODE="$HOME/.local/no
 （照 Eason 那段話，repo 應該已經 clone 在 `~/dzy-bulletin`；第一次跑 git 跳出的「安裝命令列開發者工具」對話框 Eason 應已按過安裝。）
 
 ```sh
-REPO="$HOME/dzy-bulletin"; DATA="$HOME/dzy-bulletin-data"; NODE="$HOME/.local/node/bin/node"; TS=/Applications/Tailscale.app/Contents/MacOS/Tailscale; U="gui/$(id -u)"; PORT=8793
+export PATH="$HOME/.local/node/bin:$PATH"; REPO="$HOME/dzy-bulletin"; DATA="$HOME/dzy-bulletin-data"; NODE="$HOME/.local/node/bin/node"; TS=/Applications/Tailscale.app/Contents/MacOS/Tailscale; U="gui/$(id -u)"; PORT=8793
 echo "== 使用者"; whoami; echo "HOME=$HOME uid=$(id -u) shell=$SHELL"
 echo "== FileVault"; fdesetup status
 echo "== 自動登入"; defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser 2>/dev/null || echo "（未設定自動登入）"
@@ -83,7 +83,7 @@ echo "== 磁碟"; df -h "$HOME" | tail -1
 | 埠 8793 | 沒人在聽 | 查是誰（`lsof` 會列出程序），請 Eason 決定 |
 | 既有 job／`$DATA` | 無 | 有的話**停**，不要覆蓋，回報給 Eason |
 
-**前提（請 Eason 口頭確認）**：Apps Script 已部署 M2（#7）的橋接版本，指令碼屬性 `PRIMARY` 目前是 `gas`（或未設）。
+**前提（請 Eason 口頭確認）**：Apps Script 已部署 M2 橋接版 @27，指令碼屬性 `PRIMARY` 目前是 `gas`（或未設）。
 
 ---
 
@@ -93,7 +93,7 @@ echo "== 磁碟"; df -h "$HOME" | tail -1
 下載放在 `~/.local/src`（**不要**用「下載」資料夾：它受 macOS 權限保護，背景存取會跳對話框或 `Operation not permitted`）。
 
 ```sh
-REPO="$HOME/dzy-bulletin"; DATA="$HOME/dzy-bulletin-data"; NODE="$HOME/.local/node/bin/node"; TS=/Applications/Tailscale.app/Contents/MacOS/Tailscale; U="gui/$(id -u)"; PORT=8793
+export PATH="$HOME/.local/node/bin:$PATH"; REPO="$HOME/dzy-bulletin"; DATA="$HOME/dzy-bulletin-data"; NODE="$HOME/.local/node/bin/node"; TS=/Applications/Tailscale.app/Contents/MacOS/Tailscale; U="gui/$(id -u)"; PORT=8793
 case "$(uname -m)" in arm64) ARCH=arm64;; x86_64) ARCH=x64;; *) echo "未知晶片"; exit 1;; esac
 NODE_DIST="<Node 官方發行站的 latest-v24.x 目錄（Node.js 官網 → 下載 → 預先編譯的二進位檔；不含結尾斜線）>"
 mkdir -p "$HOME/.local/src" && cd "$HOME/.local/src" \
@@ -103,12 +103,13 @@ mkdir -p "$HOME/.local/src" && cd "$HOME/.local/src" \
  && grep " $F\$" SHASUMS256.txt | shasum -a 256 -c - \
  && tar -xzf "$F" -C "$HOME/.local" \
  && ln -sfn "$HOME/.local/${F%.tar.gz}" "$HOME/.local/node" \
- && "$NODE" -v && "$NODE" -e "require('node:sqlite'); console.log('node:sqlite OK')"
+ && "$NODE" -v && "$NODE" -e "require('node:sqlite'); console.log('node:sqlite OK')" \
+ && command -v node                                          # 期望 …/.local/node/bin/node（共用段的 export PATH 生效）
 ```
 
 - 期望最後印出 `…: OK`（SHA256 相符）、`v24.x.y`、`node:sqlite OK`。任一環失敗，後面都不會執行；刪掉 `~/.local/src` 裡的檔重來。
 - `NODE_DIST` 由 Mac mini 的 Claude 自己填上官方網址（本手冊不寫網址）；**只能是 Node.js 官方網站**，不要用鏡像站。
-- 本服務的程式不會用名字去呼叫 `node`，launchd 設定裡是絕對路徑，所以不必改 shell 的 `PATH`（手動執行時一律寫 `"$HOME/.local/node/bin/node"`）。
+- launchd 設定裡是絕對路徑，不靠 `PATH`；不改 shell 設定檔。手動執行時靠每段開頭的 `export PATH=…`（或直接寫 `"$HOME/.local/node/bin/node"`）。
 
 ---
 
@@ -117,7 +118,7 @@ mkdir -p "$HOME/.local/src" && cd "$HOME/.local/src" \
 **位置固定在 `$HOME/dzy-bulletin`**，不要放在「桌面」「文件」「下載」底下——macOS 會擋背景程式讀那幾個資料夾（log 會出現 `Operation not permitted`）。
 
 ```sh
-REPO="$HOME/dzy-bulletin"; DATA="$HOME/dzy-bulletin-data"; NODE="$HOME/.local/node/bin/node"; TS=/Applications/Tailscale.app/Contents/MacOS/Tailscale; U="gui/$(id -u)"; PORT=8793
+export PATH="$HOME/.local/node/bin:$PATH"; REPO="$HOME/dzy-bulletin"; DATA="$HOME/dzy-bulletin-data"; NODE="$HOME/.local/node/bin/node"; TS=/Applications/Tailscale.app/Contents/MacOS/Tailscale; U="gui/$(id -u)"; PORT=8793
 BRANCH="mini/m4"                                            # M1～M4 已合併到 main 時改成 main（以 Eason 那段話為準）
 if [ -d "$REPO/.git" ]; then git -C "$REPO" fetch -q origin && git -C "$REPO" checkout -q "$BRANCH" && git -C "$REPO" pull -q --ff-only; else git clone -q -b "$BRANCH" "<repo 網址>" "$REPO"; fi
 git -C "$REPO" log --oneline -1
@@ -357,7 +358,12 @@ echo "第 6 步 /health（$(date '+%F %T')）：$(curl -s http://127.0.0.1:8793/
 | `"error"` 以 **`鏡像：BAD_REQ`** 開頭的任何一種——例如 `鏡像：BAD_REQ 鏡像資料全空，拒絕覆寫`、`鏡像：BAD_REQ 鏡像的公告筆數（0）比現有（N）少一半以上，拒絕覆寫（確認無誤請帶 force）`、`鏡像：BAD_REQ 鏡像資料缺 …` | **危險訊號**：Apps Script 只有在 `PRIMARY=mini` 時才會檢查鏡像內容，所以 M4 階段看到任何 `BAD_REQ` 都代表現在是 `PRIMARY=mini`——正式站的寫入正在回 MOVED，**同仁此刻簽不了名**（Apps Script 的防呆擋下了空庫，試算表沒被清空） | **立刻停下所有步驟**，告訴 Eason：「請馬上到 Apps Script 指令碼屬性把 `PRIMARY` 改回 `gas`」。改完後 `launchctl kickstart gui/$(id -u)/com.dzy.bulletin.mirror` 跑一次確認，應變回上一列。救回後失敗次數會累計到 2、`/health` 轉 `yellow`（鏡像連續失敗）——**不要為了拿綠燈一直重跑**；證據檔照實寫「yellow（PRIMARY 誤設已救回）」，回報第 6 步那一項也照填 |
 | `"error":"鏡像：BRIDGE mirror: AUTH 橋接金鑰錯誤"`（daily 則是 `BRIDGE backup: AUTH 橋接金鑰錯誤`） | 兩邊金鑰不一致 | 故障排除 D |
 | 其他（`BRIDGE_TIMEOUT`、`回應不是 JSON`、`未設定 Google 橋接`…） | 見故障排除 D | — |
-| `mirror-last.json` 的 `missing`／`bad` 大於 0 | 本機缺簽名圖／壞簽名圖（M4 空庫不會出現；M5 之後才可能） | `/health` 會黃；清單在 `missingIds`／`badIds` 與 `mirror.log`，回報 Eason，不要自己刪資料。壞圖（bad）要重試時，由負責的人把 `$DATA/logs/sig-state.json` 裡那筆刪掉，下一輪就會再傳 |
+| `mirror-last.json` 的 `missing`／`bad` 大於 0 | 本機缺簽名圖／本機圖檔損毀（M4 空庫不會出現；M5 之後才可能） | `/health` 會黃；清單在 `missingIds`／`badIds` 與 `mirror.log`。回報 Eason，不要自己刪資料；確認放棄的那幾張才由人寫進 `sig-skip.json`（故障排除 E） |
+| `skipped` 大於 0（有 `skippedIds`） | 這幾張寫在人工略過清單 `logs/sig-skip.json`，人已判斷過 | 正常，不轉黃；回報時列出筆數 |
+| `"busy":true` | 另一輪鏡像（或還原）正拿著工作鎖，這次沒跑 | 等它結束再看；手動 `--all` 撞到時會印「已跳過」並以 1 結束 |
+| `"running":true` | `--all` 還在跑（每輪更新 `at` 當心跳），這是跑到一半的狀態 | 等它結束，看最後的 `pending` 與結束碼 |
+| `error` 含 `logs/sig-skip.json 格式錯誤` | 人工略過清單寫錯，**整份不生效**（這一輪照常上傳、不略過任何一張）、`ok:false` | 照故障排除 E 的格式改正 |
+| `error` 含 `logs/sig-state.json 損毀，已改名保留為 …` | 程式自用的狀態檔壞了，已改名保留、這一輪不上傳 | 回報 Eason／MacBook Claude 核對，不要手改 |
 
 此時 `/health` 應為 `"level":"green"`（鏡像失敗次數 1，未達黃燈門檻 2）——已用上面那段存進證據檔，回報時從證據檔貼。
 **已知且預期**：之後每小時（以及每次重開機載入時）的鏡像都會被擋，下一輪之後 `/health` 就轉 `yellow`（`why` 為「鏡像連續失敗」），直到 M5 切換。M5 之前守門還沒接上，不會告警。
@@ -531,7 +537,7 @@ Funnel 網址：**在對話裡**交給 Eason，不寫在上面。
 
 ## 交接給 M5（重要，負責切換的人必讀）
 
-Mac mini 上的位置（M5 的指令照這裡寫；這台沒把 Node 放進 `PATH`，直接打 `node` 會 `command not found`——要嘛寫絕對路徑 `"$HOME/.local/node/bin/node"`，要嘛像下面一樣先定義 `node()` 函式）：
+Mac mini 上的位置（M5 的指令照這裡寫；這台的 shell 設定檔沒把 Node 放進 `PATH`，所以**每段指令前都要先貼**下面那段的 `export PATH=…` 並用 `command -v node` 確認指到 `~/.local/node/bin`——不要用 shell 函式包 node，函式不會傳給子程序）：
 
 | 東西 | 位置 |
 |---|---|
@@ -544,8 +550,8 @@ Mac mini 上的位置（M5 的指令照這裡寫；這台沒把 Node 放進 `PAT
 1. **設 `PRIMARY=mini` 之前，先停掉鏡像 job**。原因：一旦 `PRIMARY=mini`，Apps Script 就接受鏡像；每小時的鏡像若剛好在「設了 `PRIMARY=mini`」到「`migrate.js` 完成」之間跑，會嘗試把 Mac mini 的空庫寫進正式試算表（全空的會被 Apps Script 擋下，但只有一兩筆測試資料時擋不住）。完整順序（`migrate.js` 在 M5 的 PR 才進 repo）：
 
 ```sh
-REPO="$HOME/dzy-bulletin"; DATA="$HOME/dzy-bulletin-data"; U="gui/$(id -u)"
-node() { "$HOME/.local/node/bin/node" "$@"; }               # 這台的 node 不在 PATH；每段指令前都要定義一次（新 shell 不會記得）
+export PATH="$HOME/.local/node/bin:$PATH"; REPO="$HOME/dzy-bulletin"; DATA="$HOME/dzy-bulletin-data"; U="gui/$(id -u)"   # 每段指令前都要先貼這段
+command -v node                                             # 必須是 …/.local/node/bin/node，否則停下來
 launchctl disable "$U/com.dzy.bulletin.mirror"; launchctl bootout "$U/com.dzy.bulletin.mirror"   # ① 先停鏡像（disable 撐得過重開機，bootout 才真的停），再請 Eason 設 PRIMARY=mini、EXPORT_ONCE=1
 node "$REPO/server/migrate.js" --dry-run                    # ② 呼叫 export（一次性）並立刻存成本機匯出檔，印筆數與簽名圖預估時間；最後一行是匯出檔路徑
 node "$REPO/server/migrate.js" --from "<②印出的匯出檔>"      # ③ 正式搬遷：export 已在 ② 用掉（再呼叫會回 AUTH），一律 --from；六項全 ✅ 才往下
@@ -554,7 +560,7 @@ cat "$DATA/logs/mirror-last.json"; echo                     # ⑤ 等一兩分�
 ```
 
    **匯出檔**（②存下的 JSON，權限 600）含全部同仁密碼雜湊、登入簽章金鑰與管理通行碼雜湊，比照 `.env` 禁令：Claude 不打開、不印出、不貼進對話；搬遷確認無誤後由 Eason 決定刪除。完整切換步驟與失敗處理以 M5 的 `server/CUTOVER.md` 為準，回退以 `server/ROLLBACK.md` 為準。
-   回退時的手動鏡像，順序不可調換（#10）：① `launchctl disable "$U/com.dzy.bulletin.mirror"; launchctl bootout "$U/com.dzy.bulletin.mirror"`（否則 launchd 那一輪拿著工作鎖時，`--all` 會直接跳過並印 `pending=null`，容易誤讀）→ ② `touch "$DATA/READONLY"` → ③ `node "$REPO/server/mirror.js" --all`，重複到 `mirror-last.json` 的 `pending` 為 0 → ④ **這之後**才請 Eason 把 `PRIMARY` 改回 `gas`（Apps Script 只在 `PRIMARY=mini` 時接受鏡像，先改就鏡像不上去了）。
+   回退時的手動鏡像，順序不可調換（#10）：① `launchctl disable "$U/com.dzy.bulletin.mirror"; launchctl bootout "$U/com.dzy.bulletin.mirror"`（否則 launchd 那一輪拿著工作鎖時，`--all` 會直接跳過並印 `pending=null`，容易誤讀）→ ② `touch "$DATA/READONLY"` → ③ `node "$REPO/server/mirror.js" --all`，完成條件是印出 `pending=0` 且結束碼 0（`echo $?`）；只要 `pending≠0`（或撞到另一輪「已跳過」）就以 1 結束，照印出的原因處理後重跑 → ④ **這之後**才請 Eason 把 `PRIMARY` 改回 `gas`（Apps Script 只在 `PRIMARY=mini` 時接受鏡像，先改就鏡像不上去了）。
 2. Funnel 網址由 Eason 交給負責改 `js/config.js` 的人。
 3. 管理通行碼：搬遷後沿用 Apps Script 的雜湊，不需要 `ADMIN_INIT.txt`。
 
@@ -600,8 +606,21 @@ cat "$DATA/logs/mirror-last.json"; echo                     # ⑤ 等一兩分�
 - `…回應不是 JSON` → `BRIDGE_URL` 不是 Apps Script 網頁應用程式的 `/exec` 網址，或該部署的存取權不是「任何人」。
 - `BRIDGE_TIMEOUT …`／`連線 Google 逾時`、`Google 雲端暫時連不上` → Apps Script 排隊或 Google 暫時故障；下一輪會自己重跑，連續多次再回報。
 - `/health` 黃燈、`why` 有「備份資料夾有共用者」→ 雲端硬碟「鼎兆元｜電子佈告欄備份」資料夾被分享了。請 Eason 在雲端硬碟對該資料夾 → 共用 → 移除所有共用者（也不要開「知道連結的人」），隔天快照後 `sharedWith` 回到 0 就轉綠；急的話 `launchctl kickstart gui/$(id -u)/com.dzy.bulletin.daily` 立刻重跑一次。
-- `/health` 黃燈、`why` 有「本機缺簽名圖」或「有壞簽名圖」→ 見第 6 步判讀表最後一列（M4 空庫不會出現）。
+- `/health` 黃燈、`why` 有「本機缺簽名圖」或「有壞簽名圖」→ 見第 6 步判讀表與故障排除 E（M4 空庫不會出現）。
 - `/health` 黃燈、`why` 有「備份資料夾權限讀不到」（`sharedWith` 為 -1）→ Apps Script 這次讀不到資料夾權限，沒驗證到「僅 owner」。通常下一次快照就恢復；連續兩天都是 -1 再回報。
+
+
+**E. 簽名回填（M5 搬資料之後才會遇到；M4 空庫不會出現）**
+- `mirror-last.json` 的欄位：`pending`（本機有圖、驗過、還沒回填）、`missing`（本機找不到圖）、`bad`（本機圖檔損毀：0 位元組、PNG／JPEG 開頭或結尾不對）、`skipped`（人工略過）、`failed`（這一輪 Drive 端傳不上去的張數，屬暫時故障、留在 pending 下一輪重試）、`busy`／`running`（見第 6 步判讀表）。`missing`、`bad` 會讓 `/health` 黃；`skipped` 不會。
+- **人工略過清單 `$DATA/logs/sig-skip.json`**：只能由人手動建立（Eason 決定、或經他同意由 Claude 代寫），程式**只讀不寫**。格式是一個 JSON 物件，鍵是「公告id/同仁id」，值是**非空的原因字串**，例如：
+
+```json
+{ "P-20260920-001/S-013": "2026-10-01 Drive 一直拒收，Eason 同意略過" }
+```
+
+  寫錯格式（不是物件、值不是非空字串、JSON 壞掉）時**整份不生效**：這一輪照常上傳、不略過任何一張，並記 `ok:false`（`error` 含「sig-skip.json 格式錯誤」）。鍵打錯字（對不到任何已讀）會列在警告裡。寫完可用 `python3 -m json.tool "$HOME/dzy-bulletin-data/logs/sig-skip.json" >/dev/null && echo 格式OK` 先驗。
+- **不要改 `$DATA/logs/sig-state.json`**：那是程式自用的（記「已上傳、還沒寫進庫」的 Drive id），手改或刪掉會讓那些圖重傳成孤兒檔。它壞掉時程式會自己改名成 `.corrupt-*` 保留並 `ok:false`，交給人核對。
+- 回退前的 `mirror.js --all`：`pending≠0` 就以 1 結束；一整輪沒有進展會印「Drive 端有 N 張傳不上去，稍後再跑」並列出是哪幾張——隔一陣子再跑；多次重跑仍失敗，而且確定要放棄的，才寫進 `sig-skip.json`。
 
 ---
 
@@ -617,13 +636,30 @@ FileVault 開著就不能自動登入，LaunchAgent 在停電重開後不會啟�
 
 ---
 
-## 附錄 B：之後更新程式
+## 附錄 B：之後更新程式（已部署或部署到一半的機器）
+
+適用：Mac mini 已照舊版手冊部署（或做到一半），要更新到新版。`mini/m4` 在合併進 `main` 之前可能被 rebase（改寫歷史），這時單純 `git pull` 會失敗（無法快轉）；下面的寫法兩種情況都能處理。**M1～M4 合併後**要改跟 `main`：先 `git -C "$REPO" fetch -q origin && git -C "$REPO" checkout -q main`，再照下面做。**部署做到一半時**：先照下面更新程式，再用新版手冊從原本做到的那一步繼續（證據檔保留，不用重做前面的步驟）。
 
 ```sh
-REPO="$HOME/dzy-bulletin"; U="gui/$(id -u)"
-git -C "$REPO" pull --ff-only
-launchctl kickstart -k "$U/com.dzy.bulletin"
-curl -sf --retry 20 --retry-delay 1 --retry-connrefused http://127.0.0.1:8793/health; echo
+export PATH="$HOME/.local/node/bin:$PATH"; REPO="$HOME/dzy-bulletin"; DATA="$HOME/dzy-bulletin-data"; NODE="$HOME/.local/node/bin/node"; U="gui/$(id -u)"   # 每段指令前都要先貼這段
+OLD=$(git -C "$REPO" rev-parse --short HEAD)
+[ -z "$(git -C "$REPO" status --porcelain)" ] || { echo "✗ repo 有本機改動，停下來回報（不要自己丟掉）"; exit 1; }
+git -C "$REPO" fetch -q origin && BR=$(git -C "$REPO" branch --show-current) && echo "分支 $BR"
+git -C "$REPO" merge --ff-only -q "origin/$BR" 2>/dev/null || git -C "$REPO" reset -q --keep "origin/$BR"   # 合併前的分支可能被 rebase 過、無法快轉：改用 reset --keep 對齊遠端（.env 被 git 忽略，不受影響）
+NEW=$(git -C "$REPO" rev-parse --short HEAD); [ "$NEW" = "$(git -C "$REPO" rev-parse --short "origin/$BR")" ] && echo "$OLD → $NEW"
+git -C "$REPO" diff --stat "$OLD" "$NEW" -- server/launchd/ .gitignore      # 有沒有改到 launchd 範本（OLD 被 rebase 掉時仍可比對，git 會保留在 reflog）
+ls -l "$REPO/server/.env"                                                    # 期望仍在、-rw-------
+git -C "$REPO" status --porcelain                                            # 期望空白（.env 仍被忽略）
+echo "更新程式：$OLD → $NEW（$(date '+%F %T')）" >> "$DATA/logs/deploy-evidence.txt"
 ```
 
-`server/launchd/*.plist` 有改動時，要重做第 5 步的替換，並對改到的 job `bootout` 再 `bootstrap`。
+**重啟三個 job**：
+- `server/launchd/` **沒有改動**（上面 diff 是空的）：
+  - 伺服器常駐，要重啟才會載入新程式：`launchctl kickstart -k "$U/com.dzy.bulletin"`，再 `curl -sf --retry 20 --retry-delay 1 --retry-connrefused http://127.0.0.1:8793/health; echo` 確認。
+  - mirror、daily 每次排程都是新開一個程序，**下一輪自動用新程式**，不用重啟。確認沒有正在跑的舊程序：`launchctl print "$U/com.dzy.bulletin.mirror" | grep -E '^\s*state ='`（`running` 就等它結束）。
+  - M4 階段**不要**為了測試去 `kickstart` mirror（每跑一次都被擋、失敗次數 +1）；daily 可以 `launchctl kickstart "$U/com.dzy.bulletin.daily"` 驗一次。
+- `server/launchd/` **有改動**：三個都重做第 5 步的替換、`plutil -lint`，再逐一 `launchctl bootout "$U/<label>"` → `launchctl bootstrap "$U" ~/Library/LaunchAgents/<label>.plist`。注意 mirror 的 `RunAtLoad`：bootstrap 時會馬上跑一輪，M4 階段那一輪被擋、`/health` 可能因此轉黃，屬預期。
+- 兩種情況最後都跑第 5 步的驗證（PID 相符）與 `curl -s http://127.0.0.1:8793/health`。
+
+**`sig-state.json` 的相容性**（從 M3 定稿前的版本升上來時）：舊版會在 `$DATA/logs/sig-state.json` 寫 `{ "fails": {…}, "unsaved": {…} }`（fails 是舊的「連續失敗 3 次判壞圖」計數）。新版只讀 `unsaved`（鍵的格式相同，照常沿用），**忽略 `fails`**，下一次寫檔時自然去掉；壞圖改由本機檢查圖檔判定。所以**什麼都不用做，也不要刪這個檔**（刪掉會讓 `unsaved` 裡已上傳的圖重傳成孤兒檔）。M4 階段資料庫是空的，這個檔通常根本不存在。
+舊版「把某張從 `sig-state.json` 刪掉就會重試」的做法已經作廢，改用故障排除 E 的 `sig-skip.json`（只用來略過，不用來重試）。

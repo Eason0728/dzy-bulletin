@@ -14,7 +14,12 @@ var UI = (function () {
     clearTimeout(toast._t); toast._t = setTimeout(function () { el.classList.remove('show'); }, 2000);
   }
   // 面板：lock=true 時點遮罩不會關
+  // 面板換內容或關閉時要還原的動作（簽名板鎖背景用；不管從哪條路離開都會解鎖）
+  var leave = null;
+  function runLeave() { if (leave) { var f = leave; leave = null; try { f(); } catch (_) {} } }
+  function onLeave(fn) { leave = fn; }
   function sheet(html, lock) {
+    runLeave();
     locked = !!lock;
     var s = $('sheet'); s.innerHTML = html; s.scrollTop = 0;
     $('mask').classList.add('show');
@@ -22,6 +27,7 @@ var UI = (function () {
     return s;
   }
   function closeSheet() {
+    runLeave();
     $('mask').classList.remove('show');
     if (typeof Staff !== 'undefined') Staff.onSheetClosed();
   }
@@ -84,6 +90,6 @@ var UI = (function () {
   }
   function fatal(msg) { $('app').innerHTML = '<div class="errbox"></div>'; $('app').firstChild.textContent = msg; }
 
-  return { $: $, esc: esc, toast: toast, sheet: sheet, closeSheet: closeSheet, sheetOpen: sheetOpen, busy: busy,
+  return { $: $, esc: esc, toast: toast, sheet: sheet, closeSheet: closeSheet, onLeave: onLeave, sheetOpen: sheetOpen, busy: busy,
     ficon: ficon, fileRow: fileRow, view: view, store: store, fmtTime: fmtTime, fatal: fatal };
 })();

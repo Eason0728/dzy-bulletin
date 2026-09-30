@@ -129,7 +129,7 @@ textarea.inp{min-height:120px;resize:vertical}
 /* 簽名板：預設（電腦）面板內加高；手機（窄螢幕）佔滿整個畫面 */
 .sg-pad{width:100%;height:260px;background:#fff;border:2px dashed #cfc7ba;border-radius:12px;touch-action:none;display:block}
 @media (max-width:700px){
-  .mask.full{padding:0;align-items:stretch}
+  .mask.full{padding:0;align-items:stretch;z-index:70}   /* 蓋過本機模式的 .demo 提示列（z-index 60），返回鈕才按得到 */
   .sheet.full{max-width:none;max-height:none;height:100vh;height:100svh;border-radius:0;display:flex;flex-direction:column;overflow:hidden;padding:0}
   .sheet.full .bar{border-radius:0}
   .sheet.full .body{flex:1;display:flex;flex-direction:column;min-height:0;padding:10px 12px calc(12px + env(safe-area-inset-bottom))}

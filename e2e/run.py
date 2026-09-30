@@ -419,6 +419,8 @@ def main():
 
         try: moved_check(b)
         except Exception as e: check('M 後端搬家檢查執行中斷（可能是重載迴圈）', False, repr(e))
+        try: netfail_check(b)
+        except Exception as e: check('N 後端打不通檢查執行中斷', False, repr(e))
         check('Z 全程沒有頁面錯誤（pageerror）', not errs, errs)
         b.close()
 
@@ -484,6 +486,44 @@ def moved_check(b):
     pg.click('#toAdmin'); pg.fill('#pc', 'x' * 8); pg.click('#pcGo'); pg.wait_for_selector('#pcErr:not(:empty)', timeout=8000); pg.wait_for_timeout(800)
     check('M 主管登入 5 分鐘內再 MOVED：停在提示', loads[0] == 4 and pg.inner_text('#pcErr') == '系統搬家中，約 10 分鐘後請重新整理', f'載入 {loads[0]} 次、「{pg.inner_text("#pcErr")}」')
     check('M 全程沒有頁面錯誤（pageerror）', not errs, errs)
+    ctx.close()
+
+
+def _dead_port():
+    """挑一個現在沒有程式在聽的本機埠：先綁一個臨時埠拿到號碼，立刻關掉。"""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as so:
+        so.bind(('127.0.0.1', 0)); port = so.getsockname()[1]
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as so:          # 再確認一次真的沒人接
+        so.settimeout(0.5)
+        if so.connect_ex(('127.0.0.1', port)) == 0: raise RuntimeError(f'埠 {port} 有程式在聽，換一次再跑')
+    return port
+
+
+def netfail_check(b):
+    """CUTOVER 8-3：後端打不通（Mac mini 關機、Funnel 斷線）時不白屏，畫面講清楚「連不上伺服器」。
+    頁面一定要從 localhost 打開：js/config.js 只在本機網址才接受 ?api=，否則會直接打正式後端。"""
+    import re
+    print('— 後端打不通（不白屏）—')
+    if not re.match(r'^http://localhost:\d+/?$', BASE):
+        raise RuntimeError(f'E2E_BASE 必須是 http://localhost:埠（現在是 {BASE}），否則 ?api= 不生效')
+    dead = 'http://127.0.0.1:%d' % _dead_port()
+    ctx = b.new_context(viewport={'width': 390, 'height': 844}, locale='zh-TW', timezone_id='Asia/Taipei')
+    guard_google(ctx)
+    pg = ctx.new_page()
+    errs, reqs = [], []
+    pg.on('pageerror', lambda e: errs.append(str(e)))
+    pg.on('request', lambda r: reqs.append(r.url))
+    pg.goto(BASE.rstrip('/') + '/?mode=cloud&api=' + dead)
+    got = pg.evaluate('CFG.GAS_URL')
+    if got != dead: raise RuntimeError(f'?api= 沒生效（CFG.GAS_URL={got}），為免打到正式後端中止')
+    pg.wait_for_selector('.errbox:not(:empty)', timeout=20000); pg.wait_for_timeout(300)
+    msg = pg.inner_text('.errbox')
+    check('N 後端打不通：畫面出現「連不上伺服器，請確認網路」', msg == '連不上伺服器，請確認網路', f'畫面：「{msg}」')
+    check('N 後端打不通：頁面有內容（有重試鈕，不是白屏）', pg.locator('#rt').is_visible() and len(pg.inner_text('body').strip()) > 10)
+    check('N 後端打不通：真的有去打那個沒人聽的埠', any(u.startswith(dead) for u in reqs), reqs[-5:])
+    pg.screenshot(path=os.path.join(ART, 'N01-連不上伺服器.png'))
+    check('N 全程沒有頁面錯誤（pageerror）', not errs, errs)
     ctx.close()
 
 

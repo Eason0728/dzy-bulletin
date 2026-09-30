@@ -211,7 +211,7 @@ node server/migrate.js --from <dry-run 印出的匯出檔>
 - [ ] Mac mini 的 Claude 裝回每小時鏡像（與 DEPLOY.md〈交接給 M5〉第 1 條相同，另外多一個 enable）：
   `job_on com.dzy.bulletin.mirror`（plist 設了 RunAtLoad，載入就會跑一輪）
   - 等它跑完（`logs/mirror.lock` 消失），`logs/mirror-last.json` 要是 `ok:true`、`pending:0`，而且沒有 `running`／`busy`。剛搬來的已讀都已經有 Drive id，所以 pending 是 0。
-  - **附件首次拉檔（M7，#18 D7）**：鏡像 ok 之後跑一次 `node server/mirror.js --files-scan; echo "exit=$?"`（列出附件資料夾〔含垃圾桶〕、把 Drive 上既有附件全拉到 `$DATA_DIR/files/`），印出 `count`／`pending`；首次量最大，`pending≠0` 就接著跑 `node server/mirror.js --files` 到 `pending=0`、exit 0。只在 Mac mini 上跑、只讀 Drive，**不佔切換窗口**：可以先往第 5 步走，在觀察日結束前補完即可。`files/` 是搬到 Mac mini 之後才有的東西，切換日不用從別處搬。
+  - **附件首次拉檔（M7，#18 D7）**：鏡像 ok 之後跑一次 `node server/mirror.js --files-scan; echo "exit=$?"`（列出附件資料夾〔含垃圾桶〕、把 Drive 上既有附件全拉到 `$DATA_DIR/files/`），印出 `count`／`pending`；首次量最大，`pending≠0` 就接著跑 `node server/mirror.js --files` 到 `pending=0`、exit 0。只在 Mac mini 上跑、只讀 Drive，**不佔切換窗口**：可以先往第 5 步走，在觀察日結束前補完即可。跑很久是正常的：它分批做、每批放掉鏡像鎖，每小時那輪照樣插得進來，期間 `/health` 短暫出現「鏡像超過 3 小時沒跑」黃燈屬預期。`files/` 是搬到 Mac mini 之後才有的東西，切換日不用從別處搬。
   - 第 3 步有 Drive 讀不到的圖時：migrate 把那幾筆的本機 `sigId` 設成空白、`driveSigId` 保留原值，所以 mirror.js **不會**把它們算進 pending／missing／bad／skipped（四種都只看 `sigId` 有值的列），也**不需要**寫進 `logs/sig-skip.json`，`missing` 仍是 0。這幾筆在 Mac mini 與 GAS 上都看不到圖，清單以第 3 步 migrate 印出的「簽名圖」❌ 為準，記在 #10。
 
 **失敗怎麼辦**

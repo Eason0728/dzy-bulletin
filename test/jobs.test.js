@@ -43,7 +43,7 @@ function fakeBridge(fail) {
   const b = { calls: [], sizes: [], names: [], mirrored: null, backup: null, fail: fail || {}, idsShort: false, nullIf: null, onSigs: null, onMirror: null };
   // M7 第 3 步（fileget／filelist）另外記在 fcalls，不混進 calls（既有斷言只看簽名與鏡像）。drive＝假附件資料夾 { id: { name, mime, buf, trashed } }；
   // ffail(op, p)＝'timeout'｜'auth'｜'null'｜'md5'｜假值：模擬橋接逾時、金鑰錯、Drive 找不到、md5 不符。segs＝每次 fileget 回的位元組數
-  Object.assign(b, { fcalls: [], drive: {}, ffail: null, segs: [], extraList: [] });
+  Object.assign(b, { fcalls: [], drive: {}, ffail: null, segs: [], extraList: [], onGet: null });
   b.call = async (op, p) => {
     if (op === 'fileget' || op === 'filelist') {
       b.fcalls.push(op);
@@ -53,10 +53,11 @@ function fakeBridge(fail) {
       const md5 = (buf) => require('crypto').createHash('md5').update(buf).digest('hex');
       if (op === 'filelist') return { files: Object.keys(b.drive).map((id) => { const x = b.drive[id]; return { id, name: x.name, mime: x.mime, size: x.buf.length, md5: md5(x.buf), trashed: !!x.trashed }; }).concat(b.extraList), nextPageToken: '' };
       const x = b.drive[p.id];
+      if (b.onGet) b.onGet(p);
       if (!x || mode === 'null') return { file: null };
       const end = Math.min(x.buf.length, p.off + p.len);
       b.segs.push(end - p.off);
-      return { file: { id: p.id, name: x.name, mime: x.mime, size: x.buf.length, md5: mode === 'md5' ? '0'.repeat(32) : md5(x.buf), trashed: !!x.trashed }, off: p.off, data: x.buf.subarray(p.off, end).toString('base64'), eof: end >= x.buf.length };
+      return { file: { id: p.id, name: x.name, mime: x.mime, size: x.buf.length, md5: mode === 'md5' ? '0'.repeat(32) : md5(x.buf), trashed: !!x.trashed }, off: mode === 'badoff' ? p.off + 1 : p.off, data: x.buf.subarray(p.off, end).toString('base64'), eof: end >= x.buf.length };
     }
     b.calls.push(op);
     if (b.fail[op]) { const e = new Error('Google 雲端暫時連不上，請稍後再試'); e.code = 'BRIDGE'; e.detail = op + ': 假錯誤'; throw e; }
@@ -632,7 +633,7 @@ async function main() {
       eq('M7 補齊：刪掉 F-B 位元組與 meta、公告仍引用 → 同一輪先補 meta（source:posts）再補位元組', [!!meta(dir, 'F-B'), meta(dir, 'F-B').source, localBuf(dir, 'F-B').equals(b), B.n('fileget') - n0, r2.files.pending, r2.files.count], [true, 'posts', true, 1, 0, 2]); }
 
     // 失敗語意：(a) BRIDGE_TIMEOUT (b) AUTH (c) file:null (d) md5 錯 → 留 pending、.tmp 不殘留、mirror.ok／pending／fails 不變、files.failed 有數字；下一輪恢復就補齊
-    for (const mode of ['timeout', 'auth', 'null', 'md5']) {
+    for (const mode of ['timeout', 'auth', 'null', 'md5', 'badoff']) {
       const dir = tmp(); seedDb(dir, 3);
       const B = fakeBridge(), buf = put(B, 'F-X', 9 * MB), ok2 = put(B, 'F-Y', 1000);
       want(dir, 'F-X', { wantedAt: iso(Date.now() - 1000) }); want(dir, 'F-Y');
@@ -684,6 +685,58 @@ async function main() {
       eq('M7 上限：3 個各 50MB → 一輪只抓 2 個（100MB）、剩 1', [r.files.fetched, r.files.pending, r.files.bytes, FL.hasBytes(dir, 'F-BIG2')], [2, 1, 100 * MB, false]);
       const r1 = await quiet(() => runMirror({ dir, bridge: B, filesMaxMB: 1000 }));
       eq('M7 上限可調（FILES_MAX_MB_PER_RUN）：放大後補完', [r1.files.fetched, r1.files.pending], [1, 0]); }
+    { const dir = tmp(); seedDb(dir, 0);                       // 預估會超量就停：3×40MB，第三個 40＋80＞100 → 一輪只抓 2 個（不是抓到 120MB 才停）
+      const B = fakeBridge(); for (let i = 0; i < 3; i++) { put(B, 'F-40M' + i, 40 * MB); want(dir, 'F-40M' + i, { size: 40 * MB, wantedAt: iso(Date.now() - (10 - i) * 1000) }); }
+      const r = await quiet(() => runMirror({ dir, bridge: B }));
+      eq('第 1 輪建議 4a：3×40MB → 預估下一個會超過 100MB 就停，一輪只抓 2 個', [r.files.fetched, r.files.pending, r.files.bytes, B.n('fileget')], [2, 1, 80 * MB, 10]); }
+    // 第 1 輪應修 1：補不到的檔不能把每輪額度吃光——從沒試過的先、再依 lastTryAt；Drive 找不到不算額度、死檔每輪最多再試 2 個
+    { const dir = tmp(); seedDb(dir, 0);
+      const B = fakeBridge(); const old = Date.now() - 5 * 86400e3;
+      for (let i = 0; i < 15; i++) want(dir, 'F-DEAD' + i, { wantedAt: iso(old + i * 1000) });   // Drive 上都沒有（已被垃圾桶永久刪除）
+      const r0 = await quiet(() => runMirror({ dir, bridge: B }));
+      eq('應修 1（前提）：15 個死檔第一次都試過、file:null 不算額度（15 次 fileget）、都記 lastTryAt／lastDead', [B.n('fileget'), r0.files.failed, r0.files.pending, !!meta(dir, 'F-DEAD0').lastTryAt, meta(dir, 'F-DEAD0').lastDead], [15, 15, 15, true, true]);
+      const buf = put(B, 'F-NEW', 2000); want(dir, 'F-NEW');
+      const n0 = B.n('fileget');
+      const r1 = await quiet(() => runMirror({ dir, bridge: B }));
+      eq('應修 1：累積 15 個死檔之後，新附件仍在同一輪補到；死檔這一輪只重試 2 個', [FL.hasBytes(dir, 'F-NEW') && localBuf(dir, 'F-NEW').equals(buf), r1.files.fetched, B.n('fileget') - n0, r1.files.pending], [true, 1, 3, 15]);
+      const tried1 = Array.from({ length: 15 }, (_, i) => 'F-DEAD' + i).filter((id) => meta(dir, id).lastTryAt !== meta(dir, 'F-DEAD14').lastTryAt || id === 'F-DEAD14');
+      const r2 = await quiet(() => runMirror({ dir, bridge: B }));
+      eq('應修 1：死檔依 lastTryAt 輪流重試（每輪 2 個、不會永遠是同兩個）', [r2.files.pending, B.n('fileget') - n0 - 3], [15, 2]);
+      // 死檔之外還有別種失敗（md5 錯）也不會卡住新檔：試過的排到後面
+      const bad = put(B, 'F-BADMD5', 500); want(dir, 'F-BADMD5', { wantedAt: iso(old - 1000) });
+      B.ffail = (op, p) => (op === 'fileget' && p.id === 'F-BADMD5' ? 'md5' : null);
+      await quiet(() => runMirror({ dir, bridge: B }));
+      const nb = put(B, 'F-NEW2', 700); want(dir, 'F-NEW2');
+      const r3 = await quiet(() => runMirror({ dir, bridge: B, filesMax: 1 }));
+      eq('應修 1：額度只有 1 個時，從沒試過的新檔排在試過失敗的舊檔前面', [FL.hasBytes(dir, 'F-NEW2'), FL.hasBytes(dir, 'F-BADMD5'), r3.files.fetched], [true, false, 1]);
+      void bad; void nb; void tried1; B.ffail = null; }
+    // 建議 1：lastScanAt 壞掉 → 當作沒掃過、這一輪重掃並重寫（不永久失敗）
+    { const dir = tmp(); seedDb(dir, 0);
+      const B = fakeBridge(); put(B, 'F-LS', 100);
+      await quiet(() => runMirror({ dir, bridge: B }));
+      const L0 = last(dir, 'mirror-last.json'); L0.files.lastScanAt = '壞掉的時間'; fs.writeFileSync(path.join(dir, 'logs/mirror-last.json'), JSON.stringify(L0));
+      const nl = B.n('filelist');
+      const r = await quiet(() => runMirror({ dir, bridge: B }));
+      eq('建議 1：lastScanAt 壞掉 → 重掃一次、寫回正確時間、files.ok', [B.n('filelist') - nl, !isNaN(Date.parse(r.files.lastScanAt)), r.files.ok, r.files.error], [1, true, true, undefined]);
+      await quiet(() => runMirror({ dir, bridge: B }));
+      eq('建議 1：之後同一天不再掃', B.n('filelist') - nl, 1); }
+    // 建議 2：補抓期間主管移除附件（markRemoved 寫了 removedAt）→ 補抓完寫 meta 不可蓋掉
+    { const dir = tmp(); seedDb(dir, 0);
+      const B = fakeBridge(); put(B, 'F-RM', 3000); want(dir, 'F-RM');
+      const stamp = '2026-10-01T01:02:03.000Z';
+      B.onGet = (p) => { if (p.id === 'F-RM') { const m = meta(dir, 'F-RM'); FL.writeMeta(dir, 'F-RM', Object.assign(m, { removedAt: stamp })); } };
+      await quiet(() => runMirror({ dir, bridge: B }));
+      eq('建議 2：下載中途被移除 → 補抓完 removedAt 仍是移除當下的時間、位元組已存', [meta(dir, 'F-RM').removedAt, FL.hasBytes(dir, 'F-RM'), !!meta(dir, 'F-RM').savedAt], [stamp, true, true]); }
+    // 建議 5：--files 分批、每批放掉鏡像鎖（每小時那輪插得進來）
+    { const dir = tmp(); seedDb(dir, 0);
+      const B = fakeBridge(); for (let i = 0; i < 25; i++) { put(B, 'F-BT' + i, 100); want(dir, 'F-BT' + i); }
+      await quiet(() => runMirror({ dir, bridge: B, filesMax: 1 }));
+      const grabbed = [];
+      const rf = await quiet(() => runFilesOnly({ dir, bridge: B, waitMs: 10, _betweenBatches: async (n) => {
+        const rel = J_lock(dir); grabbed.push(!!rel);           // 模擬每小時那輪在批次之間拿到鎖、跑一下再放掉
+        if (rel) setTimeout(rel, 30);
+      } }));
+      eq('建議 5：--files 分 3 批（10＋10＋4）、批次之間鎖都放掉（另一輪拿得到）、仍補到 pending=0', [rf.files.batches, grabbed, rf.files.fetched, rf.files.pending], [3, [true, true], 24, 0]); }
 
     // --all 不做第 3 步（fileget 0 次、files 沿用上一輪）；--files 不設上限補到 pending=0
     { const dir = tmp(); seedDb(dir, 3);
@@ -758,8 +811,11 @@ async function main() {
       [['時間戳異常（比現在還晚）'], 'yellow', 'green']);
     eq('mirror.bad／missing > 0 → 黃', [H(Object.assign({}, okM, { bad: 1 }), okB).why, H(Object.assign({}, okM, { missing: 2 }), okB).why], [['有壞簽名圖'], ['本機缺簽名圖']]);
     eq('尚未搬遷（notMigrated）→ 最多黃「尚未搬遷」：不判「鏡像連續失敗」、鏡像超過 6 小時也不判紅；快照規則照常',
-      [H(Object.assign({}, okM, { ok: false, fails: 5, notMigrated: true }), okB), H(Object.assign({}, okM, { at: ago(30), ok: false, fails: 30, notMigrated: true }), okB), H(Object.assign({}, okM, { notMigrated: true }), { at: ago(27), ok: true }).level],
+      [H(Object.assign({}, okM, { ok: false, fails: 5, notMigrated: true }), okB), H(Object.assign({}, okM, { at: ago(4), ok: false, fails: 5, notMigrated: true }), okB), H(Object.assign({}, okM, { notMigrated: true }), { at: ago(27), ok: true }).level],
       [{ level: 'yellow', why: ['尚未搬遷'] }, { level: 'yellow', why: ['尚未搬遷'] }, 'red']);
+    eq('第 1 輪應修 2：notMigrated 只蓋「連續失敗」與「超過 3 小時」；鏡像超過 6 小時沒跑的紅燈照判（at 變舊＝mirror 死了）',
+      [H(Object.assign({}, okM, { at: ago(6.5), ok: false, fails: 7, notMigrated: true }), okB), H(Object.assign({}, okM, { at: ago(48), notMigrated: true }), okB).level],
+      [{ level: 'red', why: ['鏡像超過 6 小時沒跑', '尚未搬遷'] }, 'red']);
     eq('結果檔讀不到（at 為 null）→ 紅、寫「結果檔讀不到」', H({ at: null, ok: false }, { at: null, ok: false }).why.slice(0, 2), ['鏡像結果檔讀不到', '快照結果檔讀不到']);
     const HF = (files) => judgeHealth({ mirror: okM, backup: okB, files, disk: { freeMB: 50000 } }, now);
     eq('M7：files.stale > 0 → 黃「有附件超過 24 小時沒補齊」；pending > 0 且 stale = 0 → 綠；沒有 files（還沒跑過第 3 步）→ 綠',

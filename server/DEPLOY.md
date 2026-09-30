@@ -382,6 +382,7 @@ node "$REPO/server/mirror.js" --files-scan; echo "exit=$?"     # 印出「附件
 echo "第 6 步 附件備份（$(date '+%F %T')）：$(node "$REPO/server/mirror.js" --files-verify | tail -1)" >> "$DATA/logs/deploy-evidence.txt"
 ```
 
+- 附件多時會跑很久（幾百個、上 GB 可能超過一小時），這是正常的。它分批做、每批做完就放掉鏡像鎖，每小時那輪照樣插得進來；但兩者輪流時鏡像會慢一些，`/health` 短暫出現「鏡像超過 3 小時沒跑」黃燈屬預期。
 - `pending` 不是 0（exit=1）：多半是量大或 Apps Script 排隊，隔幾分鐘再跑 `node "$REPO/server/mirror.js" --files`（不設上限、補到 `pending=0` 才 exit 0）。一直補不到的那幾個會列在「沒補到」後面，見故障排除 F。
 - 還沒鏡像過（`mirror-last.json` 不存在）時結果只印在畫面、不寫檔；之後每小時那輪（搬資料之後）會接手。
 - **附件資料夾「鼎兆元｜電子佈告欄附件」不要手動放任何檔**：Mac mini 只備份附件資料夾直屬的 Word／PDF／Excel，手動放的檔可能被當成附件備份下來（照片、Google 文件不會）。
@@ -461,8 +462,8 @@ open "http://localhost:8792/?mode=cloud&api=http://127.0.0.1:9"
 | V2 | 看 Mac mini 螢幕上剛打開的瀏覽器分頁 | 頁首「鼎兆元｜電子佈告欄」，中間「請選擇你是誰」視窗裡有紅字「連不上伺服器，請確認網路」和「重試」按鈕——**不是一片白** |
 | V3 | 手機（已中斷 Tailscale、4G）打 `<Funnel 網址>/health` | 看到 `{"ok":true,…}` |
 | V4 | Mac mini 選單列的 Tailscale 圖示 → **Disconnect**；手機再打一次 → 再按 **Connect**；手機再打一次。（附錄 A 的 Homebrew 版沒有選單列圖示：在終端機 App 執行 `tailscale down`，手機打一次，再 `tailscale up`，手機再打一次） | 中斷時手機**打不開**（逾時或無法連線）；連回後又看到 `{"ok":true,…}`（可能要等幾十秒） |
-| V5 | 蘋果選單 → 重新啟動（取消勾選「再次登入時重新打開視窗」）→ **放手，不碰鍵盤滑鼠** → 等 3 分鐘 → 手機打 `/health`。**附錄 A（FileVault 開著）**：重開後會停在 FileVault 解鎖畫面，輸入密碼解鎖磁碟後**不要登入任何帳號**（停在登入畫面就好），從解鎖那一刻起算 3 分鐘內手機打 `/health` | 3 分鐘內看到 `{"ok":true,…}`（附錄 A：沒登入也通，才證明 LaunchDaemon 與 `tailscaled` 不靠登入） |
-| V6 | 直接拔掉 Mac mini 電源線，等 10 秒再插回（模擬停電）→ 不碰鍵盤滑鼠 → 3 分鐘後手機打 `/health`。附錄 A：同 V5，解鎖後不登入 | 同上 |
+| V5 | 蘋果選單 → 重新啟動（取消勾選「再次登入時重新打開視窗」）→ **放手，不碰鍵盤滑鼠** → 等 3 分鐘 → 手機打 `/health`。**附錄 A（FileVault 開著）**：重開後會停在 FileVault 解鎖畫面，輸入部署帳號的密碼解鎖，**解鎖後不必做任何事，等 3 分鐘**，手機打 `/health` | 3 分鐘內看到 `{"ok":true,…}` |
+| V6 | 直接拔掉 Mac mini 電源線，等 10 秒再插回（模擬停電）→ 不碰鍵盤滑鼠 → 3 分鐘後手機打 `/health`。附錄 A：同 V5，解鎖後不必做任何事、等 3 分鐘 | 同上 |
 | V7 | 目視：系統設定 → 鎖定畫面，「要求密碼」為「立即」 | 是 |
 
 **V3～V6 任一步 3 分鐘後打不到，照這個順序查**（Eason 可以直接看螢幕；能進桌面的話在同一個資料夾打 `claude --continue`，說「照 server/DEPLOY.md 第 8 步的診斷表查」，由 Claude 跑右欄指令）：
@@ -659,6 +660,8 @@ cat "$DATA/logs/mirror-last.json"; echo                     # ⑤ 等一兩分�
 ```
 
   寫錯格式時整份不生效（這一輪不略過任何一個）、`files.ok:false`。程式永遠不自己判定放棄。
+- 補不到的檔不會卡住新附件：從沒試過的先補、試過失敗的依上次嘗試時間輪流；「Drive 上找不到」的不算每輪 10 個的名額，已知找不到的每輪只再試 2 個（meta 的 `lastTryAt`／`lastDead`）。
+- **預期行為、不處理**：主管上傳後在儲存公告前就失敗的附件（例如上傳等待中通行碼剛更換），Drive 那份會被撤到垃圾桶、上傳當下本機也不存；但隔天的 `filelist` 會列到垃圾桶裡的它，照樣備份下來（`source:filelist`、有 `removedAt`）。只多佔一點空間，沒有安全問題。
 - `node "$REPO/server/mirror.js" --files-verify`：重算每個附件的 sha256 與 meta 比對，不符的列出來、**不自動刪**，回報 Eason。
 
 ---
@@ -667,7 +670,7 @@ cat "$DATA/logs/mirror-last.json"; echo                     # ⑤ 等一兩分�
 
 FileVault 開著就不能自動登入，LaunchAgent 在停電重開後不會啟動。改成 LaunchDaemon（`system` domain，開機即跑、**不需登入任何帳號**）。#9 實機就是走這條（2026-09-30）。
 
-**先講清楚代價**：這條路線在**停電或重開機後一定要有人到現場**，在 FileVault 解鎖畫面輸入密碼解鎖磁碟。流程是：開機 → 有人輸入 FileVault 密碼解鎖 → LaunchDaemon（伺服器、mirror、daily）與 `tailscaled` 自己啟動，**不需要再登入帳號** → 3 分鐘內恢復服務。沒人到場之前整站斷線。
+**先講清楚代價**：這條路線在**停電或重開機後一定要有人到現場**，在 FileVault 解鎖畫面輸入密碼解鎖磁碟。流程是：開機 → 有人輸入部署帳號的密碼解鎖（macOS 預設解鎖就等於直接登入這個帳號）→ LaunchDaemon（伺服器、mirror、daily）與 `tailscaled` 自己啟動 → 3 分鐘內恢復服務，解鎖後不必再做任何事。沒人到場之前整站斷線。LaunchDaemon 的好處是：就算之後有人登出或切換帳號，服務也不會停。
 
 **哪些要 sudo（交給 Eason 在他自己的終端機 App 執行）**：`system` domain 的 `launchctl bootstrap`／`bootout`／`kickstart`、`launchctl print system/…`（部分欄位）、複製到 `/Library/LaunchDaemons/`、`brew services` 啟動 `tailscaled`。Claude 沒有 sudo，把指令整段列給 Eason，等他說做完再驗證。
 
@@ -687,7 +690,7 @@ FileVault 開著就不能自動登入，LaunchAgent 在停電重開後不會啟�
    - 先移除官方 App（有的話），再由 Eason：`brew install tailscale` → `sudo brew services start tailscale`（以 root 常駐、開機即跑、不需登入）。
    - 登入時**一定要帶 operator**，第 7 步 Claude 才能不用 sudo 操作 Funnel：`sudo tailscale up --operator=$(whoami)`（在部署帳號的終端機執行，`$(whoami)` 就是部署帳號）。之後重做 A8。
    - CLI 路徑用 `command -v tailscale`（手冊的 `TS` 變數已自動處理）；這個版本**沒有選單列圖示**，V4 改用 `tailscale down`／`tailscale up`。
-7. **V5／V6 改照 FileVault 流程驗**：重開（或拔電再插）→ 在解鎖畫面輸入 FileVault 密碼 → **不要登入帳號** → 3 分鐘內手機（已中斷 Tailscale、4G）打 `/health`。這才證明「解鎖後不必登入就恢復」。
+7. **V5／V6 改照 FileVault 流程驗**：重開（或拔電再插）→ 在解鎖畫面輸入部署帳號的密碼 → **解鎖後不必做任何事，等 3 分鐘** → 手機（已中斷 Tailscale、4G）打 `/health`。（macOS 預設解鎖時會直接登入部署帳號，所以這個測試驗的是「有人解鎖之後不用再動手就恢復」。）
 8. **A3（關閉自動安裝 macOS 更新）強烈建議關閉**；不關的話，半夜自動更新重開會停在 FileVault 解鎖畫面，要等隔天有人到場輸入密碼才恢復（Eason 2026-09-30 選擇保留，接受此風險）。
 9. **之後的重啟與還原**：
    - 重啟伺服器（例如改了 `.env`、更新程式）：有 sudo 就請 Eason `sudo launchctl kickstart -k system/com.dzy.bulletin`。**沒有 sudo 時**，Claude 直接 kill 伺服器的 PID，由 `KeepAlive` 在 10 秒內重起，並確認 PID 已換：

@@ -45,7 +45,7 @@
  *       node server/mirror.js --all    （回退前手動跑：不設每輪上限、重複掃描；完成條件是印出 pending=0 並 exit 0，見 #10）
  *       node server/mirror.js --force  （還原後、確認試算表可被覆寫時手動跑：越過筆數防呆，並帶 force:true 給 Apps Script）
  *       --all 不做第 3 步（附件與回退無關，不拖長回退窗口；files 欄位沿用上一輪）；庫不存在或是空庫（還沒搬遷）也不做。以下三個只做第 3 步、不碰簽名與鏡像：
- *       node server/mirror.js --files        （不設上限補到 pending=0 才 exit 0；CUTOVER 之後首次拉檔用）
+ *       node server/mirror.js --files        （不設上限補到 pending=0 才 exit 0；CUTOVER 之後首次拉檔用。分批做、每批放掉鏡像鎖，每小時那輪照常插得進來）
  *       node server/mirror.js --files-scan   （先 filelist 掃附件資料夾〔含垃圾桶〕再補；**M7 部署當天必跑一次**、切回 Mac mini 後也跑一次）
  *       node server/mirror.js --files-verify （重算本機每個附件的 sha256 與 meta 比對，不符的列出來、不自動刪）
  *   手動執行撞到另一輪正在跑時印「已跳過」並以非 0 結束。
@@ -83,6 +83,7 @@ const FILE_SKIP = 'file-skip.json';
 const SEG = 8 * 1024 * 1024;                                 // 與 gas/Code.js FILEGET_MAX_ 相同：每段 ≤ 8MB 原始位元組
 const SEG_MAX = 8;                                           // 每個檔最多幾段（附件 ≤ 20MB＝3 段；多留餘裕，防 eof 永遠不來）
 const STALE_MS = 24 * 3600e3, TMP_OLD_MS = 3600e3;
+const DEAD_MAX = 2;                                          // 每輪最多重試幾個「上次 Drive 回找不到」的檔（死檔另計額度，不吃掉 10 個的名額）
 const taipeiDay = (ms) => J.taipeiStamp(new Date(ms)).slice(0, 10);
 
 // 下載一個檔：成功回 { ok:true, size }；暫時故障回 { ok:false, why }（呼叫端記 failed、留 pending）。.tmp 一律不殘留。
@@ -99,7 +100,7 @@ async function fetchFile(o, id, meta, nowIso) {
       try { out = await o.bridge.call('fileget', { id, off, len: SEG }, 120); }
       catch (e) { return { ok: false, why: J.errText(e) }; }   // 橋接錯誤：暫時故障，同一輪不重試（不去撞排隊中的 Apps Script）
       if (o.touch) o.touch();
-      if (!out || !out.file) return { ok: false, why: 'Drive 上找不到（暫時，不判遺失）' };
+      if (!out || !out.file) return { ok: false, dead: true, why: 'Drive 上找不到（暫時，不判遺失）' };
       if (!file) file = out.file;
       const size = Number(file.size);
       if (out.off !== off || typeof out.data !== 'string' || !(size >= 0)) return { ok: false, why: 'fileget 回應格式不符' };
@@ -112,7 +113,9 @@ async function fetchFile(o, id, meta, nowIso) {
     // 完整性：Drive 的 md5Checksum 與 size 都對才 rename（D4）；不符＝這一輪下載壞了，下一輪重抓
     const got = md5.digest('hex');
     if (!file.md5 || got !== String(file.md5).toLowerCase() || off !== Number(file.size)) return { ok: false, why: 'md5／size 與 Drive 不符' };
-    const m = Object.assign({}, meta, { name: meta.name || String(file.name || ''), mime: String(file.mime || meta.mime || ''), size: off, md5: got, sha256: sha.digest('hex'), savedAt: nowIso });
+    // 寫之前重讀一次 meta 再合併：下載這幾分鐘裡主管剛好在伺服器上移除它（markRemoved 寫了 removedAt），不可以蓋掉
+    const cur = FL.readMeta(o.dir, id) || meta;
+    const m = Object.assign({}, cur, { name: cur.name || String(file.name || ''), mime: String(file.mime || cur.mime || ''), size: off, md5: got, sha256: sha.digest('hex'), savedAt: nowIso, lastTryAt: nowIso, lastDead: false });
     if (file.trashed && !m.removedAt) { m.removedAt = nowIso; m.removedNote = '補抓時已在 Drive 垃圾桶，實際移除時間不可知'; }
     FL.writeMeta(o.dir, id, m);                               // meta 先寫、位元組後寫（D0）
     fs.renameSync(tmp, dest);
@@ -158,7 +161,8 @@ async function fillFiles(o, prev) {
     } finally { db.close(); }
   } catch (e) { warns.push('讀不到公告清單（這一輪只補已有 meta 的）：' + J.errText(e)); }
   // 第三層：filelist（指定時機：--files-scan，或每天第一輪＝台北日期換了）
-  if (o.scan || !f.lastScanAt || taipeiDay(Date.parse(f.lastScanAt)) !== taipeiDay(now)) {
+  if (f.lastScanAt && isNaN(Date.parse(f.lastScanAt))) f.lastScanAt = null;   // 壞掉（手改）當作沒掃過，這一輪重掃並重寫，不永久失敗
+  if (!o.noScan && (o.scan || !f.lastScanAt || taipeiDay(Date.parse(f.lastScanAt)) !== taipeiDay(now))) {
     try {
       let token = '', n = 0, made = 0;
       for (let page = 0; page < 500; page++) {
@@ -181,11 +185,16 @@ async function fillFiles(o, prev) {
       f.lastScanAt = nowIso; f.scanned = n; f.scanNew = made;
     } catch (e) { f.ok = false; errors.push('附件掃描（filelist）：' + J.errText(e)); }   // 暫時故障：lastScanAt 不動，下一輪再掃
   }
-  // 補抓：舊的先補；每輪上限 maxCount 個檔（算嘗試次數）或 maxMB（算下載量），先到為準。unlimited（--files）重複掃到沒進展
+  // 補抓順序：從沒試過的先（依 wantedAt 由舊到新），再依 lastTryAt 由舊到新——補不到的檔不會一直卡在最前面把額度吃光。
+  // 每輪上限 maxCount 個檔（算嘗試次數）或 maxMB（算下載量），先到為準；預估下一個會超過 maxMB 就停。
+  // Drive 回找不到（file:null）不算進 maxCount；上次就找不到的「死檔」每輪最多再試 DEAD_MAX 個。unlimited 重複掃到沒進展
   const maxN = o.unlimited ? Infinity : o.maxCount, maxB = o.unlimited ? Infinity : o.maxMB * 1024 * 1024;
-  let tried = 0, got = 0;
+  let tried = 0, got = 0, deadTried = 0;
+  const order = (a, b) => (!!a.m.lastTryAt - !!b.m.lastTryAt) ||
+    (a.m.lastTryAt ? String(a.m.lastTryAt).localeCompare(String(b.m.lastTryAt)) : String(a.m.wantedAt || '').localeCompare(String(b.m.wantedAt || '')));
   const pendingNow = () => FL.scan(dir).metas.filter((id) => !FL.hasBytes(dir, id) && !isSkipped(id))
-    .map((id) => ({ id, m: FL.readMeta(dir, id) || {} })).sort((a, b) => String(a.m.wantedAt || '').localeCompare(String(b.m.wantedAt || '')));
+    .map((id) => ({ id, m: FL.readMeta(dir, id) || {} })).sort(order);
+  const markTry = (id, dead) => { try { const m = FL.readMeta(dir, id); if (m) FL.writeMeta(dir, id, Object.assign(m, { lastTryAt: nowIso, lastDead: !!dead })); } catch (e) {} };
   for (let pass = 0; ; pass++) {
     let progress = 0, stop = false;
     const round = new Set();
@@ -195,10 +204,15 @@ async function fillFiles(o, prev) {
       const size = Number(x.m.size) || 0;
       if (tried > 0 && size > 0 && got + size > maxB) { stop = true; break; }
       if (round.has(x.id)) continue;
+      if (x.m.lastDead && deadTried >= DEAD_MAX) continue;    // 死檔額度用完：這一輪不再試，留 pending
       round.add(x.id); tried++;
       const r = await fetchFile(o, x.id, x.m, nowIso);
       if (r.ok) { f.fetched++; got += r.size; progress++; }
-      else failed.set(x.id, r.why);
+      else {
+        failed.set(x.id, r.why);
+        if (r.dead) { tried--; deadTried++; }
+        markTry(x.id, r.dead);
+      }
     }
     if (!o.unlimited || stop || progress === 0) break;
   }
@@ -429,16 +443,34 @@ async function runMirror(o) {
 
 // --files／--files-scan：只做第 3 步、不設上限；拿同一把 mirror 鎖（與每小時那輪不重疊）。
 // 結果只更新 mirror-last.json 的 files（鏡像欄位 at／ok／pending／fails 原樣保留）；還沒有結果檔（從沒鏡像過）就不寫，只回傳。
+// 分批：每批（上限同每小時那輪）拿一次鏡像鎖、做完就放掉，下一批再拿——首次拉檔跑很久時，每小時的鏡像仍能插進來跑，不會長時間停住。
+// 第一批拿不到鎖＝另一輪正在跑，回 busy；之後的批次拿不到就等（每 o.waitMs 重試，最多 o.maxWaitMs）。只有第一批會掃 filelist。
 async function runFilesOnly(o) {
-  const dir = o.dir, release = J.takeLock(dir, 'mirror');
-  if (!release) return { busy: true };
-  try {
-    const prev = J.readLast(dir, LAST);
-    const files = await fillFiles({ dir, bridge: o.bridge, unlimited: true, scan: !!o.scan, now: o.now, touch: release.touch }, prev && prev.files);
-    if (prev) J.writeLast(dir, LAST, Object.assign({}, prev, { files }));
-    J.logLine(dir, 'mirror.log', (o.scan ? '附件掃描補齊（--files-scan）：' : '附件補齊（--files）：') + filesText(files) + (files.error ? '；' + files.error : ''));
-    return { files };
-  } finally { release(); }
+  const dir = o.dir, waitMs = o.waitMs >= 0 ? o.waitMs : 5000, maxWaitMs = o.maxWaitMs >= 0 ? o.maxWaitMs : 30 * 60e3;
+  let files = null, fetched = 0, batches = 0;
+  for (;;) {
+    let release = J.takeLock(dir, 'mirror');
+    if (!release) {
+      if (!batches) return { busy: true };
+      const t0 = Date.now();
+      while (!release && Date.now() - t0 < maxWaitMs) { await new Promise((ok) => setTimeout(ok, waitMs)); release = J.takeLock(dir, 'mirror'); }
+      if (!release) { if (files) files.error = (files.error ? files.error + '；' : '') + '等不到鏡像鎖，這次先停（稍後再跑）'; break; }
+    }
+    try {
+      const prev = J.readLast(dir, LAST);
+      const base = (prev && prev.files) || files;
+      files = await fillFiles({ dir, bridge: o.bridge, scan: batches === 0 && !!o.scan, noScan: batches > 0, now: o.now, touch: release.touch,
+        maxCount: clampInt(o.filesMax, 10, 1, 100000), maxMB: clampInt(o.filesMaxMB, 100, 1, 1000000) }, base);
+      fetched += files.fetched;
+      if (prev) J.writeLast(dir, LAST, Object.assign({}, prev, { files }));
+    } finally { release(); }
+    batches++;
+    if (!files.pending || !files.fetched) break;              // 補完了，或這一批沒有任何進展（剩下的都補不到）
+    if (o._betweenBatches) await o._betweenBatches(batches);   // 測試用鉤子：批次之間鎖已放掉（驗每小時那輪插得進來）
+  }
+  files.fetched = fetched; files.batches = batches;
+  J.logLine(dir, 'mirror.log', (o.scan ? '附件掃描補齊（--files-scan）：' : '附件補齊（--files）：') + filesText(files) + `（${batches} 批）` + (files.error ? '；' + files.error : ''));
+  return { files };
 }
 
 // 結束碼：非 0 讓 launchd 記錄失敗（真正的告警靠守門讀 /health）；--all 只要還有 pending（或算不出來）就不 exit 0
@@ -456,7 +488,7 @@ async function main() {
     process.exit(v.bad.length ? 1 : 0);
   }
   if (filesOnly) {
-    const r = await runFilesOnly({ dir, bridge: makeBridge(process.env.BRIDGE_URL, process.env.BRIDGE_KEY), scan: filesScan });
+    const r = await runFilesOnly({ dir, bridge: makeBridge(process.env.BRIDGE_URL, process.env.BRIDGE_KEY), scan: filesScan, filesMax: process.env.FILES_MAX_PER_RUN, filesMaxMB: process.env.FILES_MAX_MB_PER_RUN });
     if (r.busy) { console.log('✗ 另一輪鏡像正在跑（或正在還原），這次已跳過，請等它結束後再執行'); process.exit(1); }
     const x = r.files;
     console.log(`附件補齊${x.ok ? '完成' : '有問題'}｜count=${x.count}｜bytes=${x.bytes}｜pending=${x.pending}｜stale=${x.stale}｜fetched=${x.fetched}｜failed=${x.failed}｜skipped=${x.skipped}` +

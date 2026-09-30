@@ -32,6 +32,9 @@ def srv(path, body):
     import urllib.request
     req = urllib.request.Request(SERVER + path, data=json.dumps(body, ensure_ascii=False).encode(), headers={'Content-Type': 'text/plain'})
     return json.loads(urllib.request.urlopen(req, timeout=30).read())
+def urllib_get(url):
+    import urllib.request
+    return json.loads(urllib.request.urlopen(url, timeout=30).read())
 results, cm = [], ClickMap()
 # 出網防呆（#13 第 2 輪）：任何指向 Google Apps Script 的請求一律攔下（abort）並記下來，最後讓測試失敗——測試絕不能打到正式 GAS
 import re as _re
@@ -308,6 +311,14 @@ def main():
         click('[data-rmf]', '移除附件', nth=0)
         pg.fill('#fTitle', title + '（改）'); click('#fSave', '儲存修改'); pg.wait_for_selector('[data-af]'); wait(400)
         W.posts[nid]['title'] = title + '（改）'; W.posts[nid]['files'] = W.posts[nid]['files'][1:]
+        if BACKEND == 'server':   # M7（#18）：主管移除附件後，Mac mini 本機那份仍保留（位元組還在、meta 補上 removedAt）；revoke 照常送 Drive
+            kept = None
+            for _ in range(50):
+                kept = next((x for x in srv('/__files', {})['data'] if (x.get('meta') or {}).get('name') == fls[0] and (x.get('meta') or {}).get('removedAt')), None)
+                if kept: break
+                time.sleep(0.1)
+            revoked = urllib_get(SERVER + '/__bridgeCalls')['data']['revoke']
+            check('A 移除的附件本機仍保留、meta 有 removedAt、revoke 已送（M7）', bool(kept and kept['bytes']) and revoked >= 1, f'{kept} revoke={revoked}')
         click('[data-af="on"]')
         check('A 編輯後標題更新', any(r[0] == title + '（改）' for r in admin_rows()))
 

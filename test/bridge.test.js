@@ -78,6 +78,16 @@ function fileObj(id) {
     getSharingAccess: () => f.sharing, setSharing: (a) => { f.sharing = a; }, setTrashed: (t) => { f.trashed = t; }, isTrashed: () => !!f.trashed
   };
 }
+// M7：假 Drive 的 md5Checksum／Files.list。垃圾桶內的檔照樣列（呼叫端沒帶 trashed=false）；刪掉 drive.files[id]＝模擬垃圾桶 30 天後永久刪除
+const md5Of = (bytes) => crypto.createHash('md5').update(Buffer.from(bytes.map((b) => b & 255))).digest('hex');
+function driveGet(id) { const f = drive.files[id]; if (!f) throw new Error('File not found: ' + id); return { md5Checksum: md5Of(f.bytes), size: String(f.bytes.length), trashed: !!f.trashed }; }
+function driveList(o) {
+  const m = /^'([^']+)' in parents$/.exec(String(o && o.q || '')); if (!m) throw new Error('不支援的查詢：' + (o && o.q));
+  const ids = Object.keys(drive.files).filter((k) => drive.files[k].parent === m[1]).sort();
+  const at = Number(o.pageToken) || 0, n = Number(o.pageSize) || 100, page = ids.slice(at, at + n);
+  return { files: page.map((k) => { const f = drive.files[k]; return { id: k, name: f.name, mimeType: f.mime, size: String(f.bytes.length), md5Checksum: md5Of(f.bytes), trashed: !!f.trashed, createdTime: new Date(f.created).toISOString() }; }),
+    nextPageToken: at + n < ids.length ? String(at + n) : undefined };
+}
 const signed = (buf) => Array.from(buf).map((b) => (b > 127 ? b - 256 : b));
 const G = {
   console: Object.assign({}, console, { error: () => {}, warn: () => {} }),
@@ -100,7 +110,8 @@ const G = {
     createFolder: (name) => folderObj(newFolder(name, 'ROOT')),
     getFileById: (id) => fileObj(id), getRootFolder: () => folderObj('ROOT')
   },
-  Drive: { Files: { update: () => {} }, About: { get: () => ({ storageQuota: { limit: '100', usage: '40' } }) } },
+  // M7（#18）：Drive 進階服務 Files.get（md5Checksum，Drive 已算好）／Files.list（q="'<資料夾>' in parents"，含垃圾桶、分頁）
+  Drive: { Files: { update: () => {}, get: (id) => driveGet(id), list: (o) => driveList(o) }, About: { get: () => ({ storageQuota: { limit: '100', usage: '40' } }) } },
   Utilities: {
     sleep: () => {}, formatDate: () => '', getUuid: () => crypto.randomUUID(),
     DigestAlgorithm: { SHA_256: 'sha256' }, Charset: { UTF_8: 'utf8' },
@@ -480,6 +491,71 @@ const srv = http.createServer((req, res) => {
   eq('share 簽名圖（不是附件）→ BAD_REQ', (await raw({ action: 'bridge', key: KEY, op: 'share', ids: [up.ids[0]] })).code, 'BAD_REQ');
   eq('clock：沒設打卡來源時回空名單＋提示', (await B.clockSrc.read()).errors, ['未設定打卡來源']);
   eq('sig：單張讀回', await B.call('sig', { id: up.ids[1] }), png);
+
+  // ===== M7（#18）：fileget／filelist 只回附件資料夾直屬、白名單 mime 的檔（含垃圾桶）；ours() 不放寬 =====
+  { const attach = props.FOLDER_ID, fg = (id, off, len, extra) => raw(Object.assign({ action: 'bridge', key: KEY, op: 'fileget', id, off: off === undefined ? 0 : off, len: len === undefined ? 8 * 1024 * 1024 : len }, extra || {}));
+    const md5 = (bytes) => crypto.createHash('md5').update(Buffer.from(bytes.map((b) => b & 255))).digest('hex');
+    const live = await B.files.upload('M7附件.pdf', 'application/pdf', Buffer.from('%PDF-1.4 M7 live 0123456789').toString('base64'));
+    const gone = await B.files.upload('M7已移除.docx', '', Buffer.from('docx bytes removed').toString('base64'));
+    await B.files.revoke([gone.id]);
+    eq('（前提）已移除的附件在垃圾桶', drive.files[gone.id].trashed, true);
+    const ssPdf = newFile({ name: '正本試算表（假裝 PDF）', mime: 'application/pdf', bytes: [1] }, attach);   // id 設成 SPREADSHEET_ID：驗「排除正本試算表」這一道
+    const gdoc = newFile({ name: 'Google 文件', mime: 'application/vnd.google-apps.document', bytes: [2] }, attach);
+    const jpg = newFile({ name: '手動放的照片.jpg', mime: 'image/jpeg', bytes: [0xff, 0xd8, 0xff, 3] }, attach);
+    const otherFolder = newFolder('其他系統資料夾', 'ROOT'), otherPdf = newFile({ name: '別的資料夾.pdf', mime: 'application/pdf', bytes: [4] }, otherFolder);
+    const rootAttach = newFile({ name: '根目錄.pdf', mime: 'application/pdf', bytes: [5] }, 'ROOT');
+    const gz = bk.id;                                                   // 備份 .gz（獨立備份資料夾）
+    const sigImg = up.ids[0];                                           // 簽名圖（附件資料夾的子資料夾「簽名」）
+    const ss0 = props.SPREADSHEET_ID; props.SPREADSHEET_ID = ssPdf;
+    const outside = { 正本試算表: ssPdf, 簽名圖: sigImg, 備份gz: gz, 根目錄檔: other, 根目錄PDF: rootAttach, 其他資料夾PDF: otherPdf, Google文件: gdoc, 手動JPG: jpg, 不存在: 'G-nope' };
+    const got = {}; for (const k of Object.keys(outside)) got[k] = (await fg(outside[k])).data;
+    eq('fileget：範圍外一律 file:null（正本試算表、簽名圖、備份 .gz、根目錄、其他資料夾 PDF、Google 文件、手動 JPG、不存在）', got, Object.fromEntries(Object.keys(outside).map((k) => [k, { file: null }])));
+    const g1 = (await fg(live.id)).data;
+    eq('fileget：附件資料夾裡的 PDF 讀得到（位元組、md5＝Drive md5Checksum、eof）', [Buffer.from(g1.data, 'base64').toString(), g1.file.md5, g1.file.md5 === md5(drive.files[live.id].bytes), g1.file.size, g1.eof, g1.file.trashed, g1.file.mime, g1.off],
+      ['%PDF-1.4 M7 live 0123456789', md5(drive.files[live.id].bytes), true, 27, true, false, 'application/pdf', 0]);
+    const g2 = (await fg(gone.id)).data;
+    eq('fileget：垃圾桶內的附件讀得到、trashed:true', [Buffer.from(g2.data, 'base64').toString(), g2.file.trashed, g2.file.name], ['docx bytes removed', true, 'M7已移除.docx']);
+    const parts = [(await fg(live.id, 0, 10)).data, (await fg(live.id, 10, 10)).data, (await fg(live.id, 20, 10)).data];
+    eq('fileget 分段：off／len 切片、最後一段 eof、合起來＝原檔', [parts.map((x) => [x.off, Buffer.from(x.data, 'base64').length, x.eof]), Buffer.concat(parts.map((x) => Buffer.from(x.data, 'base64'))).toString()],
+      [[[0, 10, false], [10, 10, false], [20, 7, true]], '%PDF-1.4 M7 live 0123456789']);
+    eq('fileget：off 超過檔案大小 → 空資料、eof', [(await fg(live.id, 999, 10)).data.data, (await fg(live.id, 999, 10)).data.eof], ['', true]);
+    eq('fileget／filelist 回應不含範圍外檔名', /假裝|照片|別的資料夾|根目錄\.pdf/.test(JSON.stringify(Object.values(got))), false);
+    const fl = (await raw({ action: 'bridge', key: KEY, op: 'filelist' })).data;
+    const ids = fl.files.map((x) => x.id);
+    eq('filelist：只列附件資料夾直屬的白名單附件（含垃圾桶），範圍外一律不列', [ids.includes(live.id), ids.includes(gone.id), Object.values(outside).filter((id) => ids.includes(id))], [true, true, []]);
+    eq('filelist：每筆帶 id／name／mime／size／md5／trashed、不含位元組', [Object.keys(fl.files.find((x) => x.id === gone.id)).sort(), fl.files.find((x) => x.id === gone.id).trashed, fl.files.find((x) => x.id === live.id).md5 === md5(drive.files[live.id].bytes), fl.nextPageToken],
+      [['createdTime', 'id', 'md5', 'mime', 'name', 'size', 'trashed'], true, true, '']);
+    props.SPREADSHEET_ID = ss0;
+    // 分頁：pageToken 原樣往下帶；附件資料夾塞到超過一頁（pageSize 200）
+    const many = Array.from({ length: 205 }, (_, i) => newFile({ name: 'm' + i + '.pdf', mime: 'application/pdf', bytes: [i & 127] }, attach));
+    const p1 = (await raw({ action: 'bridge', key: KEY, op: 'filelist' })).data, p2 = (await raw({ action: 'bridge', key: KEY, op: 'filelist', pageToken: p1.nextPageToken })).data;
+    eq('filelist 分頁：第一頁 200 個＋nextPageToken、第二頁接著列完', [p1.files.length <= 200, !!p1.nextPageToken, many.every((id) => p1.files.concat(p2.files).some((x) => x.id === id)), p2.nextPageToken], [true, true, true, '']);
+    many.forEach((id) => { delete drive.files[id]; });
+    // 金鑰與參數：金鑰問題一律 AUTH（先於參數檢查）；參數錯 BAD_REQ
+    const au = (extra) => raw(Object.assign({ action: 'bridge', op: 'fileget', id: live.id, off: 0, len: 10 }, extra)).then((r) => r.code);
+    eq('fileget／filelist：沒有金鑰／金鑰錯／key 不是字串 → AUTH', [await au({}), await au({ key: 'x'.repeat(40) }), await au({ key: [KEY] }), await au({ key: { k: KEY } }), await au({ key: 'bad', off: -1 }),
+      (await raw({ action: 'bridge', op: 'filelist' })).code, (await raw({ action: 'bridge', key: 'z'.repeat(40), op: 'filelist' })).code, (await raw({ action: 'bridge', key: 1, op: 'filelist' })).code], ['AUTH', 'AUTH', 'AUTH', 'AUTH', 'AUTH', 'AUTH', 'AUTH', 'AUTH']);
+    const br = async (id, off, len) => (await fg(id, off, len)).code;
+    eq('fileget：off<0、len>8MB、len≤0、非整數、id 含非法字元或不是字串 → BAD_REQ', [await br(live.id, -1, 10), await br(live.id, 0, 8 * 1024 * 1024 + 1), await br(live.id, 0, 0), await br(live.id, 0, -5), await br(live.id, 1.5, 10), await br(live.id, '0', 10),
+      await br('../' + live.id, 0, 10), await br('a/b', 0, 10), await br('a.b', 0, 10), await br('', 0, 10), (await raw({ action: 'bridge', key: KEY, op: 'fileget', id: 123, off: 0, len: 10 })).code, (await raw({ action: 'bridge', key: KEY, op: 'filelist', pageToken: { x: 1 } })).code],
+      ['BAD_REQ', 'BAD_REQ', 'BAD_REQ', 'BAD_REQ', 'BAD_REQ', 'BAD_REQ', 'BAD_REQ', 'BAD_REQ', 'BAD_REQ', 'BAD_REQ', 'BAD_REQ', 'BAD_REQ']);
+    eq('fileget：len 剛好 8MB 可以', (await fg(live.id, 0, 8 * 1024 * 1024)).ok, true);
+    const pr0 = props.PRIMARY;
+    props.PRIMARY = 'gas'; const a1 = [(await fg(live.id)).ok, (await raw({ action: 'bridge', key: KEY, op: 'filelist' })).ok];
+    props.PRIMARY = 'mini'; const a2 = [(await fg(live.id)).ok, (await raw({ action: 'bridge', key: KEY, op: 'filelist' })).ok];
+    props.PRIMARY = pr0;
+    eq('fileget／filelist 不受 PRIMARY 限制（gas／mini 都能讀）', [a1, a2], [[true, true], [true, true]]);
+    eq('bridge.js 客戶端：files.get／files.list 對得上 op 格式', [Buffer.from((await B.files.get(live.id, 0, 4)).data, 'base64').toString(), (await B.files.list()).files.some((x) => x.id === gone.id)], ['%PDF', true]);
+    // ours() 不放寬：share 對垃圾桶內的附件仍 BAD_REQ（M2 R1）
+    eq('ours() 不變：share 垃圾桶內的附件 → BAD_REQ、仍是 PRIVATE', [(await raw({ action: 'bridge', key: KEY, op: 'share', ids: [gone.id] })).code, drive.files[gone.id].sharing], ['BAD_REQ', 'PRIVATE']);
+    eq('ours() 不變：share 正常附件照常', [(await raw({ action: 'bridge', key: KEY, op: 'share', ids: [live.id] })).ok, drive.files[live.id].sharing], [true, 'ANYONE_WITH_LINK']);
+    // 垃圾桶 30 天後永久刪除：fileget 回 null、filelist 看不到
+    delete drive.files[gone.id];
+    eq('Drive 永久刪除後：fileget file:null、filelist 不列', [(await fg(gone.id)).data, (await raw({ action: 'bridge', key: KEY, op: 'filelist' })).data.files.some((x) => x.id === gone.id)], [{ file: null }, false]);
+    // 讀取路徑不建資料夾：FOLDER_ID 遺失時 fileget null、filelist 空、沒有新建資料夾
+    const fid0 = props.FOLDER_ID, nf = Object.keys(drive.folders).length; delete props.FOLDER_ID;
+    eq('FOLDER_ID 遺失：fileget null、filelist 空、不建資料夾', [(await fg(live.id)).data, (await raw({ action: 'bridge', key: KEY, op: 'filelist' })).data.files, Object.keys(drive.folders).length, 'FOLDER_ID' in props], [{ file: null }, [], nf, false]);
+    props.FOLDER_ID = fid0; }
 
   // ===== 純函式：movedGate_ =====
   const gate = vm.runInContext('movedGate_', G);

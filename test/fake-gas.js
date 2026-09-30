@@ -67,6 +67,16 @@ function makeFakeGas() {
       getSharingAccess: () => f.sharing, setSharing: (a) => { f.sharing = a; }, setTrashed: (t) => { f.trashed = t; }, isTrashed: () => !!f.trashed
     };
   }
+  // M7：假 Drive 的 md5Checksum／Files.list。垃圾桶內的檔照樣列（呼叫端沒帶 trashed=false）；刪掉 drive.files[id]＝模擬垃圾桶 30 天後永久刪除
+  const md5Of = (bytes) => crypto.createHash('md5').update(Buffer.from(bytes.map((b) => b & 255))).digest('hex');
+  function driveGet(id) { const f = drive.files[id]; if (!f) throw new Error('File not found: ' + id); return { md5Checksum: md5Of(f.bytes), size: String(f.bytes.length), trashed: !!f.trashed }; }
+  function driveList(o) {
+    const m = /^'([^']+)' in parents$/.exec(String(o && o.q || '')); if (!m) throw new Error('不支援的查詢：' + (o && o.q));
+    const ids = Object.keys(drive.files).filter((k) => drive.files[k].parent === m[1]).sort();
+    const at = Number(o.pageToken) || 0, n = Number(o.pageSize) || 100, page = ids.slice(at, at + n);
+    return { files: page.map((k) => { const f = drive.files[k]; return { id: k, name: f.name, mimeType: f.mime, size: String(f.bytes.length), md5Checksum: md5Of(f.bytes), trashed: !!f.trashed, createdTime: new Date(f.created).toISOString() }; }),
+      nextPageToken: at + n < ids.length ? String(at + n) : undefined };
+  }
   const signed = (buf) => Array.from(buf).map((b) => (b > 127 ? b - 256 : b));
   const G = {
     console: Object.assign({}, console, { error: () => {}, warn: () => {} }),
@@ -89,7 +99,8 @@ function makeFakeGas() {
       createFolder: (name) => folderObj(newFolder(name, 'ROOT')),
       getFileById: (id) => fileObj(id), getRootFolder: () => folderObj('ROOT')
     },
-    Drive: { Files: { update: () => {} }, About: { get: () => ({ storageQuota: { limit: '100', usage: '40' } }) } },
+    // M7（#18）：Drive 進階服務 Files.get（md5Checksum，Drive 已算好）／Files.list（q="'<資料夾>' in parents"，含垃圾桶、分頁）
+    Drive: { Files: { update: () => {}, get: (id) => driveGet(id), list: (o) => driveList(o) }, About: { get: () => ({ storageQuota: { limit: '100', usage: '40' } }) } },
     Utilities: {
       sleep: () => {}, formatDate: () => '', getUuid: () => crypto.randomUUID(),
       DigestAlgorithm: { SHA_256: 'sha256' }, Charset: { UTF_8: 'utf8' },

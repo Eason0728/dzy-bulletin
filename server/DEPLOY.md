@@ -122,7 +122,7 @@ export PATH="$HOME/.local/node/bin:$PATH"; REPO="$HOME/dzy-bulletin"; DATA="$HOM
 BRANCH="mini/m4"                                            # M1～M4 已合併到 main 時改成 main（以 Eason 那段話為準）
 if [ -d "$REPO/.git" ]; then git -C "$REPO" fetch -q origin && git -C "$REPO" checkout -q "$BRANCH" && git -C "$REPO" pull -q --ff-only; else git clone -q -b "$BRANCH" "<repo 網址>" "$REPO"; fi
 git -C "$REPO" log --oneline -1
-mkdir -p "$DATA/logs" && chmod 700 "$DATA"                  # logs 一定要先建：launchd 開不了 log 檔就不會啟動
+mkdir -p "$DATA/logs" "$DATA/files" && chmod 700 "$DATA"    # logs 一定要先建：launchd 開不了 log 檔就不會啟動；files/＝公告附件的本機備份（M7，程式也會自己建）
 { echo "== M4 部署證據（不含金鑰、網址）"; echo "環境：macOS $(sw_vers -productVersion)／$(uname -m)／Node $("$NODE" -v 2>/dev/null)／repo $(git -C "$REPO" branch --show-current) $(git -C "$REPO" rev-parse --short HEAD)／建立 $(date '+%F %T %Z')"; } >> "$DATA/logs/deploy-evidence.txt"
 git -C "$REPO" check-ignore -q server/.env && echo "server/.env 已被 git 忽略" || echo "✗ .gitignore 沒有 server/.env，停下來回報"
 ```
@@ -366,6 +366,18 @@ echo "第 6 步 /health（$(date '+%F %T')）：$(curl -s http://127.0.0.1:8793/
 | `error` 含 `logs/sig-state.json 損毀，已改名保留為 …` | 程式自用的狀態檔壞了，已改名保留、這一輪不上傳 | 回報 Eason／MacBook Claude 核對，不要手改 |
 
 此時 `/health` 應為 `"level":"green"`（鏡像失敗次數 1，未達黃燈門檻 2）——已用上面那段存進證據檔，回報時從證據檔貼。
+
+**附件備份（M7，#18）：部署當天必跑一次 `--files-scan`**。雲端硬碟垃圾桶 30 天後自動永久刪除，主管已移除的附件只有這 30 天能救回；`--files-scan` 會列出附件資料夾（含垃圾桶）並把位元組拉到 `$DATA/files/`。它只讀 Drive（`fileget`／`filelist` 不受 `PRIMARY` 限制），M4 階段也能跑：
+
+```sh
+export PATH="$HOME/.local/node/bin:$PATH"; REPO="$HOME/dzy-bulletin"; DATA="$HOME/dzy-bulletin-data"
+node "$REPO/server/mirror.js" --files-scan; echo "exit=$?"     # 印出「附件補齊完成｜count=N｜bytes=…｜pending=0｜…」且 exit=0 才算完成
+echo "第 6 步 附件備份（$(date '+%F %T')）：$(node "$REPO/server/mirror.js" --files-verify | tail -1)" >> "$DATA/logs/deploy-evidence.txt"
+```
+
+- `pending` 不是 0（exit=1）：多半是量大或 Apps Script 排隊，隔幾分鐘再跑 `node "$REPO/server/mirror.js" --files`（不設上限、補到 `pending=0` 才 exit 0）。一直補不到的那幾個會列在「沒補到」後面，見故障排除 F。
+- 還沒鏡像過（`mirror-last.json` 不存在）時結果只印在畫面、不寫檔；之後每小時那輪（搬資料之後）會接手。
+- **附件資料夾「鼎兆元｜電子佈告欄附件」不要手動放任何檔**：Mac mini 只備份附件資料夾直屬的 Word／PDF／Excel，手動放的檔可能被當成附件備份下來（照片、Google 文件不會）。
 **已知且預期**：之後每小時（以及每次重開機載入時）的鏡像都會被擋，下一輪之後 `/health` 就轉 `yellow`（`why` 為「鏡像連續失敗」），直到 M5 切換。M5 之前守門還沒接上，不會告警。
 
 ---
@@ -543,7 +555,7 @@ Mac mini 上的位置（M5 的指令照這裡寫；這台的 shell 設定檔沒�
 |---|---|
 | Node | `$HOME/.local/node/bin/node`（捷徑，指向 `~/.local/node-v24.x.y-darwin-<晶片>`） |
 | repo | `$HOME/dzy-bulletin` |
-| 資料夾（DATA_DIR） | `$HOME/dzy-bulletin-data`（`bulletin.db`、`sigs/`、`backups/`、`logs/`；回退用的 `READONLY` 檔也放這裡） |
+| 資料夾（DATA_DIR） | `$HOME/dzy-bulletin-data`（`bulletin.db`、`sigs/`、`files/`（M7 附件備份，永久保留、不要刪）、`backups/`、`logs/`；回退用的 `READONLY` 檔也放這裡） |
 | 設定 | `$HOME/dzy-bulletin/server/.env`（程式自己讀，不用 `source`、不用 export） |
 | launchd | `~/Library/LaunchAgents/com.dzy.bulletin{,.mirror,.daily}.plist`，domain `gui/$(id -u)` |
 
@@ -622,6 +634,19 @@ cat "$DATA/logs/mirror-last.json"; echo                     # ⑤ 等一兩分�
 - **不要改 `$DATA/logs/sig-state.json`**：那是程式自用的（記「已上傳、還沒寫進庫」的 Drive id），手改或刪掉會讓那些圖重傳成孤兒檔。它壞掉時程式會自己改名成 `.corrupt-*` 保留並 `ok:false`，交給人核對。
 - 回退前的 `mirror.js --all`：`pending≠0` 就以 1 結束；一整輪沒有進展會印「Drive 端有 N 張傳不上去，稍後再跑」並列出是哪幾張——隔一陣子再跑；多次重跑仍失敗，而且確定要放棄的，才寫進 `sig-skip.json`。
 
+**F. 附件備份（M7，#18）**
+- 位置：`$DATA/files/<fileId>`（位元組）＋`<fileId>.json`（meta：原檔名、md5、sha256、何時存、`removedAt`＝主管何時移除）。**只當備份**：同仁看附件照樣走雲端硬碟線上預覽、不能下載；這個資料夾不對外提供。
+- **永久保留、不要刪**：主管移除附件時，雲端硬碟那份丟垃圾桶、30 天後自動永久刪除，**之後 Mac mini 這份是唯一一份**（Eason 2026-09-30 選 B 接受的已知風險；要更保險可另接外接碟做 Time Machine）。
+- 每小時鏡像的第 3 步自動補（每輪最多 10 個檔或 100MB，可用 `.env` 的 `FILES_MAX_PER_RUN`／`FILES_MAX_MB_PER_RUN` 調）；每天第一輪另外掃一次附件資料夾。結果在 `mirror-last.json` 的 `files`：`count`（已備份個數）、`bytes`、`pending`（待補）、`stale`（待補超過 24 小時）、`failed`（這一輪沒補到，暫時故障、下一輪再試）、`skipped`（人工略過）、`lastScanAt`、`failedIds`（清單＋原因）。第 3 步的失敗**不會**讓鏡像 `ok:false`，只有 `stale > 0` 時 `/health` 黃「有附件超過 24 小時沒補齊」。
+- 一直補不到：原因寫在 `failedIds` 括號裡。「Drive 上找不到」多半是移除超過 30 天、已被永久刪除，救不回來——經 Eason 同意後寫進 **`$DATA/logs/file-skip.json`**（格式同 `sig-skip.json`，鍵是 fileId）：
+
+```json
+{ "1AbCdEfGh...": "2026-10-05 Drive 已永久刪除，Eason 同意放棄" }
+```
+
+  寫錯格式時整份不生效（這一輪不略過任何一個）、`files.ok:false`。程式永遠不自己判定放棄。
+- `node "$REPO/server/mirror.js" --files-verify`：重算每個附件的 sha256 與 meta 比對，不符的列出來、**不自動刪**，回報 Eason。
+
 ---
 
 ## 附錄 A：如果 FileVault 已經開了（或 Eason 不接受自動登入）→ 改走 (B) LaunchDaemon
@@ -663,3 +688,16 @@ echo "更新程式：$OLD → $NEW（$(date '+%F %T')）" >> "$DATA/logs/deploy-
 
 **`sig-state.json` 的相容性**（從 M3 定稿前的版本升上來時）：舊版會在 `$DATA/logs/sig-state.json` 寫 `{ "fails": {…}, "unsaved": {…} }`（fails 是舊的「連續失敗 3 次判壞圖」計數）。新版只讀 `unsaved`（鍵的格式相同，照常沿用），**忽略 `fails`**，下一次寫檔時自然去掉；壞圖改由本機檢查圖檔判定。所以**什麼都不用做，也不要刪這個檔**（刪掉會讓 `unsaved` 裡已上傳的圖重傳成孤兒檔）。M4 階段資料庫是空的，這個檔通常根本不存在。
 舊版「把某張從 `sig-state.json` 刪掉就會重試」的做法已經作廢，改用故障排除 E 的 `sig-skip.json`（只用來略過，不用來重試）。
+
+---
+
+## 附錄 C：M7 附件備份上線（已部署的機器，#18）
+
+順序固定：**先部署 GAS、再更新 Mac mini**（舊 Mac mini 打新 GAS 沒事；新 Mac mini 打舊 GAS 時第 3 步拿到「未知的橋接動作」→ 暫時故障、留 pending，不會壞）。**要在 2026-10-29 前做完**：系統 9/29 上線，垃圾桶 30 天，超過就救不回 9/29 當天被移除的附件。
+
+1. **MacBook 的 Claude**：GAS 新增 `fileget`／`filelist` 兩個橋接動作 → `clasp push` 後 `clasp deploy -i <正式部署 ID>`（新版號 @28 以後，照 CUTOVER 0-1 的 git hash 方式確認部署的是這個 commit）；`doGet` 回的 `v` 應為 `0.5.6`。
+2. **Mac mini 的 Claude**：照附錄 B 更新程式、重啟伺服器（`server/launchd/` 沒改動，mirror 下一輪自動用新程式）。
+3. **Mac mini 的 Claude：當天必跑一次** `node "$REPO/server/mirror.js" --files-scan`，印出 `count`／`pending`；`pending≠0` 再跑 `--files` 到 `pending=0`（見第 6 步那段與故障排除 F）。結論寫進證據檔。
+4. 隔一小時看 `curl -s http://127.0.0.1:8793/health`：`files.pending=0`、`files.stale=0`。
+5. 找一個真的接近 20MB 的附件確認分段跑通：`mirror.log` 有補到它、`$DATA/files/<它的 id>.json` 的 `size` 約 20MB、`--files-verify` 全部相符。
+6. 回報 #18：`--files-scan` 那行原文、`/health` 的 `files`、20MB 那一筆的結果。

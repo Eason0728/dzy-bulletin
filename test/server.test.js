@@ -125,9 +125,10 @@ async function main() {
     } }
   eq('prod POST /__seed is 404', (await request(P.port, 'POST', '/__seed', { demo: true })).status, 404);
   eq('prod GET /__blob is 404', (await request(P.port, 'GET', '/__blob?id=x')).status, 404);
+  eq('prod POST /__bridge and /__files (M7 test routes) are 404', [(await request(P.port, 'POST', '/__bridge', { op: 'filelist' })).status, (await request(P.port, 'POST', '/__files', {})).status], [404, 404]);
   { const h = await request(P.port, 'GET', '/health');
-    eq('health shape', Object.keys(h.json).sort(), ['backup', 'bridge', 'disk', 'e2e', 'level', 'mirror', 'ok', 'uptime', 'v', 'why']);
-    eq('health prod values', [h.json.ok, h.json.e2e, h.json.bridge, h.json.mirror, h.json.backup, typeof h.json.disk.freeMB], [true, false, 'missing', null, null, 'number']);
+    eq('health shape', Object.keys(h.json).sort(), ['backup', 'bridge', 'disk', 'e2e', 'files', 'level', 'mirror', 'ok', 'uptime', 'v', 'why']);
+    eq('health prod values', [h.json.ok, h.json.e2e, h.json.bridge, h.json.mirror, h.json.backup, h.json.files, typeof h.json.disk.freeMB], [true, false, 'missing', null, null, null, 'number']);
     eq('health level red when jobs never ran', [h.json.level, h.json.why.slice(0, 2)], ['red', ['沒有鏡像紀錄', '沒有快照紀錄']]);
     eq('response has Content-Length', Number(h.headers['content-length']) > 0, true); }
   { fs.mkdirSync(path.join(P.dir, 'logs'));
@@ -135,7 +136,16 @@ async function main() {
     fs.writeFileSync(path.join(P.dir, 'logs/backup-last.json'), JSON.stringify({ at: '2026-09-30T03:00:00Z', ok: true, file: '/Users/x/b.db' }));
     const h = (await request(P.port, 'GET', '/health')).json;
     eq('health mirror/backup status only', [h.mirror, h.backup], [{ at: '2026-09-30T01:00:00Z', ok: false, sigPending: 3, missing: 0, bad: 0, skipped: 0, fails: 0 }, { at: '2026-09-30T03:00:00Z', ok: true, sharedWith: null }]);
-    eq('health why has no raw error text', /secret|Users/.test(JSON.stringify(h)), false); }
+    eq('health why has no raw error text', /secret|Users/.test(JSON.stringify(h)), false);
+    // M7（#18 D8）：/health 帶出 files 六個欄位（從 mirror-last.json 的 files 挑），錯誤原文與清單不外露；stale > 0 → 黃
+    fs.writeFileSync(path.join(P.dir, 'logs/mirror-last.json'), JSON.stringify({ at: new Date().toISOString(), ok: true, pending: 0, fails: 0,
+      files: { ok: false, count: 12, bytes: 34567, pending: 2, stale: 1, fetched: 0, failed: 2, skipped: 1, lastScanAt: '2026-09-30T02:00:00.000Z', error: '/Users/secret 失敗', failedIds: ['F-9（x）'] } }));
+    const h2 = (await request(P.port, 'GET', '/health')).json;
+    eq('health files: six fields only', h2.files, { count: 12, bytes: 34567, pending: 2, stale: 1, skipped: 1, lastScanAt: '2026-09-30T02:00:00.000Z' });
+    eq('health files stale > 0 → yellow reason', h2.why.includes('有附件超過 24 小時沒補齊'), true);
+    eq('health files: no raw error text / id list', /secret|Users|F-9/.test(JSON.stringify(h2)), false);
+    fs.writeFileSync(path.join(P.dir, 'logs/mirror-last.json'), JSON.stringify({ at: new Date().toISOString(), ok: true, pending: 0, fails: 0, files: { count: 1, bytes: 1, pending: 3, stale: 0, skipped: 0, lastScanAt: null } }));
+    eq('health files pending > 0 && stale = 0 → no files reason', (await request(P.port, 'GET', '/health')).json.why.includes('有附件超過 24 小時沒補齊'), false); }
   { const big = Buffer.alloc(41 * 1024 * 1024, 0x41);
     eq('41MB body → 413', (await request(P.port, 'POST', '/', big)).status, 413);
     eq('41MB chunked body → 413', (await request(P.port, 'POST', '/', big, { chunked: true })).status, 413);
@@ -243,6 +253,7 @@ async function main() {
     const rs = await Promise.all([0, 1, 2].map(() => api(B, 'uploadFile', { atoken: atB, name: 'a.pdf', data })));
     const busy = rs.filter((r) => r.status === 503);
     eq('inflight cap: at least one 503 BUSY', [busy.length >= 1, busy.every((r) => r.json && r.json.code === 'BUSY')], [true, true]);
+    await sleep(300);   // M7（#18 D1）：上傳成功的那幾個在回應送出後、存完本機備份才釋放額度（毫秒級），再送下一個
     eq('inflight released after response', (await api(B, 'uploadFile', { atoken: atB, name: 'a.pdf', data })).json.ok, true); }
   // S1：等 share 橋接期間才建立的 READONLY 也擋得住寫入
   { const { at: atB } = await login(B);
@@ -280,6 +291,75 @@ async function main() {
     eq('bridge business error passthrough (BAD_REQ)', [r.json.code, r.json.message], ['BAD_REQ', '找不到附件檔案']);
     eq('business error: post not saved', dbq(B.dir, "SELECT COUNT(*) AS n FROM posts WHERE json LIKE '%失效附件%'")[0].n, 0); }
   B.stop();
+
+  // ---- M7（#18）：附件本機備份（上傳存本機、唯讀時不影響上傳並由 mirror 第 3 步補回、第二輪失敗不存、移除後永久保留）----
+  { const C = await start({ E2E: '1', BRIDGE_FAKE_DELAY_MS: '600' });
+    const crypto = require('crypto'), FL = require('../server/files-local.js'), { runMirror } = require('../server/mirror.js');
+    const { at: atC } = await login(C);
+    const fdir = path.join(C.dir, 'files');
+    const hash = (alg, b) => crypto.createHash(alg).update(b).digest('hex');
+    const until = async (fn, ms) => { const t0 = Date.now(); while (Date.now() - t0 < (ms || 5000)) { if (fn()) return true; await sleep(50); } return false; };
+    // 1. 上傳 → files/<id> 與 <id>.json、sha256／md5 相同、meta.size＝Drive 回的 size
+    const b1 = crypto.randomBytes(300 * 1024 + 1);
+    const u1 = (await api(C, 'uploadFile', { atoken: atC, name: 'M7測試.pdf', data: b1.toString('base64') })).json;
+    await until(() => { const m = FL.readMeta(C.dir, u1.data.id); return m && m.savedAt; });
+    const m1 = FL.readMeta(C.dir, u1.data.id), l1 = fs.readFileSync(FL.bytesPath(C.dir, u1.data.id));
+    eq('M7 upload: ok and local files exist', [u1.ok, fs.existsSync(path.join(fdir, u1.data.id)), fs.existsSync(path.join(fdir, u1.data.id + '.json'))], [true, true, true]);
+    eq('M7 upload: sha256/md5 of local bytes = uploaded bytes; meta.size = Drive size', [hash('sha256', l1) === hash('sha256', b1), hash('md5', l1) === hash('md5', b1), m1.sha256, m1.md5, m1.size, u1.data.size, m1.source, m1.name, m1.mime],
+      [true, true, hash('sha256', b1), hash('md5', b1), b1.length, b1.length, 'upload', 'M7測試.pdf', 'application/pdf']);
+    eq('M7 upload: no tmp left', fs.readdirSync(fdir).filter((f) => /tmp/.test(f)), []);
+    // 2. files/ 唯讀 → 主管照樣拿到 ok 與 fileId、公告可正常儲存；stderr 一行；下一輪 mirror 第 3 步補回（meta 也沒寫進去 → 由公告引用補建）
+    fs.chmodSync(fdir, 0o555);
+    const b2 = crypto.randomBytes(40000);
+    const u2 = (await api(C, 'uploadFile', { atoken: atC, name: '唯讀.xlsx', data: b2.toString('base64') })).json;
+    const sp = (await api(C, 'savePost', { atoken: atC, post: { title: 'M7 唯讀附件', units: ['mala'], publishOn: today(), files: [{ id: u2.data && u2.data.id, name: '唯讀.xlsx', size: b2.length }] } })).json;
+    const logged = await until(() => new RegExp('附件本機備份失敗 ' + u2.data.id + '：').test(C.err()));
+    fs.chmodSync(fdir, 0o755);
+    eq('M7 read-only files/: upload still ok with fileId, post saved', [u2.ok, /^F-\d+$/.test(u2.data.id), sp.ok, (sp.data.post.files || []).map((f) => f.id)], [true, true, true, [u2.data.id]]);
+    eq('M7 read-only files/: one stderr line, nothing written locally', [logged, C.err().split('\n').filter((l) => l.includes('附件本機備份失敗 ' + u2.data.id)).length, FL.readMeta(C.dir, u2.data.id), FL.hasBytes(C.dir, u2.data.id), /EACCES|\/files/.test(JSON.stringify(sp))], [true, 1, null, false, false]);
+    const viaC = { call: async (op, pl) => {   // mirror 第 3 步打這台 E2E 伺服器的假 Drive（fileget／filelist）；簽名與鏡像回假成功
+      if (op === 'fileget' || op === 'filelist') { const r = (await request(C.port, 'POST', '/__bridge', Object.assign({}, pl, { op }))).json; if (!r.ok) { const e = new Error(r.message); e.code = r.code; throw e; } return r.data; }
+      if (op === 'sigs') return { ids: pl.put.map((x) => 'DRV-' + x.name) };
+      if (op === 'mirror') return { counts: {} };
+      throw new Error('未知 op ' + op); } };
+    const rm = await runMirror({ dir: C.dir, bridge: viaC });
+    const m2 = FL.readMeta(C.dir, u2.data.id);
+    eq('M7 next mirror step 3 restores it (meta rebuilt from post, bytes md5 ok)', [!!m2, m2 && m2.source, FL.hasBytes(C.dir, u2.data.id) && hash('sha256', fs.readFileSync(FL.bytesPath(C.dir, u2.data.id))) === hash('sha256', b2), m2 && m2.md5, rm.ok],
+      [true, 'posts', true, hash('md5', b2), true]);
+    eq('M7 step 3 only leaves demo placeholders pending (not in fake Drive)', (rm.files.pendingIds || []).every((id) => /^demo-/.test(id)), true);
+    // 4. 主管移除附件 → 本機位元組仍在、meta 補上 removedAt；revoke 照常送 Drive
+    const post1 = (await api(C, 'savePost', { atoken: atC, post: { title: 'M7 移除測試', units: ['mala'], publishOn: today(), files: [{ id: u1.data.id, name: 'M7測試.pdf', size: b1.length }] } })).json.data.post;
+    const rv0 = (await calls(C)).revoke;
+    const ed = (await api(C, 'savePost', { atoken: atC, post: Object.assign({}, post1, { files: [] }) })).json;
+    await until(() => { const m = FL.readMeta(C.dir, u1.data.id); return m && m.removedAt; });
+    await sleep(900);   // 等背景 revoke 做完（假橋接延遲 600ms）
+    const m1b = FL.readMeta(C.dir, u1.data.id);
+    eq('M7 remove: post saved without the file, revoke sent to Drive', [ed.ok, ed.data.post.files, (await calls(C)).revoke - rv0, (await request(C.port, 'GET', '/__blob?id=' + u1.data.id)).json.data], [true, [], 1, null]);
+    eq('M7 remove: local bytes kept (same sha256), meta gets removedAt', [FL.hasBytes(C.dir, u1.data.id), hash('sha256', fs.readFileSync(FL.bytesPath(C.dir, u1.data.id))) === hash('sha256', b1), !!Date.parse(m1b.removedAt), m1b.source], [true, true, true, 'upload']);
+    const fl = (await request(C.port, 'POST', '/__files', {})).json.data.find((x) => x.id === u1.data.id);
+    eq('M7 /__files (E2E only) shows removed file kept', [fl.bytes, !!fl.meta.removedAt], [true, true]);
+    // 移除一個本機從來沒有的附件（例如搬遷前上傳的）→ 建 meta（source:revoke）＝pending，mirror 從 Drive 垃圾桶補抓
+    const u4 = (await api(C, 'uploadFile', { atoken: atC, name: '搬遷前.docx', data: Buffer.from('old doc').toString('base64') })).json;
+    await until(() => FL.hasBytes(C.dir, u4.data.id));
+    fs.unlinkSync(FL.bytesPath(C.dir, u4.data.id)); fs.unlinkSync(FL.metaPath(C.dir, u4.data.id));
+    const post4 = (await api(C, 'savePost', { atoken: atC, post: { title: 'M7 搬遷前附件', units: ['mala'], publishOn: today(), files: [{ id: u4.data.id, name: '搬遷前.docx', size: 7 }] } })).json.data.post;
+    await api(C, 'savePost', { atoken: atC, post: Object.assign({}, post4, { files: [] }) });
+    await until(() => FL.readMeta(C.dir, u4.data.id));
+    const m4 = FL.readMeta(C.dir, u4.data.id);
+    eq('M7 remove never-local file: meta source revoke with removedAt (pending)', [m4.source, !!m4.removedAt, FL.hasBytes(C.dir, u4.data.id)], ['revoke', true, false]);
+    await sleep(700);   // 等背景 revoke 做完（假橋接延遲 600ms）
+    await runMirror({ dir: C.dir, bridge: viaC });
+    eq('M7 mirror fetches removed file from Drive trash', [FL.hasBytes(C.dir, u4.data.id) && fs.readFileSync(FL.bytesPath(C.dir, u4.data.id)).toString(), FL.readMeta(C.dir, u4.data.id).source, !!FL.readMeta(C.dir, u4.data.id).removedAt], ['old doc', 'revoke', true]);
+    // 3. 第二輪 Service 失敗（上傳等 Drive 期間通行碼剛更換）→ Drive 檔被撤、本機 files/ 沒有它
+    const before = new Set(fs.readdirSync(fdir)), c0 = await calls(C);
+    const pu = api(C, 'uploadFile', { atoken: atC, name: '孤兒.pdf', data: crypto.randomBytes(5000).toString('base64') });
+    await sleep(200); await request(C.port, 'POST', '/__adminInit', { pass: '654321' });
+    const ru = (await pu).json;
+    await sleep(900);
+    const c1 = await calls(C);
+    eq('M7 second-round failure: AUTH to admin, uploaded Drive file revoked', [ru.ok, ru.code, c1.upload - c0.upload, c1.revoke - c0.revoke], [false, 'AUTH', 1, 1]);
+    eq('M7 second-round failure: nothing new in files/', fs.readdirSync(fdir).filter((f) => !before.has(f)), []);
+    C.stop(); }
 
   // ---- 真橋接（async fetch）對本機假 Apps Script：302 轉址、錯誤碼、逾時 ----
   { const { makeBridge } = require('../server/bridge.js');

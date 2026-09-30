@@ -40,7 +40,48 @@ function makeFiles_() {
     while (ps.hasNext()) if (ps.next().getId() === fid) return f;
     throw err('BAD_REQ', '附件不屬於佈告欄');
   }
+  // M7（#18）附件備份專用：與 ours() 同三道檢查（找得到、mime 在白名單且不是正本試算表、直屬 parent 是附件資料夾），
+  // 唯一差別是**不擋垃圾桶**——主管移除的附件（revoke＝丟垃圾桶）Mac mini 也要能補抓。ours() 本身不動（share／revoke 仍擋垃圾桶，M2 R1）。
+  // 讀取路徑：只讀 FOLDER_ID 屬性、不建資料夾；不是我們的一律回 null、不丟錯（不洩漏檔名）。
+  // 簽名圖在簽名資料夾（附件資料夾的子資料夾），直屬 parent 不符；備份 .gz、Google 文件、照片不在白名單 → 都是 null。
+  function attachFolderIdForRead_() { return PropertiesService.getScriptProperties().getProperty('FOLDER_ID') || ''; }
+  function okMime_(mime, id) { return OK_MIME.indexOf(mime) >= 0 && id !== PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID'); }
+  function oursForBackup(id) {
+    try {
+      var f = DriveApp.getFileById(id);                           // 垃圾桶內的檔 getFileById 讀得到
+      if (!okMime_(f.getMimeType(), id)) return null;
+      return inFolder_(f, attachFolderIdForRead_()) ? f : null;
+    } catch (e) { return null; }
+  }
   return {
+    // 橋接 fileget（分段讀附件位元組，含垃圾桶）：off／len 由 bridgeCore_ 驗過；md5 用 Drive 已算好的 md5Checksum
+    backupGet: function (id, off, len) {
+      var f = oursForBackup(id);
+      if (!f) return { file: null };
+      try {
+        var m = Drive.Files.get(id, { fields: 'md5Checksum,size,trashed' });
+        var bytes = f.getBlob().getBytes(), size = bytes.length, end = Math.min(size, off + len);
+        return {
+          file: { id: id, name: f.getName(), mime: f.getMimeType(), size: size, md5: String(m.md5Checksum || ''), trashed: !!(m.trashed || f.isTrashed()) },
+          off: off, data: off < end ? Utilities.base64Encode(bytes.slice(off, end)) : '', eof: end >= size
+        };
+      } catch (e) { console.error('backupGet: ' + e); return { file: null }; }
+    },
+    // 橋接 filelist：附件資料夾直屬的檔（**不加 trashed=false**，要含垃圾桶），伺服器端再過白名單；只回 id 與 meta
+    backupList: function (pageToken) {
+      var fid = attachFolderIdForRead_();
+      if (!fid) return { files: [], nextPageToken: '' };
+      var o = { q: "'" + fid.replace(/[\\']/g, '') + "' in parents", pageSize: 200,
+        fields: 'nextPageToken,files(id,name,mimeType,size,md5Checksum,trashed,createdTime)' };
+      if (pageToken) o.pageToken = pageToken;
+      var r = Drive.Files.list(o);
+      return {
+        files: (r.files || []).filter(function (x) { return okMime_(x.mimeType, x.id); }).map(function (x) {
+          return { id: x.id, name: x.name, mime: x.mimeType, size: Number(x.size) || 0, md5: String(x.md5Checksum || ''), trashed: !!x.trashed, createdTime: x.createdTime || '' };
+        }),
+        nextPageToken: r.nextPageToken || ''
+      };
+    },
     upload: function (name, mime, b64) {
       var blob = Utilities.newBlob(Utilities.base64Decode(b64), mime, name);
       var f = attachFolder_().createFile(blob);

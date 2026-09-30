@@ -3,7 +3,7 @@
 'use strict';
 
 var WRITE_ACTIONS_ = ['setPin', 'login', 'ack', 'adminLogin', 'savePost', 'setPublished', 'setPinned', 'staffAdd', 'staffDelete', 'staffResetPin', 'syncClock', 'staffSetStore'];   // 必須與 Service.WRITE_ACTIONS 一致（test 檢查）
-var VERSION_ = '0.5.5';
+var VERSION_ = '0.5.6';
 // 後端搬 Mac mini（#5、#7）：指令碼屬性 PRIMARY＝gas（現況）／mini（已切到 Mac mini）。
 // mini 時寫入一律回 MOVED、讀取照常：還沒重新整理的舊頁面能看、不能寫（避免切換期雙寫）。uploadFile 也擋（與 Mac mini 的 READONLY 同步，免得留孤兒附件）。
 // 只有寫入動作才讀 PRIMARY（讀取動作零成本、PRIMARY 沒設時與改版前完全一樣）；寫入在拿到鎖之後再確認一次（等鎖期間才切 mini 也擋得住）。
@@ -83,6 +83,7 @@ function clockSource_() {
  * （Claude 不經手、不印出）。op 名稱與參數格式必須與 server/bridge.js 一致。
  * bridgeCore_ 只靠注入的 d 碰外界（屬性、Drive、試算表、鎖），node 測試直接餵假的 d（test/bridge.test.js）。 */
 var BRIDGE_KEY_MIN_ = 32, SIGS_MAX_ = 20;
+var FILEGET_MAX_ = 8 * 1024 * 1024, FILE_ID_RE_ = /^[A-Za-z0-9_-]{1,200}$/;   // M7：fileget 每段 ≤ 8MB 原始位元組（base64 約 10.7MB）；Drive id 只有這些字元
 function bridgeCore_(req, d) {
   // 金鑰：屬性缺／短於 32、送來的不是字串（物件、陣列）或不相符，一律 AUTH，而且先於任何參數檢查——
   // M1 的 bridge.js 會把 BAD_REQ 當業務錯誤原樣顯示給主管，金鑰問題絕不能回 BAD_REQ（#12 第 3 輪）
@@ -147,6 +148,20 @@ function bridgeCore_(req, d) {
       });
     }
     if (op === 'backup') return ok(d.backup(String(req.name || ''), String(req.data || '')));
+    // M7（#18）附件備份：Mac mini 補抓附件位元組（fileget 分段）與列出附件資料夾（filelist，含垃圾桶）。
+    // 讀取類，不受 PRIMARY 限制（回退到 GAS 期間 Mac mini 仍可補齊）；範圍檢查在 Files.js oursForBackup（ours() 不放寬）。
+    if (op === 'fileget') {
+      var gid = req.id, goff = req.off, glen = req.len;
+      if (typeof gid !== 'string' || !FILE_ID_RE_.test(gid)) return bad('附件 id 格式錯誤');
+      if (typeof goff !== 'number' || !(goff >= 0) || Math.floor(goff) !== goff) return bad('off 必須是 ≥ 0 的整數');
+      if (typeof glen !== 'number' || !(glen > 0) || glen > FILEGET_MAX_ || Math.floor(glen) !== glen) return bad('len 必須是 1～8MB 的整數');
+      return ok(d.files().backupGet(gid, goff, glen));
+    }
+    if (op === 'filelist') {
+      var pt = req.pageToken;
+      if (pt !== undefined && pt !== null && typeof pt !== 'string') return bad('pageToken 格式錯誤');
+      return ok(d.files().backupList(pt || ''));
+    }
     return bad('未知的橋接動作');
   } catch (e) {
     console.error('bridge ' + op + ': ' + (e && e.stack || e));        // 只記 op，不記 req（內含金鑰）

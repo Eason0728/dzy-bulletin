@@ -36,38 +36,56 @@ counts() { node -e "const{DatabaseSync}=require('node:sqlite');const d=new Datab
 
 | # | 項目 | 負責人 | 怎麼確認 |
 |---|---|---|---|
-| 0-1 | M2 **定稿版**的 GAS（橋接、`PRIMARY`、`EXPORT_ONCE`、`sigs` get、鏡像的計數與防呆）已 clasp 部署 | **MacBook 的 Claude**，在 MacBook 的 `~/dzy-bulletin` 執行（Eason 核准） | 照下方〈0-1 部署步驟〉做完，每一道檢查都過才算完成；任何一道不過就**不進第 2 步** |
+| 0-1 | M2 **定稿版**的 GAS（橋接、`PRIMARY`、`EXPORT_ONCE`、`sigs` get、鏡像的計數與防呆）**已經是正式部署** | **MacBook 的 Claude**，在 MacBook 的 `~/dzy-bulletin` 執行（Eason 核准） | 照下方〈0-1 確認部署版本〉：先確認，**符合就不 push、不 deploy**；只有不符合時才部署。任何一道不過就**不進第 2 步** |
 | 0-2 | 含 `MOVED` 處理的前端**已上線滿 1 天**（#7【Opus】） | MacBook 的 Claude | Pages 上的 `js/config.js` 版本號＝含 MOVED 處理的版本 |
-| 0-3 | Mac mini 部署完成（M4 `DEPLOY.md`）：伺服器常駐、Funnel 通、`server/.env` 有 `DATA_DIR`／`BRIDGE_URL`／`BRIDGE_KEY` | Mac mini 的 Claude（`.env` 的金鑰由 Eason 親手貼） | `curl -s http://127.0.0.1:8793/health` 回 JSON；`grep -c '^BRIDGE_KEY=' server/.env` 回 `1`（只數行數，不印內容） |
+| 0-3 | Mac mini 部署完成（M4 `DEPLOY.md`）：伺服器常駐、Funnel 通、`server/.env` 有 `DATA_DIR`／`BRIDGE_URL`／`BRIDGE_KEY` | Mac mini 的 Claude（`.env` 的金鑰由 Eason 親手貼） | `curl -s http://127.0.0.1:8793/health` 回 JSON；`grep -c '^[[:space:]]*BRIDGE_KEY[[:space:]]*=' server/.env` 回 `1`（只數行數，不印內容；認行規則與伺服器 loadEnv 相同） |
 | 0-4 | **停掉每小時鏡像 job**（M4 已經裝好並載入，見 DEPLOY.md〈交接給 M5〉第 1 條；這裡多做 `disable`，重開機也不會回來），並確認目標庫是空的、沒有 `ADMIN_INIT.txt` | Mac mini 的 Claude | `job_off com.dzy.bulletin.mirror` 印「已停、已 disable」；`counts` 四個數字都是 0（M4 前景試跑建的空庫只有 kv 裡的一把 secret，migrate.js 不算它、搬遷時會被換掉）；`ls "$DATA_DIR/ADMIN_INIT.txt"` 要回「No such file」（這個檔在的話，主管第一次登入會把搬過來的管理雜湊換掉） |
 | 0-5 | Mac mini 上 `bash tools/build.sh` 全綠，而且用的是服務實際用的 Node 24 | Mac mini 的 Claude | 先貼共用區塊；`node -v` 要是 `v24.`開頭；最後一行 `build OK` |
 | 0-6 | 記下切換前的 `js/config.js` 三行（`VERSION`／`ROSTER_CSV`／`GAS_URL`），回退時要用 | MacBook 的 Claude | 貼在 #10 留言（`GAS_URL` 本來就在 repo 裡，可以貼；Funnel 網址不貼） |
 | 0-7 | 先估簽名圖下載時間，決定公告的時段 | Eason 數列數、Mac mini 的 Claude 算 | Eason 看試算表「已讀」分頁「簽名檔 id」有值的列數 N；下載約 ⌈N÷20⌉ 次橋接，每次 5～30 秒。例：N＝2000 → 100 次 → 約 8～50 分鐘。公告時段＝這個上限＋15 分鐘（搬遷與 Pages 快取）。第 3 步 dry-run 印出的預估若超出公告時段：還沒開始下載，可以中止（Eason 設回 `PRIMARY=gas`，改天用更長的時段），或在 LINE 補一則延長公告 |
 | 0-8 | 預查公告／同仁有沒有**重複 id**，切換前清掉（凍結窗口裡才發現會拉長停機，見第 3 步） | Eason（試算表）；Claude 可以補查同仁 | 照下方〈0-8 重複 id 預查〉 |
 
-### 0-1 部署步驟（MacBook 的 Claude）
+### 0-4 補充：為什麼要先停每小時鏡像、燈號會怎麼變
 
-GAS 的 `clasp push`／`clasp deploy` **一律由 MacBook 的 Claude 在 MacBook 的 `~/dzy-bulletin` 執行**，不在 Mac mini、也不在新 clone 的目錄或 worktree 執行。
+第 2 步設下 `PRIMARY=mini` 之後，GAS 就會接受 `mirror`。若這時每小時鏡像先跑到，會把 Mac mini 的空庫整份蓋掉試算表，之後的 export 也就是空的。
 
-- 原因：`gas/.clasp.json` 和 `gas/Config.local.js` 都被 gitignore，只存在 MacBook 的 `~/dzy-bulletin`。
-- `clasp push` 會用本機檔案**整份取代** GAS 專案。在沒有 `Config.local.js` 的目錄 push，GAS 上的 `Config.local.js` 會消失，`CLOCK_SOURCES_` 變成未定義，打卡同步**默默停掉**，不會有任何錯誤。
+- 已有兩道保險：GAS 端（M2）拒收四份全空的鏡像；`server/mirror.js`（本 PR）在 Mac mini 端也拒絕鏡像空庫（沒有同仁也沒有公告）。
+- 保險之外，程序上仍要求：**第 2 步之前先 disable＋bootout，搬遷驗證完成（第 4 步）之後才 enable＋bootstrap 回來**。
+- `/health` 燈號的預期變化（**都不是故障，不要處理**）：
+  - M4 部署後到 0-4 之前：每小時鏡像都被 `PRIMARY=gas` 擋下，約 2 小時後 `/health` 轉 **yellow**「鏡像連續失敗」。
+  - 0-4 停掉鏡像後：鏡像不再跑，`mirror.at` 停住，超過 6 小時轉 **red**（#8：`mirror.at` > 6h → 紅）。切換日早上看到紅燈是預期的。
+  - 第 4 步鏡像成功後自動轉綠。
+
+### 0-1 確認部署版本（MacBook 的 Claude）
+
+M2 定稿（b998db9）已經部署成正式版 **@27**。0-1 的預設是**只確認、不重新部署**：多部署一次只會產生內容相同的新版本，還可能把 MacBook 上後來改過的 `Config.local.js` 在切換前一天推上去，或卡在 clasp 的互動確認。
+
+一律在 MacBook 的 `~/dzy-bulletin` 執行（`gas/.clasp.json` 只在這裡）：
 
 ```sh
 cd ~/dzy-bulletin && git checkout main && git pull --ff-only && git status --short   # 最後一段要空白
-ls gas/.clasp.json gas/Config.local.js || echo "✗ 缺檔，停下來，不准 push"          # 兩個都要存在
-[ "$(git rev-parse --is-shallow-repository)" = true ] && git fetch --unshallow          # shallow clone 先補完整歷史，否則下一行會回 fatal
-git merge-base --is-ancestor b998db9 HEAD && echo "OK：含 M2 定稿 b998db9"
-grep -c distinct_ gas/Store.js; grep -c isTrashed gas/Files.js                        # 兩個數字都要大於 0
+[ "$(git rev-parse --is-shallow-repository)" = true ] && git fetch --unshallow          # shallow clone 先補完整歷史，否則下兩行會回 fatal
+git merge-base --is-ancestor b998db9 origin/main && echo "OK：主線含 M2 定稿 b998db9"
+git diff --quiet b998db9 origin/main -- gas/ && echo "OK：b998db9 之後 gas/ 沒有任何變動"
+cd gas && clasp deployments                                                              # 找正式部署 ID 那一行，版本要是 @27 或更新
 ```
 
-- `b998db9`＝M2 第 3 輪定稿。**M2 之後若又改版，這個 hash 要跟著更新。**
-- #13 是用一般 merge commit 合進來的，所以 b998db9 是主線的祖先。**如果日後改用 squash merge**，b998db9 就不會是祖先，這道檢查會永遠擋住；那時改以 grep 關鍵字那道檢查為準。
-- 全部通過才部署：
-  ```sh
-  cd ~/dzy-bulletin/gas && clasp push && clasp deploy -i <正式部署 ID> -d "$(git rev-parse --short HEAD)" && clasp deployments
-  ```
-  - `-i` 帶正式部署 ID，Web App 網址才不會換。
-  - 確認 `clasp deployments` 裡那個部署 ID 的說明＝`git rev-parse --short HEAD`。
+- **三項都成立**（主線含 b998db9、`gas/` 沒有變動、正式部署 ≥ @27）→ 0-1 完成，**不 push、不 deploy**。
+- `b998db9`＝M2 第 3 輪定稿。**M2 之後若又改版，這個 hash 與 @27 都要跟著更新。**
+- #13 是用一般 merge commit 合進來的，所以 b998db9 是主線的祖先。**如果日後改用 squash merge**，b998db9 就不會是祖先；那時改用 `grep -c distinct_ gas/Store.js`、`grep -c isTrashed gas/Files.js` 兩個都大於 0 判斷是否含 M2 定稿。
+- 注意：第 5 步切換時會改 `gas/Code.js` 的 `VERSION_`，那是切換當天之後的事，不影響 0-1（手冊寫明版本號不需要重新部署）。
+
+**只有 `gas/` 有變動、或正式部署舊於 @27 時**，才照下面部署：
+
+```sh
+cd ~/dzy-bulletin
+ls gas/.clasp.json gas/Config.local.js || echo "✗ 缺檔，停下來，不准 push"          # 兩個都要存在
+cd gas && clasp push -f && clasp deploy -i <正式部署 ID> -d "$(git rev-parse --short HEAD)" && clasp deployments
+```
+
+- `clasp push -f`：遠端 manifest 有變動時 clasp 會跳出互動確認，Claude 的 Bash 回答不了會卡住；`-f` 直接以本機為準。
+- `Config.local.js` **本來就該推上去**：GAS 需要它（打卡來源 `CLOCK_SOURCES_` 在裡面）。它只是被 **git** 忽略（不進 repo），不是被 **clasp** 忽略，所以只能在有這個檔的 `~/dzy-bulletin` 推。`clasp push` 會用本機檔案整份取代 GAS 專案，在沒有這個檔的目錄（Mac mini、新 clone、worktree）推，GAS 上的它會消失、打卡同步默默停掉——這才是風險，不是推它本身。
+- `-i` 帶正式部署 ID，Web App 網址才不會換。確認 `clasp deployments` 裡那個部署 ID 的說明＝`git rev-parse --short HEAD`、版本號比原本新。
 
 ### 0-8 重複 id 預查
 
@@ -75,9 +93,10 @@ grep -c distinct_ gas/Store.js; grep -c isTrashed gas/Files.js                  
 
 1. 在主試算表**新增一個暫時分頁**，例如叫「重複檢查」。
    - **不要**把公式貼在「公告」「同仁」分頁裡：貼在 id 欄會被當成一筆資料，貼在資料最後一列下面會讓之後新增的列接在它後面。
-2. 在暫時分頁的 A1 貼：
+2. 在暫時分頁的 A1 貼公告版：
    `=IFNA(TEXTJOIN("、",TRUE,UNIQUE(FILTER(公告!A2:A,公告!A2:A<>"",COUNTIF(公告!A2:A,公告!A2:A)>1))),"沒有重複")`
-3. 在 A2 貼同一條公式，把三個「公告」改成「同仁」。
+3. 在 A2 貼同仁版（完整一條，不要自己改字）：
+   `=IFNA(TEXTJOIN("、",TRUE,UNIQUE(FILTER(同仁!A2:A,同仁!A2:A<>"",COUNTIF(同仁!A2:A,同仁!A2:A)>1))),"沒有重複")`
    - 顯示「沒有重複」就沒問題。
    - 顯示 id：由 Eason 判斷要留哪一列（GAS 的編輯與簽名只認第一列），到原分頁刪掉另一列。
    - 顯示其他錯誤（例如 `#ERROR!`、`#NAME?`）：代表公式沒有貼對，不代表沒有重複，要修到顯示結果為止。用 `IFNA` 而不用 `IFERROR`，就是為了只接住「找不到重複」的情況，其他錯誤照樣顯示出來。
@@ -90,15 +109,6 @@ grep -c distinct_ gas/Store.js; grep -c isTrashed gas/Files.js                  
 ```sh
 curl -sSL --data '{"action":"roster"}' "<js/config.js 的 GAS_URL>" | node -e "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>{const ids=JSON.parse(s).data.map(x=>x.id);const d=ids.filter((x,i)=>ids.indexOf(x)!==i);console.log(d.length?'重複：'+[...new Set(d)].join('、'):'在職同仁沒有重複')})"
 ```
-
-為什麼 0-4 要特別注意：第 2 步設下 `PRIMARY=mini` 之後，GAS 就會接受 `mirror`。若這時每小時鏡像先跑到，會把 Mac mini 的空庫整份蓋掉試算表，之後的 export 也就是空的。
-
-- 已有兩道保險：GAS 端（M2）拒收四份全空的鏡像；`server/mirror.js`（本 PR）在 Mac mini 端也拒絕鏡像空庫（沒有同仁也沒有公告）。
-- 保險之外，程序上仍要求：**第 2 步之前先 disable＋bootout，搬遷驗證完成（第 4 步）之後才 enable＋bootstrap 回來**。
-- `/health` 燈號的預期變化（**都不是故障，不要處理**）：
-  - M4 部署後到 0-4 之前：每小時鏡像都被 `PRIMARY=gas` 擋下，約 2 小時後 `/health` 轉 **yellow**「鏡像連續失敗」。
-  - 0-4 停掉鏡像後：鏡像不再跑，`mirror.at` 停住，超過 6 小時轉 **red**（#8：`mirror.at` > 6h → 紅）。切換日早上看到紅燈是預期的。
-  - 第 4 步鏡像成功後自動轉綠。
 
 ---
 
@@ -304,14 +314,14 @@ P="$(sed -n 's/^BRIDGE_KEY=//p' server/.env | tr -d "\"'" | cut -c1-8)"; if [ ${
      ```sh
      sh server/oldkey-check.sh
      ```
-     - 腳本從 `.env` 讀金鑰和網址，用 shell 內建的 `printf` 經 stdin 送出（不會出現在任何程序的指令列，也不印出來），`curl -sL --data @-` **不加 `-X POST`**：Apps Script 的 `/exec` 會 302 轉到只收 GET 的網址，加了 `-X POST` 轉址後仍用 POST，永遠拿不到結果。這個行為已用本機假伺服器模擬 302 實測（`test/migrate.test.js`）。
+     - 腳本從 `.env` 讀金鑰和網址，用 shell 內建的 `printf` 經 stdin 送出（不會出現在任何程序的指令列，也不印出來），`curl -sSL --data @-` **不加 `-X POST`**：Apps Script 的 `/exec` 會 302 轉到只收 GET 的網址，加了 `-X POST` 轉址後仍用 POST，永遠拿不到結果。這個行為已用本機假伺服器模擬 302 實測（`test/migrate.test.js`）。
      - **不可以用 `sh -x` 執行或除錯**：trace 會把金鑰印出來（腳本開頭已經 `set +x`，但 `-x` 仍會印出前面幾行）。
      - 結果：
        - 印「✅ 回 AUTH：舊金鑰已失效」（exit 0）→ 通過，做下一步。
        - 印「❌ 回正常結果：舊金鑰仍然有效」（exit 1）→ GAS 屬性沒存到。請 Eason 回 Apps Script 確認 `BRIDGE_KEY` 已經是新的那把、有按儲存，再跑一次。
        - 印「✗ 其他回應」（exit 3）→ **停下來**，把腳本印出的原文貼給 MacBook 的 Claude（例如網路不通時 curl 的錯誤訊息、Google 暫時錯誤、`SERVER` 忙碌中）。不要反覆請 Eason 重設屬性。
        - 印「.env 有 N 行 BRIDGE_KEY」（exit 3）→ 伺服器只讀第一行，腳本無法判斷該驗哪一把。請 Eason 把 `server/.env` 整理成只剩一行 `BRIDGE_KEY=`（舊的那把），再跑一次。
-       - 印「讀不到 BRIDGE_KEY／BRIDGE_URL」（exit 2）→ 確認是在 repo 根目錄執行、`server/.env` 存在，而且兩行都是 `BRIDGE_KEY=…`、`BRIDGE_URL=…` 的格式，等號兩邊**不要有空白**（`grep -c '^BRIDGE_KEY=' server/.env` 要是 1，只數行數、不印內容）。有空白的話請 Eason 改掉，再跑一次。
+       - 印「讀不到 BRIDGE_KEY／BRIDGE_URL」（exit 2）→ 確認是在 repo 根目錄執行、`server/.env` 存在，而且兩行都在、不是被 `#` 註解掉（`grep -c '^[[:space:]]*BRIDGE_KEY[[:space:]]*=' server/.env` 要是 1，只數行數、不印內容）。腳本認行的規則與伺服器 loadEnv 相同（開頭、等號兩邊可以有空白），所以伺服器讀得到的，腳本也讀得到。
      - 這段期間附件上傳、打卡同步會失敗，簽名與看公告不受影響，所以要接著做下一步。
   3. **Eason**：把同一把新金鑰貼進 Mac mini 的 `server/.env`。
   4. **Mac mini 的 Claude**：重啟伺服器 `launchctl kickstart -k gui/$(id -u)/com.dzy.bulletin`（伺服器只在啟動時讀 `.env`）。

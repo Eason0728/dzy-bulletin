@@ -339,6 +339,10 @@ async function main() {
     const two = path.join(tmp(), '.env'); fs.writeFileSync(two, `BRIDGE_URL=${W}\nBRIDGE_KEY=STILL-VALID-KEY-01234567890123456789\nBRIDGE_KEY=OLD-KEY-0123456789012345678901234567\n`);
     const tw = await run(two);
     eq('oldkey-check：.env 有兩行 BRIDGE_KEY → exit 3、說明原因、不送出（不會誤判通過）', [tw.code, /有 2 行 BRIDGE_KEY/.test(tw.o), tw.o.includes('KEY-0')], [3, true, false]);
+    const lead = path.join(tmp(), '.env'); fs.writeFileSync(lead, `BRIDGE_URL=${W}\n BRIDGE_KEY=STILL-VALID-KEY-01234567890123456789\nBRIDGE_KEY=OLD-KEY-0123456789012345678901234567\n`);
+    eq('oldkey-check：開頭有空白的 BRIDGE_KEY 也算一行（與伺服器 loadEnv 一致）→ 兩行 → exit 3', (await run(lead)).code, 3);
+    const sp = path.join(tmp(), '.env'); fs.writeFileSync(sp, `# BRIDGE_KEY=註解不算\n  BRIDGE_URL = ${W}\nBRIDGE_KEY = OLD-KEY-0123456789012345678901234567\n`);
+    eq('oldkey-check：等號兩邊有空白也讀得到、# 註解行不算（與 loadEnv 一致）→ AUTH、exit 0', (await run(sp)).code, 0);
     const crlf = path.join(tmp(), '.env'); fs.writeFileSync(crlf, `BRIDGE_URL="${W}"\r\nBRIDGE_KEY=OLD-KEY-0123456789012345678901234567\r\n`);
     eq('oldkey-check：CRLF 換行的 .env 也讀得到（去掉 \\r）', (await run(crlf)).code, 0);
     const dead = path.join(tmp(), '.env'); fs.writeFileSync(dead, `BRIDGE_URL=http://127.0.0.1:${await freePort()}/exec\nBRIDGE_KEY=OLD-KEY-0123456789012345678901234567\n`);

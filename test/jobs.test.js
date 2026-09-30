@@ -557,6 +557,12 @@ async function main() {
     const r = await quiet(() => runDaily({ dir, bridge: fakeBridge({ backup: true }) }));
     eq('上傳失敗：ok:false、本機快照仍在、結果檔有時間戳', [r.ok, fs.existsSync(path.join(dir, 'backups', r.file)), !!Date.parse(last(dir, 'backup-last.json').at)], [false, true, true]); }
 
+  // ================= 空庫不鏡像（M5 #10）：切換日 PRIMARY=mini 之後、搬遷之前，空的 Mac mini 庫不可蓋掉試算表 =================
+  { const dir = tmp(); makeSqliteStore(dir).close();
+    const B = fakeBridge();
+    const r = await quiet(() => runMirror({ dir, bridge: B }));
+    eq('空庫：mirror 拒絕（ok:false、錯誤寫明空庫）、一次橋接都沒打', [r.ok, /資料庫是空的/.test(r.error || ''), B.calls], [false, true, []]); }
+
   // ================= /health 判定（純函式） =================
   { const now = Date.parse('2026-09-30T12:00:00Z'), ago = (h) => new Date(now - h * 3600e3).toISOString();
     const H = (m, b, free) => judgeHealth({ mirror: m, backup: b, disk: { freeMB: free === undefined ? 50000 : free } }, now);

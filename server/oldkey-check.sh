@@ -11,11 +11,14 @@ set +x   # 絕不可用 sh -x 執行或除錯：trace 會把金鑰印出來
 #         3＝其他回應，或 .env 有多行 BRIDGE_KEY（停下，看原文）
 ENVF="${1:-$(dirname "$0")/.env}"
 # 多行 BRIDGE_KEY：伺服器（server/index.js loadEnv）只取第一行，這裡若照抄會把兩把接成一串送出、一定回 AUTH → 誤判通過，所以直接拒絕
-NK="$(grep -c '^BRIDGE_KEY=' "$ENVF" 2>/dev/null)"
+# 認金鑰行的規則與伺服器 server/index.js 的 loadEnv 一致：/^\s*([A-Z_0-9]+)\s*=\s*(.*)\s*$/——開頭與等號兩邊可以有空白；
+# 以 # 開頭的註解行不符合（# 不是 [A-Z_0-9]），所以不算
+KEYRE='^[[:space:]]*BRIDGE_KEY[[:space:]]*='; URLRE='^[[:space:]]*BRIDGE_URL[[:space:]]*='
+NK="$(grep -c "$KEYRE" "$ENVF" 2>/dev/null)"
 if [ "${NK:-0}" -gt 1 ]; then echo "✗ $ENVF 有 $NK 行 BRIDGE_KEY（伺服器只讀第一行，無法判斷要驗哪一把）。請 Eason 整理成只剩一行後再跑。"; exit 3; fi
 # 去掉引號與 CR（Windows 換行的 .env 伺服器讀得到，腳本也要讀得到）
-K="$(sed -n 's/^BRIDGE_KEY=//p' "$ENVF" 2>/dev/null | head -1 | tr -d "\"'\r")"
-W="$(sed -n 's/^BRIDGE_URL=//p' "$ENVF" 2>/dev/null | head -1 | tr -d "\"'\r")"
+K="$(sed -n "s/${KEYRE}[[:space:]]*//p" "$ENVF" 2>/dev/null | head -1 | tr -d "\"'\r")"
+W="$(sed -n "s/${URLRE}[[:space:]]*//p" "$ENVF" 2>/dev/null | head -1 | tr -d "\"'\r")"
 if [ -z "$K" ] || [ -z "$W" ]; then echo "✗ 讀不到 $ENVF 的 BRIDGE_KEY／BRIDGE_URL（不做判定）"; exit 2; fi
 # -sS：錯誤訊息（連不上、逾時）照樣收進 OUT 印出來；curl 的錯誤訊息只含網址與原因，不含送出的內容（金鑰）
 OUT="$(printf '{"action":"bridge","key":"%s","op":"quota"}' "$K" | curl -sSL --max-time 90 -H 'Content-Type: text/plain' --data @- "$W" 2>&1)"

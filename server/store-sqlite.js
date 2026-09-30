@@ -57,7 +57,10 @@ function makeSqliteStore(dir) {
       const m = /^data:(image\/(png|jpeg));base64,(.+)$/.exec(String(r.sig || ''));
       if (m) {
         sigId = safe(r.postId) + '_' + safe(r.staffId) + (m[2] === 'png' ? '.png' : '.jpg');
-        fs.writeFileSync(path.join(sigDir, sigId), Buffer.from(m[3], 'base64'));
+        // 先寫暫存再改名：寫到一半斷電／程序中止不會留下半張圖頂著正式檔名（#14 第 5 輪建議；mirror.js 也會驗結尾）
+        const tmp = path.join(sigDir, sigId + '.tmp-' + process.pid);
+        fs.writeFileSync(tmp, Buffer.from(m[3], 'base64'));
+        fs.renameSync(tmp, path.join(sigDir, sigId));
       }
       insRead.run(r.postId, r.staffId, r.name, r.unit, r.at, sigId);
     },

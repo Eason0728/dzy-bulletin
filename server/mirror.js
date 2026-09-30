@@ -3,37 +3,34 @@
  *   1. 簽名回填：找出 driveSigId 空白、本機有圖的已讀，批次（一次 ≤20 張、一次橋接呼叫）經 `sigs` op 上傳到 Drive 簽名資料夾，
  *      回填 driveSigId（只寫這一欄）。每輪最多 SIG_MAX_PER_RUN 張，避免撞 Apps Script 6 分鐘上限。這同時是簽名圖的異地備份。
  *      M2 契約：saveSigs 逐張處理，失敗的那張回 null——拿到 id 的照常回填，null 的留到下一輪只重傳它（不整批作廢，#14 B1）。
- *      壞圖的判定改成直接驗證、不從上傳成敗推測（#14 第 3 輪，Eason 拍板）：
- *        a. 本機先驗圖：0 位元組、開頭不是 PNG（89 50 4E 47）或 JPEG（FF D8 FF）→ 直接算壞圖（本機檔損毀），不上傳。
- *        b. Drive 拒收（證據綁在每一張圖上，#14 第 4 輪）：一批裡回 null 的，先確認 Drive 當下正常——同批有成功，或整批 null 時
- *           這一批自己傳一張內建的極小測試圖（_canary.png；**不沿用**到後面的批次，每次執行最多 10 張，用完當 Drive 不穩）——
- *           再把 null 的逐張單獨重傳：成功就回填；單獨重傳仍失敗的才算這張 1 次（每小時模式：同一張兩次計數至少隔 30 分鐘、
- *           一次執行最多 1 次，3 次成壞圖；--all 直接判壞）。單獨重傳連續 2 張失敗就再傳一次測試圖，失敗＝Drive 故障、那張不計。
- *           測試圖失敗＝Drive 故障 → 不計數、這一輪結束回填、ok:false（--all exit 1）。
- *      --all 收尾把所有「Drive 拒收」的壞圖（含這次剛判壞的）先傳測試圖確認、再重試一次（不計數）：成功就回填、失敗維持壞圖；
- *      測試圖失敗就 ok:false——Drive 中途掛掉時不會印出 pending=0 讓人往下走。
- *      已知限制：寫到一半就截斷的圖（檔頭正常）本機驗不出來、Drive 也照收，Drive 上的圖跟本機副本一樣是壞的。
- *      註：測試圖每次會在簽名資料夾留一個 _canary.png（橋接沒有刪簽名圖的 op）；只在需要確認 Drive 時才傳，量很小。
  *   2. 鏡像：Mac mini 正本整份寫回試算表四分頁（走 `mirror` op；Apps Script 先寫暫存分頁再換名，見 gas/Store.js）。
  *      四份資料＋待回填清單在同一個讀交易裡取（同一個快照，#14 S1），COMMIT 之後才呼叫橋接（不在交易開著時等 Google，免得擋住 checkpoint）。
  *      已讀帶 driveSigId（Drive id），試算表「簽名檔 id」只寫它、還沒回填的留空——回退到 GAS 後 readSig(id) 才讀得到。
  *   先回填再鏡像：這一輪剛拿到的 Drive id 就跟著這一輪寫進試算表。
- * 橋接出錯不在同一輪重試（橋接打的是會排隊的 Apps Script，重試只會更塞）；下一輪（一小時後）自然重做。
+ *
+ * 壞圖只由本機判定（#14 第 5 輪設計簡化，Eason 拍板的「直接驗證」）：
+ *   0 位元組；PNG 開頭不是 89 50 4E 47 或結尾沒有 IEND chunk；JPEG 開頭不是 FF D8 FF 或結尾不是 FF D9 → 本機檔損毀，計入 bad、不上傳。
+ *   本機驗過的圖，saveSigs 回 null 只剩「Drive 端出錯」（createFile 丟錯），所以 Drive 端失敗一律視為暫時故障：
+ *   不計數、不判壞，留在 pending，下一輪自然重試。每小時模式有失敗就 ok:false（連續失敗 → /health 黃燈）。
+ *   --all 重複掃描到 pending=0 才 exit 0；一整輪沒有任何進展（上傳成功 0 張而 pending>0）就停下、exit 1，
+ *   印出「Drive 端有 N 張傳不上去，稍後再跑；多次重跑仍失敗請找 MacBook Claude」並列出是哪幾張。
+ *   逃生門（只能人手動做，程式永遠不自動判定）：真的有某張本機驗過、Drive 卻永遠拒收，在 logs/sig-skip.json 加一筆
+ *   { "<postId>/<staffId>": "原因" }，mirror 就把它當 bad（人工略過）列出並跳過。檔案格式錯就 ok:false、這一輪不略過任何一張。
  *
  * 待回填的三種狀態（#14 S2；回退步驟「回填到 pending=0」的判準就是 pending）：
- *   pending＝本機有圖、還沒回填、不是壞圖（mirror.js 還能處理的）
+ *   pending＝本機有圖、驗過、還沒回填、沒被人工略過（mirror.js 還能處理的）
  *   missing＝有 sigId 但本機找不到圖檔（傳不了，列出清單讓人決定）
- *   bad    ＝本機檔損毀（0 位元組／檔頭不對）＋Drive 拒收 3 次（--all 為 1 次）的壞圖；列出清單並寫原因，不再自動重試
+ *   bad    ＝本機檔損毀＋人工略過；列出清單並寫原因
  *   missing／bad 大於 0 時印警告並列出是哪幾筆，但不卡住；/health 亮黃。
- * 壞圖計數與「已上傳、還沒寫進庫」的 Drive id 記在 logs/sig-state.json（不寫進資料庫：背景工作只寫 reads.driveSigId 一欄，#8）。
- *   人工恢復某張「Drive 拒收」的壞圖：只刪 sig-state.json 裡 fails 的那一個 key，**不要刪整個檔**
- *   （整個刪掉會連 unsaved 一起刪，已上傳的圖會再傳一次、變成孤兒檔）。本機檔損毀的要先把圖檔換好或移走（移走就變 missing）。
- * 結果寫 DATA_DIR/logs/mirror-last.json＝{ at, ok, uploaded, pending, missing, bad, failed, fails, missingIds, badIds }，每輪一行進 logs/mirror.log。
- *   fails＝連續失敗次數（守門規則「mirror.ok=false 連續 2 次 → 黃」用）；failed＝這一輪回 null 的張數（不算整輪失敗）。
- *
+ * 「已上傳、還沒寫進庫」的 Drive id 記在 logs/sig-state.json 的 unsaved，下一輪先寫、不重傳（避免孤兒檔）。
+ *   不要手改或刪掉這個檔（刪掉會讓那些圖再傳一次、變成孤兒檔）；壞掉或型別不對會改名成 .corrupt-* 保留並 ok:false。
+ * 結果寫 DATA_DIR/logs/mirror-last.json＝{ at, ok, uploaded, pending, missing, bad, failed, fails, missingIds, badIds, failedIds }，
+ *   每輪一行進 logs/mirror.log。fails＝連續失敗次數（守門規則「mirror.ok=false 連續 2 次 → 黃」用）；failed＝這一輪 Drive 端傳不上去的張數。
  * 還原防呆（#14 S5）：posts／staff／reads／log 任一比上次成功送出的筆數少就不送（多半是剛從快照還原，試算表比本機新）、ok:false。
+ * 橋接出錯不在同一輪重試（橋接打的是會排隊的 Apps Script，重試只會更塞）。
+ *
  * 用法：node server/mirror.js          （launchd 每小時）
- *       node server/mirror.js --all    （回退前手動跑：不設每輪上限、最後重試一次 Drive 拒收的壞圖；完成條件是印出 pending=0，見 #10）
+ *       node server/mirror.js --all    （回退前手動跑：不設每輪上限、重複掃描；完成條件是印出 pending=0 並 exit 0，見 #10）
  *       node server/mirror.js --force  （還原後、確認試算表可被覆寫時手動跑：越過筆數防呆，並帶 force:true 給 Apps Script）
  *   手動執行撞到另一輪正在跑時印「已跳過」並以非 0 結束。
  * 環境變數：DATA_DIR  BRIDGE_URL  BRIDGE_KEY（server/.env）；SIG_BATCH（每批張數，預設 15、上限 20）；SIG_MAX_PER_RUN（預設 60） */
@@ -43,40 +40,31 @@ const path = require('path');
 const J = require('./job-common.js');
 
 const SIGS_MAX = 20;                                        // 與 gas/Code.js SIGS_MAX_ 相同：Apps Script 一次最多收 20 張
-const SIG_BAD_AFTER = 3;                                    // Drive 拒收幾次算壞圖（每小時模式）
-const LAST = 'mirror-last.json', STATE = 'sig-state.json';
+const LAST = 'mirror-last.json', STATE = 'sig-state.json', SKIP = 'sig-skip.json';
 const LIST_MAX = 50;                                        // 結果檔與警告最多列幾筆
-const CANARY_MAX = 10;                                      // 每次執行最多傳幾張測試圖
-const FAIL_GAP_MS = 30 * 60e3;                              // 同一張兩次失敗計數至少隔 30 分鐘（每小時模式）
-// 測試圖：1×1 的合法 PNG
-const CANARY = { name: '_canary', data: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=' };
-// 本機檔頭：PNG 89 50 4E 47、JPEG FF D8 FF；0 位元組或都不是＝本機檔損毀
-function localDamaged(file) {
-  try {
-    const fd = fs.openSync(file, 'r'), b = Buffer.alloc(4);
-    let n; try { n = fs.readSync(fd, b, 0, 4, 0); } finally { fs.closeSync(fd); }
-    if (n >= 4 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return false;
-    if (n >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return false;
-    return true;
-  } catch (e) { return false; }                              // 讀不到＝缺圖，由 hasFile 判
-}
-// sig-state.json 的型別檢查（#14 S8）：fails 是物件、值是次數或 { n, at } 數字；unsaved 是物件、值是字串
-const plain = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
-function stateOk(v) {
-  if (v.fails !== undefined && !(plain(v.fails) && Object.values(v.fails).every((f) => typeof f === 'number' || (plain(f) && typeof f.n === 'number' && typeof f.at === 'number')))) return false;
-  if (v.unsaved !== undefined && !(plain(v.unsaved) && Object.values(v.unsaved).every((x) => typeof x === 'string' && x))) return false;
-  return true;
-}
+const PNG_HEAD = Buffer.from([0x89, 0x50, 0x4e, 0x47]), PNG_TAIL = Buffer.from([0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82]);   // IEND＋CRC
+const JPG_HEAD = Buffer.from([0xff, 0xd8, 0xff]), JPG_TAIL = Buffer.from([0xff, 0xd9]);
 
+// 本機驗圖：開頭與結尾都對才算完整（前端只產生 PNG／JPEG；寫到一半就截斷的圖結尾會缺）。讀不到＝缺圖，由 hasFile 判
+function localDamaged(file) {
+  let b;
+  try { b = fs.readFileSync(file); } catch (e) { return false; }
+  const at = (sig, i) => b.length >= sig.length && b.subarray(i, i + sig.length).equals(sig);
+  if (at(PNG_HEAD, 0)) return !at(PNG_TAIL, b.length - PNG_TAIL.length);
+  if (at(JPG_HEAD, 0)) return !at(JPG_TAIL, b.length - JPG_TAIL.length);
+  return true;                                               // 0 位元組或不是 PNG／JPEG
+}
+const plain = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+const allStrings = (o) => Object.values(o).every((x) => typeof x === 'string' && x);
 function clampInt(v, dflt, lo, hi) { const n = Math.floor(Number(v)); return n >= lo ? Math.min(n, hi) : dflt; }
-const keyOf = (r) => r.postId + '\t' + r.staffId + '\t' + r.sigId;   // 含 sigId：同一格被重建成別張圖時，舊的失敗計數不沿用
+const keyOf = (r) => r.postId + '\t' + r.staffId + '\t' + r.sigId;   // 含 sigId：同一格被重建成別張圖時，舊的 unsaved id 不沿用
 const label = (r) => r.postId + '/' + r.staffId;
 
 // 跑一輪；回傳結果物件（也寫進 mirror-last.json）。bridge 只需要 call(op, payload, timeoutSec)。
-// o.force：還原後手動覆寫（越過筆數防呆，並帶 force:true 給 Apps Script）。o.busyMs／o.nowMs：測試用。
+// o.force：還原後手動覆寫（越過筆數防呆，並帶 force:true 給 Apps Script）。o.busyMs：測試用。
 // o._betweenReads：測試用鉤子，在讀交易的第一個 SELECT 之後呼叫（驗四份是同一個快照）。
 async function runMirror(o) {
-  const dir = o.dir, bridge = o.bridge, nowMs = o.nowMs || Date.now;   // nowMs 只給測試快轉時間
+  const dir = o.dir, bridge = o.bridge;
   const batch = clampInt(o.batch, 15, 1, SIGS_MAX);
   const maxPerRun = o.all ? Infinity : clampInt(o.maxPerRun, 60, 1, 100000);
   const prev = J.readLast(dir, LAST);
@@ -89,47 +77,33 @@ async function runMirror(o) {
   }
   // 上一次「成功送出」的筆數（還原防呆用）：失敗的那輪沒有 counts，沿用更早的
   res.lastSent = (prev && (prev.counts || prev.lastSent)) || null;
-  // sig-state.json 壞掉：改名保留成 .corrupt-時間、記 ok:false（不默默歸零——unsaved 裡已上傳的 Drive id 會跟著不見）
+  // sig-state.json：壞掉或 unsaved 型別不對 → 改名保留成 .corrupt-時間、記 ok:false（不默默歸零——裡面已上傳的 Drive id 會跟著不見）
   const st = J.readState(dir, STATE);
-  if (!st.corrupt && st.v && !stateOk(st.v)) st.corrupt = true;   // 合法 JSON 但型別不對（例如手改出錯）：跟損毀一樣處理
+  if (!st.corrupt && st.v && st.v.unsaved !== undefined && !(plain(st.v.unsaved) && allStrings(st.v.unsaved))) st.corrupt = true;
   if (st.corrupt) {
     const bak = STATE + '.corrupt-' + J.taipeiStamp(new Date()) + '-' + process.pid;
     try { fs.renameSync(path.join(dir, 'logs', STATE), path.join(dir, 'logs', bak)); } catch (e) {}
-    errs.push(`logs/${STATE} 損毀，已改名保留為 ${bak}（裡面已上傳未寫庫的 Drive id 需人工核對，這一輪起重新計數）`);
+    errs.push(`logs/${STATE} 損毀，已改名保留為 ${bak}（裡面已上傳未寫庫的 Drive id 需人工核對）`);
   }
-  const state = (!st.corrupt && st.v) || {};
-  const fails = state.fails || {}, unsaved = state.unsaved || {};
-  Object.keys(fails).forEach((k) => { if (typeof fails[k] === 'number') fails[k] = { n: fails[k], at: 0 }; });   // 舊格式（只有次數）
+  const unsaved = (!st.corrupt && st.v && st.v.unsaved) || {};
+  // 人工略過清單（逃生門，只有人會寫）：格式錯就 ok:false、這一輪不略過任何一張
+  const sk = J.readState(dir, SKIP);
+  let skip = {};
+  if (sk.corrupt || (sk.v && !(plain(sk.v) && allStrings(sk.v)))) errs.push(`logs/${SKIP} 格式錯誤（應為 { "公告id/同仁id": "原因" }），這一輪不略過任何一張`);
+  else if (sk.v) skip = sk.v;
   // 存狀態失敗（例如磁碟滿）只記警告，鏡像照做
-  const saveState = () => { try { J.writeLast(dir, STATE, { fails, unsaved }); } catch (e) { if (!warns.length) warns.push('sig-state.json 寫不進去：' + J.errText(e)); } };
+  const saveState = () => { try { J.writeLast(dir, STATE, { unsaved }); } catch (e) { if (!warns.length) warns.push(`${STATE} 寫不進去：` + J.errText(e)); } };
   let db = null;
   try {
     db = J.openDb(dir, { busyMs: o.busyMs });
     if (!db.prepare('PRAGMA table_info(reads)').all().some((c) => c.name === 'driveSigId')) throw new Error('資料庫還沒有 driveSigId 欄（伺服器升級後重新啟動一次即會補上）');
     const sigDir = path.join(dir, 'sigs');
     const TODO_SQL = "SELECT postId, staffId, sigId FROM reads WHERE sigId <> '' AND driveSigId = '' ORDER BY rowid";
-    const hasFile = (r) => fs.existsSync(path.join(sigDir, path.basename(r.sigId)));   // sigId 由 store-sqlite.js 產生（只有安全字元），basename 是多一道保險
-    const isBad = (r) => ((fails[keyOf(r)] || {}).n || 0) >= SIG_BAD_AFTER;
+    const fileOf = (r) => path.join(sigDir, path.basename(r.sigId));   // sigId 由 store-sqlite.js 產生（只有安全字元），basename 是多一道保險
+    const hasFile = (r) => fs.existsSync(fileOf(r));
     const dmg = new Map();
-    const isDamaged = (r) => { const k = keyOf(r); if (!dmg.has(k)) dmg.set(k, localDamaged(path.join(sigDir, path.basename(r.sigId)))); return dmg.get(k); };
-    // Drive 拒收計數：只在 Drive 已被證明正常（同批有成功、或測試圖成功）時呼叫。--all 直接判成壞圖；每小時模式 +1（30 分鐘間隔、一次執行最多 1 次）
-    const counted = new Set();
-    const countFail = (r) => {
-      const k = keyOf(r), f = fails[k] || { n: 0, at: 0 }, now = nowMs();
-      if (counted.has(k) || (!o.all && now - f.at < FAIL_GAP_MS)) return false;
-      counted.add(k); fails[k] = { n: o.all ? SIG_BAD_AFTER : f.n + 1, at: now };
-      return true;
-    };
-    // 測試圖：**不沿用**——每次需要確認 Drive 狀態就重傳一張（上一批的「成功」不能當這一批的證據，#14 B4）。
-    // 每次執行最多 CANARY_MAX 張，用完就當 Drive 不穩（不再判任何壞圖、ok:false、--all exit 1）。橋接本身出錯就丟出去。
-    let canaries = 0;
-    const probe = async () => {
-      if (canaries >= CANARY_MAX) { res.canary = 'limit'; return 'limit'; }
-      canaries++; res.canaries = canaries;
-      const out = await bridge.call('sigs', { put: [CANARY] }, 120);
-      res.canary = out && Array.isArray(out.ids) && typeof out.ids[0] === 'string' && out.ids[0] ? 'ok' : 'fail';
-      return res.canary;
-    };
+    const isDamaged = (r) => { const k = keyOf(r); if (!dmg.has(k)) dmg.set(k, localDamaged(fileOf(r))); return dmg.get(k); };
+    const isSkipped = (r) => Object.prototype.hasOwnProperty.call(skip, label(r));
     // 只寫 driveSigId 一欄；已有 id 的不覆蓋、sigId 變了（上傳這幾分鐘裡被 load() 重建）的不套用
     const upd = db.prepare("UPDATE reads SET driveSigId = ? WHERE postId = ? AND staffId = ? AND sigId = ? AND driveSigId = ''");
     const writeIds = (pairs) => {   // pairs: [{ r, id }]；寫不進去（busy 逾時等）就把 id 記在 sig-state.json，下一輪先用、不重傳
@@ -138,7 +112,7 @@ async function runMirror(o) {
         db.exec('BEGIN IMMEDIATE');
         try { pairs.forEach((x) => upd.run(x.id, x.r.postId, x.r.staffId, x.r.sigId)); db.exec('COMMIT'); }
         catch (e) { try { db.exec('ROLLBACK'); } catch (y) {} throw e; }
-        pairs.forEach((x) => { delete unsaved[keyOf(x.r)]; delete fails[keyOf(x.r)]; });
+        pairs.forEach((x) => { delete unsaved[keyOf(x.r)]; });
         return true;
       } catch (e) {
         pairs.forEach((x) => { unsaved[keyOf(x.r)] = x.id; });
@@ -152,90 +126,46 @@ async function runMirror(o) {
     const todo0 = J.rows(db, TODO_SQL);
     const carry = todo0.filter((r) => unsaved[keyOf(r)]).map((r) => ({ r, id: unsaved[keyOf(r)] }));
     Object.keys(unsaved).forEach((k) => { if (!todo0.some((r) => keyOf(r) === k)) delete unsaved[k]; });   // 那一格已被回填或重建：丟掉
-    if (carry.length && writeIds(carry)) res.carried = carry.length;   // （carry 是上一輪的成功，已在那一輪記過 lastSuccess）
-    // 1b. 逐批上傳（--all 不設上限）
-    const done = new Set();                                  // 這一輪已成功的不再重傳
-    const rejected = [];                                     // Drive 正常卻拒收的（寫進 mirror.log／終端機）
+    if (carry.length && writeIds(carry)) res.carried = carry.length;
+    // 1b. 逐批上傳。Drive 端失敗（null）一律是暫時故障：留在 pending。--all 重複掃描到 pending=0，一整輪沒進展就停
     let budget = maxPerRun, stop = errs.length > 0;          // 前面已出錯（sig-state 損毀、carry 寫不進去）這一輪就不上傳，免得重傳成孤兒檔
-    const readPart = (rows) => rows.map((r) => {             // 傳這一批時才讀這一批的圖（--all 不會一次把全部圖讀進記憶體）
-      const file = path.basename(r.sigId);
-      let data = '';
-      try { data = 'data:' + (/\.png$/i.test(file) ? 'image/png' : 'image/jpeg') + ';base64,' + fs.readFileSync(path.join(sigDir, file)).toString('base64'); } catch (e) {}
-      return { r, name: file.replace(/\.(png|jpe?g)$/i, ''), data };
-    });
-    const put = async (part) => {
-      const out = await bridge.call('sigs', { put: part.map((x) => ({ name: x.name, data: x.data })) }, 300);
-      const ids = out && out.ids;
-      if (!Array.isArray(ids) || ids.length !== part.length) throw new Error('sigs 回傳筆數不符');
-      return ids.map((id) => (typeof id === 'string' && id ? id : null));
-    };
-    let pick = J.rows(db, TODO_SQL).filter((r) => !unsaved[keyOf(r)] && !isBad(r) && hasFile(r) && !isDamaged(r));
-    if (budget !== Infinity) pick = pick.slice(0, budget);
-    // Drive 故障（測試圖失敗／用完上限）：不計數、結束回填、ok:false
-    const driveDown = (why) => { res.driveDown = true; errs.push(why); stop = true; };
-    const downMsg = (c, what) => c === 'limit'
-      ? `簽名回填：${what}，測試圖已傳滿 ${CANARY_MAX} 張仍無法確認——Drive 不穩，未計入壞圖，稍後再跑`
-      : `簽名回填：${what}，測試圖也上傳失敗——Drive 暫時故障，未計入壞圖，稍後再跑`;
-    // 一批上傳後有 null 的：逐張單獨重傳（一次一張）。Drive 當下正常的直接證據＝緊接在前的一次成功（同批有成功、測試圖成功、
-    // 或前一張單獨重傳成功）；單獨重傳仍失敗才算這張 1 次。連續 2 張單獨重傳失敗 → 再傳測試圖確認，失敗就當 Drive 故障、這張不計。
-    const retrySingly = async (items) => {
-      const good = [];
-      let consec = 0;
-      for (const x of items) {
-        if (stop) break;
-        let id;
-        try { id = (await put([x]))[0]; } catch (e) { errs.push('簽名回填：' + J.errText(e)); stop = true; break; }
-        if (id) { good.push({ r: x.r, id }); done.add(keyOf(x.r)); consec = 0; continue; }
-        consec++;
-        if (consec >= 2) {
-          let c; try { c = await probe(); } catch (e) { errs.push('簽名回填：' + J.errText(e)); stop = true; break; }
-          if (c !== 'ok') { driveDown(downMsg(c, '單獨重傳連續失敗')); break; }
-          consec = 0;
-        }
-        res.failed++;                                        // Drive 正常卻拒收這張（單獨重傳也失敗）
-        countFail(x.r);
-        rejected.push(label(x.r) + `（${(fails[keyOf(x.r)] || {}).n || 0}/${SIG_BAD_AFTER}）`);
-      }
-      return good;
-    };
-    for (let i = 0; i < pick.length && !stop; i += batch) {
-      const part = readPart(pick.slice(i, i + batch));
-      if (o.all) release.touch();                            // --all 可能跑很久：每批更新鎖檔 mtime，不被當成殘留鎖
-      let ids;
-      try {
-        ids = await put(part);
-        if (!ids.some(Boolean)) {                            // 整批 null：這一批自己傳測試圖驗 Drive
-          const c = await probe();
-          if (c !== 'ok') { driveDown(downMsg(c, `這批 ${part.length} 張全部失敗`)); break; }
-        }
-      } catch (e) { errs.push('簽名回填：' + J.errText(e)); stop = true; break; }   // 橋接出錯：同一輪不重試，剩下的留給下一輪
-      const good = part.map((x, k) => (ids[k] ? { r: x.r, id: ids[k] } : null)).filter(Boolean);
-      good.forEach((g) => done.add(keyOf(g.r)));
-      const nulls = part.filter((x, k) => !ids[k]);
-      if (writeIds(good)) res.uploaded += good.length; else { stop = true; break; }
-      if (nulls.length) { const g2 = await retrySingly(nulls); if (writeIds(g2)) res.uploaded += g2.length; else stop = true; }
-      saveState();
-    }
-    // 1c. --all 收尾：所有「Drive 拒收」的壞圖（含這次執行剛判壞的）先傳測試圖確認 Drive 正常，再重試一次、不計數——
-    //     成功就回填，失敗維持壞圖；測試圖失敗＝Drive 故障（ok:false、exit 1），不能印出 pending=0 就讓人往下走
-    if (o.all && !stop) {
-      const again = J.rows(db, TODO_SQL).filter((r) => isBad(r) && !unsaved[keyOf(r)] && hasFile(r) && !isDamaged(r));
-      if (again.length) {
-        let c; try { c = await probe(); } catch (e) { errs.push('壞圖重試：' + J.errText(e)); c = null; stop = true; }
-        if (c && c !== 'ok') driveDown(downMsg(c, `收尾重試 ${again.length} 張壞圖前`));
-      }
-      for (let i = 0; i < again.length && !stop; i += batch) {
-        const part = readPart(again.slice(i, i + batch));
-        release.touch();
+    const failedNow = new Map();                             // 最後一輪仍傳不上去的
+    while (!stop && budget > 0) {
+      let pick = J.rows(db, TODO_SQL).filter((r) => !unsaved[keyOf(r)] && hasFile(r) && !isDamaged(r) && !isSkipped(r));
+      if (budget !== Infinity) pick = pick.slice(0, budget);
+      if (!pick.length) break;
+      let progress = 0;
+      failedNow.clear();
+      for (let i = 0; i < pick.length && !stop; i += batch) {
+        const part = pick.slice(i, i + batch).map((r) => {   // 傳這一批時才讀這一批的圖（--all 不會一次把全部圖讀進記憶體）
+          const file = path.basename(r.sigId);
+          return { r, name: file.replace(/\.(png|jpe?g)$/i, ''), data: 'data:' + (/\.png$/i.test(file) ? 'image/png' : 'image/jpeg') + ';base64,' + fs.readFileSync(fileOf(r)).toString('base64') };
+        });
+        budget -= part.length;
+        if (o.all) release.touch();                          // --all 可能跑很久：每批更新鎖檔 mtime，不被當成殘留鎖
         let ids;
-        try { ids = await put(part); } catch (e) { errs.push('壞圖重試：' + J.errText(e)); break; }
-        const good = part.map((x, k) => (ids[k] ? { r: x.r, id: ids[k] } : null)).filter(Boolean);
-        if (good.length && writeIds(good)) { res.uploaded += good.length; res.recovered = (res.recovered || 0) + good.length; }
+        try {
+          const out = await bridge.call('sigs', { put: part.map((x) => ({ name: x.name, data: x.data })) }, 300);
+          ids = out && out.ids;
+          if (!Array.isArray(ids) || ids.length !== part.length) throw new Error('sigs 回傳筆數不符');
+        } catch (e) { errs.push('簽名回填：' + J.errText(e)); stop = true; break; }   // 橋接出錯：同一輪不重試，剩下的留給下一輪
+        const good = [];
+        part.forEach((x, k) => {
+          if (typeof ids[k] === 'string' && ids[k]) good.push({ r: x.r, id: ids[k] });
+          else failedNow.set(keyOf(x.r), x.r);               // Drive 端失敗：暫時故障，留在 pending
+        });
+        if (!writeIds(good)) { stop = true; break; }
+        res.uploaded += good.length; progress += good.length;
         saveState();
       }
+      if (!o.all || progress === 0) break;                   // 每小時模式只掃一次；--all 一整輪沒有進展就停
     }
-    if (rejected.length) res.rejectedIds = rejected.slice(0, LIST_MAX);
-    Object.keys(fails).forEach((k) => { if (!todo0.some((r) => keyOf(r) === k)) delete fails[k]; });   // 已不在待回填清單的計數丟掉
+    res.failed = failedNow.size;
+    if (failedNow.size) {
+      res.failedIds = [...failedNow.values()].slice(0, LIST_MAX).map(label);
+      errs.push(`簽名回填：Drive 端有 ${failedNow.size} 張傳不上去（暫時故障，不判壞圖）` +
+        (o.all ? '，稍後再跑；多次重跑仍失敗請找 MacBook Claude' : '，下一輪再試'));
+    }
     saveState();
 
     // ---- 2. 鏡像：四份＋待回填清單在同一個讀交易（同一個快照）；COMMIT 之後才打橋接 ----
@@ -251,17 +181,17 @@ async function runMirror(o) {
       db.exec('COMMIT');
     } catch (e) { try { db.exec('ROLLBACK'); } catch (y) {} throw e; }
     const missing = left.filter((r) => !hasFile(r));
-    const damaged = left.filter((r) => hasFile(r) && isDamaged(r)), rejectedBad = left.filter((r) => hasFile(r) && !isDamaged(r) && isBad(r));
-    res.pending = left.length - missing.length - damaged.length - rejectedBad.length;
-    res.missing = missing.length; res.bad = damaged.length + rejectedBad.length;
+    const damaged = left.filter((r) => hasFile(r) && isDamaged(r)), skipped = left.filter((r) => hasFile(r) && !isDamaged(r) && isSkipped(r));
+    res.pending = left.length - missing.length - damaged.length - skipped.length;
+    res.missing = missing.length; res.bad = damaged.length + skipped.length;
     if (missing.length) res.missingIds = missing.slice(0, LIST_MAX).map(label);
-    if (res.bad) res.badIds = damaged.map((r) => label(r) + '（本機檔損毀）').concat(rejectedBad.map((r) => label(r) + '（Drive 拒收）')).slice(0, LIST_MAX);
-    // 還原防呆（#14 S5）：posts／staff／reads 任一比上次成功送出的少 → 不送（多半是剛從每日快照還原，試算表比本機新）。
+    if (res.bad) res.badIds = damaged.map((r) => label(r) + '（本機檔損毀）').concat(skipped.map((r) => label(r) + '（人工略過）')).slice(0, LIST_MAX);
+    // 還原防呆（#14 S5）：任一份比上次成功送出的少 → 不送（多半是剛從每日快照還原，試算表比本機新）。
     // 確認試算表可以被覆寫後，手動 --force（同時帶 force:true 給 Apps Script，越過 M2 的筆數防呆）。
-    const n = { posts: data.posts.length, staff: data.staff.length, reads: data.reads.length, log: data.log.length };
-    const L0 = res.lastSent;
     // 前提（審查第 3 輪確認）：公告不刪（只下架）、同仁軟刪除、已讀與操作紀錄只增，只有 load()（搬遷／還原）會讓筆數變少。
     // 以後若加硬刪（例如「清除離職同仁」），這裡要改成只比其他幾份，或硬刪時同步下修 lastSent。
+    const n = { posts: data.posts.length, staff: data.staff.length, reads: data.reads.length, log: data.log.length };
+    const L0 = res.lastSent;
     const shrunk = L0 ? ['posts', 'staff', 'reads', 'log'].filter((k) => L0[k] !== undefined && n[k] < Number(L0[k])) : [];
     if (shrunk.length && !o.force) {
       errs.push('鏡像：本機筆數比上次鏡像少（可能剛還原）——' + shrunk.map((k) => `${k} ${n[k]}＜${L0[k]}`).join('、') + '；確認試算表可被覆寫後執行 node server/mirror.js --force');
@@ -284,11 +214,11 @@ async function runMirror(o) {
   if (!res.ok) res.error = errs.join('；');
   J.writeLast(dir, LAST, res);
   J.logLine(dir, 'mirror.log', (res.ok ? '鏡像完成' : '鏡像失敗') + `：回填 ${res.uploaded} 張` + (res.carried ? `（另補寫上一輪已上傳的 ${res.carried} 張）` : '') + `、待回填 ${res.pending}` +
-    (res.failed ? `、這輪上傳失敗 ${res.failed}` : '') + (res.counts ? '、' + J.countText(res.counts) : '') + (res.forced ? '（--force）' : '') +
+    (res.counts ? '、' + J.countText(res.counts) : '') + (res.forced ? '（--force）' : '') +
     (res.ok ? '' : '；' + res.error) + (warns.length ? '；⚠ ' + warns.join('；') : ''));
+  if (res.failedIds) J.logLine(dir, 'mirror.log', `⚠ Drive 端傳不上去 ${res.failed} 張：` + res.failedIds.join('、') + (res.failed > LIST_MAX ? ' …' : ''));
   if (res.missing) J.logLine(dir, 'mirror.log', `⚠ 本機缺簽名圖 ${res.missing} 筆（無法上傳，需人工判斷）：` + res.missingIds.join('、') + (res.missing > LIST_MAX ? ' …' : ''));
-  if (res.rejectedIds) J.logLine(dir, 'mirror.log', `⚠ Drive 正常（${res.canary === 'ok' ? '測試圖上傳成功' : '同批有成功'}）卻拒收 ${res.rejectedIds.length} 張（已計次數/${SIG_BAD_AFTER}${o.all ? '；--all 直接判成壞圖' : ''}）：` + res.rejectedIds.join('、'));
-  if (res.bad) J.logLine(dir, 'mirror.log', `⚠ 壞簽名圖 ${res.bad} 筆（不再自動重試；本機檔損毀的先換好圖檔，Drive 拒收的只刪 logs/${STATE} 裡 fails 的那個 key 即重試，不要刪整個檔）：` + res.badIds.join('、') + (res.bad > LIST_MAX ? ' …' : ''));
+  if (res.bad) J.logLine(dir, 'mirror.log', `⚠ 壞簽名圖 ${res.bad} 筆（本機檔損毀的先換好圖檔或移走；人工略過的在 logs/${SKIP}）：` + res.badIds.join('、') + (res.bad > LIST_MAX ? ' …' : ''));
   return res;
 }
 
@@ -299,20 +229,18 @@ async function main() {
   const all = process.argv.includes('--all'), force = process.argv.includes('--force');
   const res = await runMirror({ dir, bridge: makeBridge(process.env.BRIDGE_URL, process.env.BRIDGE_KEY),
     batch: process.env.SIG_BATCH, maxPerRun: process.env.SIG_MAX_PER_RUN, all, force });
-  if (res.driveDown && (all || force || process.stdout.isTTY)) console.log('✗ Drive 暫時故障，稍後再跑（整批上傳失敗、測試圖也失敗，未計入壞圖）');
   if (res.skipped) {   // 另一輪正在跑：手動執行（--all／--force）要讓人看得出被跳過，以非 0 結束
     if (all || force || process.stdout.isTTY) console.log('✗ 另一輪鏡像正在跑（或正在還原），這次已跳過，請等它結束後再執行');
     process.exit(all || force ? 1 : 0);
   }
   if (all || force || process.stdout.isTTY) {   // 手動執行：把結論印出來（回退步驟看這裡）
     console.log(`鏡像${res.ok ? '完成' : '失敗'}｜待回填 pending=${res.pending}｜本機缺圖 missing=${res.missing}｜壞圖 bad=${res.bad}` + (res.error ? '｜' + res.error : ''));
+    if (res.failedIds) console.log(`✗ Drive 端有 ${res.failed} 張傳不上去，稍後再跑；多次重跑仍失敗請找 MacBook Claude：` + res.failedIds.join('、'));
     if (res.missing) console.log('⚠ 本機缺圖：' + res.missingIds.join('、'));
-    if (res.rejectedIds) console.log(`⚠ Drive 正常${res.canary === 'ok' ? '（測試圖上傳成功）' : ''}卻拒收：` + res.rejectedIds.join('、'));
-    if (res.recovered) console.log(`✓ 壞圖重試成功 ${res.recovered} 張，已回填`);
     if (res.bad) console.log('⚠ 壞圖：' + res.badIds.join('、'));
   }
   process.exit(res.ok ? 0 : 1);                             // 非 0 讓 launchd 記錄失敗；真正的告警靠守門讀 /health
 }
 
 if (require.main === module) main().catch((e) => { console.error(e); process.exit(1); });
-module.exports = { runMirror, SIGS_MAX, SIG_BAD_AFTER };
+module.exports = { runMirror, SIGS_MAX, localDamaged };

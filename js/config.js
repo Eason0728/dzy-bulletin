@@ -11,6 +11,9 @@ var CFG = (function () {
   try {
     var m = new URLSearchParams(location.search).get('mode');
     if (m === 'local' || m === 'cloud') c.MODE = m;
+    // 測試用：只有在本機（localhost）開啟時才允許 ?api= 指定後端；正式網址一律忽略（防止假連結把人導到釣魚後端）
+    var api = new URLSearchParams(location.search).get('api');
+    if (api && location.hostname === 'localhost' && /^http:\/\/(127\.0\.0\.1|localhost):\d+\/?$/.test(api)) { c.GAS_URL = api; c.MODE = 'cloud'; }
   } catch (e) {}
   if (c.MODE === 'cloud' && !c.GAS_URL) c.MODE = 'local';   // 尚未部署後端前，一律走假資料
   return c;

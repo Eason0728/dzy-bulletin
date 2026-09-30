@@ -24,6 +24,14 @@ BASE = os.environ.get('E2E_BASE', 'http://localhost:8792')
 SEED = int(os.environ.get('E2E_SEED') or random.randrange(1, 10 ** 9))
 TODAY = (datetime.now(timezone.utc) + timedelta(hours=8)).date()
 JUMP = 4                                    # 階段 B 往後跳幾天
+BACKEND = os.environ.get('E2E_BACKEND', 'local')   # server＝打 Mac mini 伺服器（需以 E2E=1 啟動在 SERVER）
+SERVER = os.environ.get('SERVER', 'http://127.0.0.1:8793')
+
+
+def srv(path, body):
+    import urllib.request
+    req = urllib.request.Request(SERVER + path, data=json.dumps(body, ensure_ascii=False).encode(), headers={'Content-Type': 'text/plain'})
+    return json.loads(urllib.request.urlopen(req, timeout=30).read())
 results, cm = [], ClickMap()
 
 
@@ -41,7 +49,7 @@ def main():
     data = D.make(SEED, TODAY)
     W = D.World(data)
     td = D.iso(TODAY)
-    print(f'資料帶入測試｜種子 {SEED}｜今天 {td}｜同仁 {len(data["staff"])} 人、公告 {len(data["posts"])} 則、已讀 {len(data["reads"])} 筆')
+    print(f'資料帶入測試（{"Mac mini 伺服器" if BACKEND == "server" else "本機假資料"}）｜種子 {SEED}｜今天 {td}｜同仁 {len(data["staff"])} 人、公告 {len(data["posts"])} 則、已讀 {len(data["reads"])} 筆')
 
     with sync_playwright() as p:
         b = p.chromium.launch()
@@ -107,7 +115,9 @@ def main():
 
         # =============== 階段 A ===============
         print('— 階段 A：今天 —')
-        pg.goto(BASE + '/?mode=local'); pg.evaluate('localStorage.clear()'); pg.goto(BASE + '/?mode=local')
+        START = BASE + ('/?mode=cloud&api=' + SERVER if BACKEND == 'server' else '/?mode=local')
+        if BACKEND == 'server': srv('/__seed', data); srv('/__clock', {'offDays': 0})
+        pg.goto(START); pg.evaluate('localStorage.clear()'); pg.goto(START)
         pg.wait_for_selector('[data-pu]'); scan('選名字'); shot('A01-選名字')
         check('A 頁尾有版本號與教學連結', 'v' in text('#foot') and '使用教學' in text('#foot'))
         for grp in ['mzt', 'mala', 'cf', 'hq']:
@@ -125,8 +135,11 @@ def main():
         click('#toAdmin', '⚙ 主管設定入口'); scan('主管登入'); check('A 主管設定入口開啟通行碼畫面', pg.locator('#pc').count() == 1)
         click('[data-close]', '取消'); pg.wait_for_selector('[data-pu]'); wait(300)
         check('A 取消主管設定後回到選名字（未登入）', '請選擇你是誰' in text('.sheet .bar'))
-        click('#testMe', '本機測試員按鈕（無測試員時仍回到選名字）'); pg.wait_for_selector('[data-pu]'); scan('選名字')
-        check('A 測試員按鈕後仍在選名字', '請選擇你是誰' in text('.sheet .bar'))
+        if BACKEND != 'server':
+            click('#testMe', '本機測試員按鈕（無測試員時仍回到選名字）'); pg.wait_for_selector('[data-pu]'); scan('選名字')
+            check('A 測試員按鈕後仍在選名字', '請選擇你是誰' in text('.sheet .bar'))
+        else:
+            check('A 伺服器模式不顯示本機假資料提示', pg.locator('#demoBar').is_hidden())
 
         locked = next(s for s in W.active_staff() if s.get('fail', 0) >= 3)
         open_group(locked); click(f'[data-pick="{locked["id"]}"]', '點鎖定者'); scan('已鎖定')
@@ -362,6 +375,7 @@ def main():
         # =============== 階段 B：跳到 JUMP 天後 ===============
         print(f'— 階段 B：日期跳到 {JUMP} 天後 —')
         tb = D.iso(TODAY + timedelta(days=JUMP))
+        if BACKEND == 'server': srv('/__clock', {'offDays': JUMP})
         pg.evaluate(f"localStorage.setItem('e2e_off', '{JUMP}')"); pg.reload()
         pg.wait_for_selector('#app .card, #app .empty', timeout=8000); wait(900)
         check('B 假日期生效', pg.evaluate('DZYB.today()') == tb, pg.evaluate('DZYB.today()'))
@@ -377,8 +391,9 @@ def main():
         shot('B01-歷史區')
         click('[data-tab="board"]'); wait(300)
 
-        click('#resetDemo', '重置假資料'); pg.wait_for_selector('[data-pick]', timeout=8000); scan('重置後')
-        check('B 重置假資料後回到選名字', '請選擇你是誰' in text('.sheet .bar'))
+        if BACKEND != 'server':
+            click('#resetDemo', '重置假資料'); pg.wait_for_selector('[data-pu]', timeout=8000); scan('重置後')
+            check('B 重置假資料後回到選名字', '請選擇你是誰' in text('.sheet .bar'))
 
         check('Z 全程沒有頁面錯誤（pageerror）', not errs, errs)
         b.close()

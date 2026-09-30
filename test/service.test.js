@@ -3,8 +3,25 @@
 global.DZYB = require('../js/logic.js');
 global.makeAuth_ = require('../gas/Auth.js').makeAuth_;
 global.makeService_ = require('../gas/Service.js').makeService_;
-const M = require('../js/mock.js');
-const C = (a, q) => M.callSync(a, q);
+global.DZYB_DEMO = require('../js/demo-data.js');
+// DRIVER=server：同一套契約測試改打真的 Mac mini 伺服器（需先以 E2E=1 啟動，SERVER=http://127.0.0.1:8793）
+let M, C;
+if (process.env.DRIVER === 'server') {
+  const { execFileSync } = require('child_process');
+  const S = process.env.SERVER || 'http://127.0.0.1:8793';
+  const post = (p, body) => JSON.parse(execFileSync('curl', ['-s', '-H', 'Content-Type: text/plain', '--data-binary', '@-', S + p], { input: JSON.stringify(body) }).toString());
+  post('/__seed', { demo: true });
+  C = (a, q) => post('/', Object.assign({}, q || {}, { action: a }));
+  M = {
+    blobOf: (id) => JSON.parse(execFileSync('curl', ['-s', S + '/__blob?id=' + encodeURIComponent(id)]).toString()).data,
+    setClockActive: (empId, on) => post('/__clockActive', { empId, on }),
+    setAdminInit: (pass) => post('/__adminInit', { pass }),
+    dropPost: (id) => post('/__dropPost', { id })
+  };
+} else {
+  M = require('../js/mock.js');
+  C = (a, q) => M.callSync(a, q);
+}
 let pass = 0, fail = 0;
 function eq(name, got, want) {
   const g = JSON.stringify(got), w = JSON.stringify(want);
@@ -107,6 +124,12 @@ const f1 = r.data;
   // 編輯別則公告時沿用舊 reqId 也不會被誤判
   const p5 = C('savePost', { atoken: ad0, post: Object.assign({}, body, { id: p4, title: '改第二則' }), reqId: 'rid-1' }).data.post;
   eq('reqId with different post id not deduped', [p5.id, p5.title], [p4, '改第二則']); }
+// gas/Service.js「reqId 紀錄指向的公告不存在就當新請求」：重送同一個 reqId 時要建出新公告，不能回 NOT_FOUND（兩個 DRIVER 都跑）
+{ const ad = C('adminLogin', { pass: '1234' }).data.atoken, body = { title: '指向消失', units: ['cf'], publishOn: DZYB.today(), files: [] };
+  const g1 = C('savePost', { atoken: ad, post: body, reqId: 'rid-gone' }).data.post.id;
+  M.dropPost(g1);
+  const g2 = C('savePost', { atoken: ad, post: body, reqId: 'rid-gone' });
+  eq('reqId pointing to missing post → new post', [g2.ok, C('adminData', { atoken: ad }).data.posts.some((p) => g2.ok && p.id === g2.data.post.id && p.title === '指向消失')], [true, true]); }
 eq('savePost bad file type', C('savePost', { atoken: at, post: { title: 't', units: ['mala'], publishOn: DZYB.today(), files: [{ id: 'x', name: 'evil.exe', type: 'pdf', size: 1 }] } }).code, 'BAD_TYPE');
 eq('savePost invalid', call('savePost', { atoken: at, post: { title: '', units: ['mala'], publishOn: '2026-09-29' } }).code, 'BAD_REQ');
 r = C('savePost', { atoken: at, post: { title: '測試公告', body: 'x', units: ['cf', 'mzt', 'mala'], publishOn: DZYB.today(), expiresOn: '', pinned: true, files: [f1] } });
@@ -133,7 +156,7 @@ eq('staffDelete', call('staffDelete', { atoken: at, staffId: 'S-001' }).ok, true
 eq('deleted not in roster', C('roster').data.some(s => s.id === 'S-001'), false);
 r = C('receipts', { atoken: at, postId: 'P-20260920-001' });
 eq('deleted reader kept, inactive', [r.data.rows.find(x => x.staffId === 'S-001').active, r.data.rows.find(x => x.staffId === 'S-001').inTarget], [false, false]);
-eq('no debug field on server error', Object.keys(M.callSync('receipts', { atoken: at, postId: null })).includes('debug'), false);
+eq('no debug field on server error', Object.keys(C('receipts', { atoken: at, postId: null })).includes('debug'), false);
 eq('deleted not counted', C('adminData', { atoken: at }).data.posts.find(p => p.id === 'P-20260920-001').targetCount, 5);
 
 // 更換通行碼：只能經由 ADMIN_INIT（網頁沒有 changePass）
@@ -149,7 +172,7 @@ eq('old pass rejected', C('adminLogin', { pass: '1234' }).code, 'AUTH');
 eq('ADMIN_INIT consumed', C('adminLogin', { pass: 'pass5678' }).ok, true);
 
 // C15 總部：看得到／要簽
-{ const tk = id => { M.callSync('staffResetPin', { atoken: C('adminLogin', { pass: 'pass5678' }).data.atoken, staffId: id }); return C('setPin', { staffId: id, pin: '2580' }).data.token; };
+{ const tk = id => { C('staffResetPin', { atoken: C('adminLogin', { pass: 'pass5678' }).data.atoken, staffId: id }); return C('setPin', { staffId: id, pin: '2580' }).data.token; };
   const dzy = tk('S-016'), hmzt = tk('S-017'), hmala = tk('S-018');
   const ids = t => C('board', { token: t }).data.posts.map(p => p.id);
   eq('hq-dzy sees cf post', ids(dzy).includes('P-20260927-001'), true);
@@ -209,5 +232,25 @@ M.setAdminInit('newpass88');
 for (let i = 0; i < 5; i++) C('adminLogin', { pass: 'wrong' + i });
 eq('pending init locked after 5 wrong', C('adminLogin', { pass: 'newpass88' }).code, 'ADMIN_LOCKED');
 
-console.log(`service: ${pass} passed, ${fail} failed`);
+// 簽名檔名不可路徑穿越（Mac mini 的 SQLite store：postId／staffId 帶 ../ 也只會存在 sigs/ 內、檔名只剩安全字元）
+{ const fs = require('fs'), os = require('os'), path = require('path'), crypto = require('crypto');
+  const { makeSqliteStore } = require('../server/store-sqlite.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dzyb-sig-')), data = path.join(dir, 'data');
+  const st = makeSqliteStore(data);
+  st.load({ posts: [{ id: '../x', title: '穿越', body: '', units: ['mala'], publishOn: DZYB.today(), expiresOn: '', pinned: false, published: true, offOn: '', files: [],
+    createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }],
+    staff: [{ id: 'S-900', name: '穿越員', unit: 'mala', salt: '', pinHash: '', pinVer: 0, fail: 0, active: true, createdAt: '', deletedAt: '', src: '', store: '' }], reads: [], log: [] });
+  const nc = { sha256Hex: (x) => crypto.createHash('sha256').update(x, 'utf8').digest('hex'),
+    hmacB64url: (k, m) => crypto.createHmac('sha256', Buffer.from(k, 'utf8')).update(m, 'utf8').digest('base64url'), randomHex: (n) => crypto.randomBytes(n).toString('hex') };
+  const sv = makeService_(DZYB, st, {}, makeAuth_(nc, DZYB), { nowMs: () => Date.now(), today: () => DZYB.today() });
+  const tk = sv.call('setPin', { staffId: 'S-900', pin: '2580' }).data.token;
+  const ackR = sv.call('ack', { token: tk, postId: '../x', sig: 'data:image/png;base64,iVBORw0K' }); eq('sig traversal ack ok', ackR.ok ? true : ackR, true);
+  st.addRead({ postId: '../x', staffId: '../../y', name: 'y', unit: 'mala', at: '', sig: 'data:image/jpeg;base64,/9j/' });   // staffId 也帶 ../（直接打 store）
+  const files = fs.readdirSync(path.join(data, 'sigs'));
+  eq('sig traversal stays in sigs/ with safe name', [files.length, files.every((f) => /^[A-Za-z0-9_-]+\.(png|jpg)$/.test(f))], [2, true]);
+  eq('sig traversal nothing outside', fs.readdirSync(dir).concat(fs.readdirSync(data)).filter((f) => /\.(png|jpg)$/.test(f)), []);
+  eq('sig traversal readable', [typeof st.getSigs('../x')['S-900'], typeof st.getSigs('../x')['../../y']], ['string', 'string']);
+  st.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+
+console.log(`service${process.env.DRIVER === 'server' ? '（伺服器）' : ''}: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

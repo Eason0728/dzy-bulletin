@@ -135,7 +135,7 @@ async function main() {
     fs.writeFileSync(path.join(P.dir, 'logs/mirror-last.json'), JSON.stringify({ at: '2026-09-30T01:00:00Z', ok: false, sigPending: 3, error: '/Users/secret/path 失敗' }));
     fs.writeFileSync(path.join(P.dir, 'logs/backup-last.json'), JSON.stringify({ at: '2026-09-30T03:00:00Z', ok: true, file: '/Users/x/b.db' }));
     const h = (await request(P.port, 'GET', '/health')).json;
-    eq('health mirror/backup status only', [h.mirror, h.backup], [{ at: '2026-09-30T01:00:00Z', ok: false, sigPending: 3, missing: 0, bad: 0, skipped: 0, fails: 0 }, { at: '2026-09-30T03:00:00Z', ok: true, sharedWith: null }]);
+    eq('health mirror/backup status only', [h.mirror, h.backup], [{ at: '2026-09-30T01:00:00Z', ok: false, sigPending: 3, missing: 0, bad: 0, skipped: 0, fails: 0, notMigrated: false }, { at: '2026-09-30T03:00:00Z', ok: true, sharedWith: null }]);
     eq('health why has no raw error text', /secret|Users/.test(JSON.stringify(h)), false);
     // M7（#18 D8）：/health 帶出 files 六個欄位（從 mirror-last.json 的 files 挑），錯誤原文與清單不外露；stale > 0 → 黃
     fs.writeFileSync(path.join(P.dir, 'logs/mirror-last.json'), JSON.stringify({ at: new Date().toISOString(), ok: true, pending: 0, fails: 0,

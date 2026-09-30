@@ -587,7 +587,11 @@ async function main() {
     const B = fakeBridge();
     const r = await quiet(() => runMirror({ dir, bridge: B }));
     eq('空庫：mirror 拒絕（ok:false、錯誤寫明空庫）、一次橋接都沒打', [r.ok, /資料庫是空的/.test(r.error || ''), B.calls], [false, true, []]);
-    eq('M7：空庫（還沒搬遷）第 3 步也不跑（fileget／filelist 0 次）', B.fcalls, []); }
+    eq('M7：空庫（還沒搬遷）第 3 步也不跑（fileget／filelist 0 次）', B.fcalls, []);
+    const ml = last(dir, 'mirror-last.json');
+    eq('空庫：mirror-last.json 照樣寫、at＝這一輪、ok:false、notMigrated:true、原因「尚未搬遷」', [ml.at === r.at && Date.now() - Date.parse(ml.at) < 60e3, ml.ok, ml.notMigrated, /資料庫是空的（尚未搬遷）/.test(ml.error)], [true, false, true, true]);
+    const r2 = await quiet(() => runMirror({ dir, bridge: B }));
+    eq('空庫：每一輪都更新 at（不會停在部署當下）', [Date.parse(last(dir, 'mirror-last.json').at) >= Date.parse(ml.at), r2.notMigrated, r2.fails], [true, true, 2]); }
 
   // ================= E. M7（#18）附件補齊：mirror.js 第 3 步（程序內、假橋接物件） =================
   { const MB = 1024 * 1024, PDF = 'application/pdf';
@@ -753,6 +757,9 @@ async function main() {
     eq('時間戳比現在晚 5 分鐘以上 → 黃（4 分鐘不判）', [H(Object.assign({}, okM, { at: ago(-24 * 30) }), okB).why, H(okM, Object.assign({}, okB, { at: ago(-0.1) })).level, H(okM, Object.assign({}, okB, { at: ago(-4 / 60) })).level],
       [['時間戳異常（比現在還晚）'], 'yellow', 'green']);
     eq('mirror.bad／missing > 0 → 黃', [H(Object.assign({}, okM, { bad: 1 }), okB).why, H(Object.assign({}, okM, { missing: 2 }), okB).why], [['有壞簽名圖'], ['本機缺簽名圖']]);
+    eq('尚未搬遷（notMigrated）→ 最多黃「尚未搬遷」：不判「鏡像連續失敗」、鏡像超過 6 小時也不判紅；快照規則照常',
+      [H(Object.assign({}, okM, { ok: false, fails: 5, notMigrated: true }), okB), H(Object.assign({}, okM, { at: ago(30), ok: false, fails: 30, notMigrated: true }), okB), H(Object.assign({}, okM, { notMigrated: true }), { at: ago(27), ok: true }).level],
+      [{ level: 'yellow', why: ['尚未搬遷'] }, { level: 'yellow', why: ['尚未搬遷'] }, 'red']);
     eq('結果檔讀不到（at 為 null）→ 紅、寫「結果檔讀不到」', H({ at: null, ok: false }, { at: null, ok: false }).why.slice(0, 2), ['鏡像結果檔讀不到', '快照結果檔讀不到']);
     const HF = (files) => judgeHealth({ mirror: okM, backup: okB, files, disk: { freeMB: 50000 } }, now);
     eq('M7：files.stale > 0 → 黃「有附件超過 24 小時沒補齊」；pending > 0 且 stale = 0 → 綠；沒有 files（還沒跑過第 3 步）→ 綠',

@@ -277,7 +277,8 @@ async function runMirror(o) {
     // 空庫不鏡像（#10）：切換日 PRIMARY=mini 之後、migrate.js 匯入之前，若每小時鏡像先跑到，會把空的 Mac mini 庫整份蓋掉試算表
     // （之後的 export 也就是空的）。正式資料一定有同仁；沒有同仁也沒有公告＝還沒搬遷，拒絕。
     const c0 = J.counts(db);
-    if (!c0.staff && !c0.posts) throw new Error('資料庫是空的（還沒搬遷？），拒絕鏡像以免蓋掉試算表');
+    // 結果檔照樣寫（at＝現在、ok:false），另標 notMigrated：/health 最多判黃「尚未搬遷」，不因部署到搬遷之間的空窗誤判紅燈
+    if (!c0.staff && !c0.posts) { res.notMigrated = true; throw new Error('資料庫是空的（尚未搬遷），拒絕鏡像以免蓋掉試算表'); }
     dbReady = true;
     const sigDir = path.join(dir, 'sigs');
     const TODO_SQL = "SELECT postId, staffId, sigId FROM reads WHERE sigId <> '' AND driveSigId = '' ORDER BY rowid";

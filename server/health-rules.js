@@ -7,6 +7,8 @@
  *       任一時間戳比現在晚 5 分鐘以上（系統時鐘被往回調，不然會一直綠燈；#14 建議 6）、
  *       files.stale > 0（M7 #18 D5：有附件待補超過 24 小時；pending > 0 但 stale = 0 是正常排隊，不轉燈）
  *   結果檔存在但讀不到（at 為 null）→ 紅「結果檔讀不到」，與「從沒跑過」分開寫。
+ *   mirror.notMigrated（空庫、尚未搬遷，mirror.js 在本機拒絕）→ 鏡像相關只判一個黃「尚未搬遷」，不判紅、不判「鏡像連續失敗」
+ *   （部署完到 M5 搬遷之間是預期狀態；快照、磁碟、附件等其他規則照常）。
  *   「/health 打不通或非 200 → 紅」由守門自己判（打不通就拿不到這份）。
  * why 只放固定短句（不帶任何錯誤原文）。純函式，無副作用。 */
 'use strict';
@@ -19,11 +21,13 @@ function judgeHealth(h, nowMs) {
   const age = (at) => { const t = Date.parse(at || ''); return isNaN(t) ? Infinity : (now - t) / H; };
   const m = h && h.mirror, b = h && h.backup, freeMB = h && h.disk ? h.disk.freeMB : null;
   const ma = age(m && m.at), ba = age(b && b.at);
-  if (ma > RULES.mirrorRedH) red.push(!m ? '沒有鏡像紀錄' : m.at ? '鏡像超過 6 小時沒跑' : '鏡像結果檔讀不到');
+  const nm = !!(m && m.notMigrated);
+  if (nm) yellow.push('尚未搬遷');
+  else if (ma > RULES.mirrorRedH) red.push(!m ? '沒有鏡像紀錄' : m.at ? '鏡像超過 6 小時沒跑' : '鏡像結果檔讀不到');
   else if (ma > RULES.mirrorYellowH) yellow.push('鏡像超過 3 小時沒跑');
   if (ba > RULES.backupRedH) red.push(!b ? '沒有快照紀錄' : b.at ? '快照超過 26 小時沒跑' : '快照結果檔讀不到');
   if (ma < -RULES.futureMin / 60 || ba < -RULES.futureMin / 60) yellow.push('時間戳異常（比現在還晚）');
-  if (m && Number(m.fails) >= RULES.mirrorFailYellow) yellow.push('鏡像連續失敗');
+  if (!nm && m && Number(m.fails) >= RULES.mirrorFailYellow) yellow.push('鏡像連續失敗');
   if (b && b.ok === false) yellow.push('快照失敗');
   if (typeof freeMB === 'number' && freeMB < RULES.diskYellowMB) yellow.push('磁碟剩餘不足 5GB');
   if (m && Number(m.sigPending) > RULES.pendingYellow) yellow.push('待回填簽名超過 200 張');

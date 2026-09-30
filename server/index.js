@@ -228,7 +228,7 @@ function makeApp(cfg) {
     const h = {
       ok: true, v: VERSION, uptime: Math.round(process.uptime()), e2e: E2E,
       bridge: (cfg.BRIDGE_URL && cfg.BRIDGE_KEY && !E2E) ? 'configured' : 'missing',
-      mirror: job('mirror-last.json', (j) => ({ at: j.at || null, ok: !!j.ok, sigPending: num(j.pending !== undefined ? j.pending : j.sigPending), missing: num(j.missing) || 0, bad: num(j.bad) || 0, skipped: num(j.skipped) || 0, fails: num(j.fails) || 0 })),
+      mirror: job('mirror-last.json', (j) => ({ at: j.at || null, ok: !!j.ok, sigPending: num(j.pending !== undefined ? j.pending : j.sigPending), missing: num(j.missing) || 0, bad: num(j.bad) || 0, skipped: num(j.skipped) || 0, fails: num(j.fails) || 0, notMigrated: !!j.notMigrated })),
       backup: job('backup-last.json', (j) => ({ at: j.at || null, ok: !!j.ok, sharedWith: num(j.sharedWith) })),
       // M7（#18 D8）：附件本機備份（mirror.js 第 3 步寫在 mirror-last.json 的 files）；只挑六個狀態欄位，錯誤原文不外露
       files: job('mirror-last.json', (j) => { const f = j.files; if (!f || typeof f !== 'object') return null;

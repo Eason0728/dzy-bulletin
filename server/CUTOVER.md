@@ -36,13 +36,14 @@ counts() { node -e "const{DatabaseSync}=require('node:sqlite');const d=new Datab
 
 | # | 項目 | 負責人 | 怎麼確認 |
 |---|---|---|---|
-| 0-1 | M2 的 GAS（橋接、`PRIMARY`、`EXPORT_ONCE`、`sigs` get、鏡像的計數與防呆）已 clasp 部署，而且**部署的就是 merge 進主線的那個 commit** | MacBook 的 Claude（clasp）＋Eason 核准 | 版本號不夠用（M2 修了好幾輪，`VERSION_` 都是同一個號碼）。在乾淨的主線 checkout（`git status` 空白）做：`clasp push` → `clasp deploy -i <正式部署 ID> -d "$(git rev-parse --short HEAD)"`（部署說明＝git 短 hash；部署 ID 不變，Web App 網址才不會換）。驗證：`clasp deployments` 裡那個部署 ID 那一行的說明＝`git rev-parse --short HEAD`，而且 `git log -1 --format=%h -- gas/` 指到的 commit 包含在內（`git merge-base --is-ancestor <那個 hash> HEAD`）。對不上就重新 push＋deploy，**不進第 2 步** |
+| 0-1 | M2 **定稿版**的 GAS（橋接、`PRIMARY`、`EXPORT_ONCE`、`sigs` get、鏡像的計數與防呆）已 clasp 部署 | MacBook 的 Claude（clasp）＋Eason 核准 | 版本號不夠用（M2 修了好幾輪，`VERSION_` 都是同一個號碼）；「部署說明＝HEAD」也只證明從哪個 HEAD 部署，不證明 HEAD 含 M2 定稿。在要部署的乾淨 checkout（`git status` 空白）先做兩道檢查，**兩道都過才部署**：① `git merge-base --is-ancestor b998db9 HEAD && echo OK`（b998db9＝M2 第 3 輪定稿；**M2 之後若又改版，這個 hash 要跟著更新**）；② `grep -c distinct_ gas/Store.js` 大於 0、`grep -c isTrashed gas/Files.js` 大於 0（M2 定稿才有的程式碼）。接著 `clasp push` → `clasp deploy -i <正式部署 ID> -d "$(git rev-parse --short HEAD)"`（部署 ID 不變，Web App 網址才不會換），再用 `clasp deployments` 確認那個部署 ID 的說明＝`git rev-parse --short HEAD`。任何一道不過就**不進第 2 步** |
 | 0-2 | 含 `MOVED` 處理的前端**已上線滿 1 天**（#7【Opus】） | MacBook 的 Claude | Pages 上的 `js/config.js` 版本號＝含 MOVED 處理的版本 |
 | 0-3 | Mac mini 部署完成（M4 `DEPLOY.md`）：伺服器常駐、Funnel 通、`server/.env` 有 `DATA_DIR`／`BRIDGE_URL`／`BRIDGE_KEY` | Mac mini 的 Claude（`.env` 的金鑰由 Eason 親手貼） | `curl -s http://127.0.0.1:8793/health` 回 JSON；`grep -c '^BRIDGE_KEY=' server/.env` 回 `1`（只數行數，不印內容） |
 | 0-4 | **停掉每小時鏡像 job**（M4 已經裝好並載入，見 DEPLOY.md〈交接給 M5〉第 1 條；這裡多做 `disable`，重開機也不會回來），並確認目標庫是空的、沒有 `ADMIN_INIT.txt` | Mac mini 的 Claude | `job_off com.dzy.bulletin.mirror` 印「已停、已 disable」；`counts` 四個數字都是 0（M4 前景試跑建的空庫只有 kv 裡的一把 secret，migrate.js 不算它、搬遷時會被換掉）；`ls "$DATA_DIR/ADMIN_INIT.txt"` 要回「No such file」（這個檔在的話，主管第一次登入會把搬過來的管理雜湊換掉） |
 | 0-5 | Mac mini 上 `bash tools/build.sh` 全綠，而且用的是服務實際用的 Node 24 | Mac mini 的 Claude | 先貼共用區塊；`node -v` 要是 `v24.`開頭；最後一行 `build OK` |
 | 0-6 | 記下切換前的 `js/config.js` 三行（`VERSION`／`ROSTER_CSV`／`GAS_URL`），回退時要用 | MacBook 的 Claude | 貼在 #10 留言（`GAS_URL` 本來就在 repo 裡，可以貼；Funnel 網址不貼） |
 | 0-7 | 先估簽名圖下載時間，決定公告的時段 | Eason 數列數、Mac mini 的 Claude 算 | Eason 看試算表「已讀」分頁「簽名檔 id」有值的列數 N；下載約 ⌈N÷20⌉ 次橋接，每次 5～30 秒。例：N＝2000 → 100 次 → 約 8～50 分鐘。公告時段＝這個上限＋15 分鐘（搬遷與 Pages 快取）。第 3 步 dry-run 印出的預估若超出公告時段：還沒開始下載，可以中止（Eason 設回 `PRIMARY=gas`，改天用更長的時段），或在 LINE 補一則延長公告 |
+| 0-8 | 預查公告／同仁有沒有**重複 id**，切換前清掉（凍結窗口裡才發現會拉長停機，見第 3 步） | Eason（試算表）；Claude 可以補查同仁 | ① Eason 在主試算表「公告」分頁找一格空白儲存格貼 `=IFERROR(TEXTJOIN("、",TRUE,UNIQUE(FILTER(A2:A,A2:A<>"",COUNTIF(A2:A,A2:A)>1))),"沒有重複")`，「同仁」分頁同樣貼一次（A 欄是 id）。顯示「沒有重複」就好；列出 id 的話，由 Eason 判斷留哪一列、刪掉另一列（GAS 編輯與簽名只認第一列）。看完**把公式刪掉**。② Claude 可以不動 EXPORT_ONCE 補查在職同仁：`curl -sL --data '{"action":"roster"}' "<js/config.js 的 GAS_URL>" \| node -e "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>{const ids=JSON.parse(s).data.map(x=>x.id);const d=ids.filter((x,i)=>ids.indexOf(x)!==i);console.log(d.length?'重複：'+[...new Set(d)].join('、'):'在職同仁沒有重複')})"`（只看得到在職同仁；公告沒有免登入的讀法，以 ① 為準） |
 
 為什麼 0-4 要特別注意：第 2 步設下 `PRIMARY=mini` 之後，GAS 就會接受 `mirror`。若這時每小時鏡像先跑到，會把 Mac mini 的空庫整份蓋掉試算表，之後的 export 也就是空的。
 
@@ -137,9 +138,9 @@ node server/migrate.js --from <dry-run 印出的匯出檔>
 | export 回 AUTH | 4 | 通常是 `EXPORT_ONCE` 已被用掉：手上有存檔就用 `--from`，沒有就請 Eason 重設 `EXPORT_ONCE=1`。也可能是 `PRIMARY` 不是 `mini`，或 `BRIDGE_KEY` 兩邊不一致（請 Eason 核對，Claude 不看金鑰）。 |
 | export 逾時 | 4 | GAS 可能已刪掉 `EXPORT_ONCE`，但結果沒收到。請 Eason 重設 `EXPORT_ONCE=1` 再跑 dry-run。 |
 | 「目標已有資料」 | 2 | 0-4 沒做好。先弄清楚那是什麼資料。確定可以覆蓋：加 `--force`，會先備份、在原檔上寫入，伺服器不用停。想整個資料夾換掉：**先停伺服器**（`job_off com.dzy.bulletin`），否則伺服器手上還開著舊庫，會繼續讀寫被搬走的那一份；然後 `mv "$DATA_DIR" "$DATA_DIR.old-$(date +%s)"` → 重跑 `--from` → `job_on com.dzy.bulletin` → `curl -s http://127.0.0.1:8793/health` 確認起來了。 |
-| 「公告 id 重複」或「同仁 id 重複」 | 3（dry-run 也是 3） | 試算表裡同一個 id 有兩列。GAS 自己的看法就不一致（看板／名單兩筆都顯示，編輯、簽名只認第一列），所以 migrate 不自動去重。處理：把印出的 id 交給 Eason，**由 Eason 確認**要留哪一列後，在試算表手動刪掉另一列 → 重設 `EXPORT_ONCE=1` → 從 `--dry-run` 重來（舊的匯出檔刪掉）。 |
+| 「公告 id 重複」或「同仁 id 重複」 | 3（dry-run 也是 3） | 0-8 應該已經清掉；凍結窗口裡才發現，**停機時間會拉長**（同仁一直不能簽）。GAS 自己的看法不一致（看板／名單兩筆都顯示，編輯、簽名只認第一列），所以 migrate 不自動去重。處理：把印出的 id 交給 Eason，**由 Eason 確認**要留哪一列後，在試算表手動刪掉另一列 → 重設 `EXPORT_ONCE=1` → 從 `--dry-run` 重來（舊的匯出檔刪掉）。**判斷點：預計 15 分鐘內處理不完（Eason 無法馬上判斷、重複很多），就先中止**：Eason 設回 `PRIMARY=gas`、刪掉 `EXPORT_ONCE`，LINE 公告改天再搬，照 0-8 清乾淨後重來。處理得完但會超出公告時段，照 0-7 在 LINE 補一則延長公告。 |
 | 簽名圖某批下載失敗 3 次 | 5 | 資料庫沒有動，直接 `--from <同一個檔>` 重跑。已下載的圖存在 `$DATA_DIR/.migrate-dl/`，重跑只補沒下載的。 |
-| 有 ❌ | 1 | **不要切前端**。把整段輸出貼到 #10（只含筆數與 id，不含雜湊），先回報。這時資料**已經寫進庫**：查明原因後重跑要加 `--force`（`--from <同一個檔> --force`，會先備份），否則會被「目標已有資料」擋下。只有「簽名圖」❌、而且原因是 Drive 上讀不到的圖（sigs.get 回 null：不在簽名資料夾、不是 png/jpeg、檔案不見）時，由 Eason 決定是否接受。那幾筆的 Drive id 仍保留，但 Mac mini 上沒有圖。 |
+| 有 ❌ | 1 | **不要切前端**。把整段輸出貼到 #10（只含筆數與 id，不含雜湊），先回報。這時資料**已經寫進庫**：查明原因後重跑要加 `--force`（`--from <同一個檔> --force`，會先備份），否則會被「目標已有資料」擋下。只有「簽名圖」❌、而且原因是 Drive 上讀不到的圖（sigs.get 回 null：不在簽名資料夾、不是 png/jpeg、檔案不見）時，由 Eason 決定是否接受。那幾筆的 Drive id 仍保留，但 Mac mini 上沒有圖。**接受之後**把下載暫存刪掉：`rm -rf "$DATA_DIR/.migrate-dl"`（只有六項全 ✅ 時 migrate 才會自己刪，裡面是全部簽名圖）。 |
 
 ---
 
@@ -163,7 +164,11 @@ node server/migrate.js --from <dry-run 印出的匯出檔>
   - 數量多就中止：Eason 設回 `PRIMARY=gas`，查明原因再從頭來。
 - 鏡像失敗：先看 `logs/mirror-last.json` 的 `error`，分兩種：
   - **暫時性**（`BRIDGE`、逾時、Google 回 500）：不影響切換，可以繼續第 5 步，下一輪自動重做；第 9 步觀察日要盯 `/health`。
-  - **被拒絕**（`BAD_REQ`，例如「比現有少」「少一半以上」「全空」；或 `AUTH`）：每一輪都會一樣失敗，GAS 上的備份會停在切換這一刻、沒有人會發現。**停下來，不准進第 5 步**。前端還沒動，可以安全中止：Eason 設回 `PRIMARY=gas`（Mac mini 這份資料之後用 `--force` 重搬即可），把 `error` 原文貼到 #10，找 MacBook 的 Claude 查（常見原因：0-1 部署的不是最新的 M2）。
+  - **被拒絕**（`BAD_REQ`，例如「比現有少」「少一半以上」「全空」；或 `AUTH`）：每一輪都會一樣失敗，GAS 上的備份會停在切換這一刻、沒有人會發現。**停下來，不准進第 5 步**。前端還沒動，可以安全中止：
+    1. Mac mini 的 Claude 先把剛打開的每小時鏡像關掉：`job_off com.dzy.bulletin.mirror`（不關的話它每小時會打出 AUTH，`/health` 黃燈再轉紅，容易誤判）。
+    2. Eason 設回 `PRIMARY=gas`、確認沒有 `EXPORT_ONCE`。
+    3. 把 `error` 原文貼到 #10，找 MacBook 的 Claude 查（常見原因：0-1 部署的不是 M2 定稿）。
+    4. 改天重來時，0-4 的「`counts` 四個都是 0」不會成立（這次已經搬進來了），這是預期：第 3 步正式匯入改用 `--from <新的匯出檔> --force`（會先備份）。
 
 ---
 
@@ -249,12 +254,16 @@ P="$(sed -n 's/^BRIDGE_KEY=//p' server/.env | tr -d "\"'" | cut -c1-8)"; if [ ${
 - 回 `0` → 不換鑰，截圖貼 #10。
 - 回非 0 → **換一把**，順序固定：
   1. **Eason**：`openssl rand -hex 32` 自產新金鑰，**先只貼進 GAS 指令碼屬性** `BRIDGE_KEY`，`.env` 暫時不動。
-  2. **Mac mini 的 Claude**：確認舊金鑰已失效。這時 `.env` 裡的還是舊金鑰。金鑰和網址從 `.env` 讀，用 shell 內建的 `printf` 經 stdin 送出，不會出現在任何程序的指令列，也不印出來；輸出只有錯誤碼：
+  2. **Mac mini 的 Claude**：確認舊金鑰已失效。這時 `.env` 裡的還是舊金鑰。
      ```sh
-     K="$(sed -n 's/^BRIDGE_KEY=//p' server/.env | tr -d "\"'")"; W="$(sed -n 's/^BRIDGE_URL=//p' server/.env | tr -d "\"'")"
-     printf '{"action":"bridge","key":"%s","op":"quota"}' "$K" | curl -sL -X POST -H 'Content-Type: text/plain' --data-binary @- "$W" | grep -o '"code":"[A-Z_]*"'; unset K W
+     sh server/oldkey-check.sh
      ```
-     要印出 `"code":"AUTH"`。印出別的，或什麼都沒印，代表 GAS 屬性沒換成功，請 Eason 再確認。這段期間附件上傳、打卡同步會失敗，簽名與看公告不受影響，所以要接著做下一步。
+     - 腳本從 `.env` 讀金鑰和網址，用 shell 內建的 `printf` 經 stdin 送出（不會出現在任何程序的指令列，也不印出來），`curl -sL --data @-` **不加 `-X POST`**：Apps Script 的 `/exec` 會 302 轉到只收 GET 的網址，加了 `-X POST` 轉址後仍用 POST，永遠拿不到結果。這個行為已用本機假伺服器模擬 302 實測（`test/migrate.test.js`）。
+     - 三種結果：
+       - 印「✅ 回 AUTH：舊金鑰已失效」（exit 0）→ 通過，做下一步。
+       - 印「❌ 回正常結果：舊金鑰仍然有效」（exit 1）→ GAS 屬性沒存到。請 Eason 回 Apps Script 確認 `BRIDGE_KEY` 已經是新的那把、有按儲存，再跑一次。
+       - 印「✗ 其他回應」（exit 3）→ **停下來**，把腳本印出的原文貼給 MacBook 的 Claude（例如網路、Google 暫時錯誤）。不要反覆請 Eason 重設屬性。
+     - 這段期間附件上傳、打卡同步會失敗，簽名與看公告不受影響，所以要接著做下一步。
   3. **Eason**：把同一把新金鑰貼進 Mac mini 的 `server/.env`。
   4. **Mac mini 的 Claude**：重啟伺服器 `launchctl kickstart -k gui/$(id -u)/com.dzy.bulletin`（伺服器只在啟動時讀 `.env`）。
   5. **Eason**：主管上傳一個附件，要成功。
@@ -351,6 +360,7 @@ unset DZYB_URL
 - [ ] **Mac mini 的 Claude**：刪除匯出檔 `rm <匯出檔>`，並確認 `ls "$(dirname "$DATA_DIR")"/dzy-bulletin-export-*.json` 沒有殘留。
   - 回退演練附錄 A 產生的第二份匯出檔也要刪。
   - `--force` 產生的 `$DATA_DIR/bulletin.db.before-migrate-*` 也含全部密碼雜湊，觀察期過後一併刪。
+  - 下載暫存 `$DATA_DIR/.migrate-dl/`（全部簽名圖）若還在（簽名圖 ❌ 被接受、或中斷後沒重跑成功），`rm -rf "$DATA_DIR/.migrate-dl"`。
   - Mac mini 若有開 Time Machine，刪掉的檔仍留在備份裡。告知 Eason，由他決定要不要在 Time Machine 刪除那幾個檔的備份。
 - [ ] **Eason**：GAS 指令碼屬性確認 `EXPORT_ONCE` 不存在、`PRIMARY=mini`。
 - [ ] #10 驗收勾選。

@@ -4,6 +4,7 @@ set -e
 cd "$(dirname "$0")/.."
 { echo "/* 自動產生：來源 js/logic.js，請勿手改（執行 tools/build.sh 重建） */"; cat js/logic.js; } > gas/Logic.js
 for f in gas/*.js js/*.js server/*.js; do node --check "$f"; done
+for f in server/*.sh; do sh -n "$f"; done
 # launchd 範本（M3：伺服器／每小時鏡像／每日快照）語法檢查；實際安裝見 DEPLOY.md
 if command -v plutil >/dev/null; then for p in server/launchd/*.plist; do plutil -lint -s "$p"; done; fi
 # test/server.test.js 會自己開暫存埠與暫存資料夾啟動真伺服器（含 10 秒阻塞測試），不需先手動起伺服器

@@ -28,6 +28,8 @@ const tmp = (p) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), p || 'dzyb-
 const q = (dir, sql) => { const db = new DatabaseSync(path.join(dir, 'bulletin.db'), { readOnly: true }); try { return db.prepare(sql).all().map((r) => Object.assign({}, r)); } finally { db.close(); } };
 const n = (dir, t) => q(dir, 'SELECT COUNT(*) AS n FROM ' + t)[0].n;
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const JPG_MAGIC = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
+const JPG = (s) => 'data:image/jpeg;base64,' + Buffer.concat([JPG_MAGIC, Buffer.from('簽名-' + s)]).toString('base64');   // 真的 JPEG 檔頭 FF D8 FF E0
 const PNG = (s) => 'data:image/png;base64,' + Buffer.concat([PNG_MAGIC, Buffer.from('簽名-' + s)]).toString('base64');   // 帶真的 PNG 檔頭（migrate 會檢查魔術數字）
 function freePort() { return new Promise((ok, no) => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => ok(p)); }); s.on('error', no); }); }
 function runJob(script, args, env) {
@@ -75,7 +77,7 @@ async function main() {
   const staff = Array.from({ length: 15 }, (_, i) => doPost({ action: 'staffAdd', atoken, name: '同仁' + i, unit: 'mala' }).data.staff.id);
   const tokens = staff.map((id) => doPost({ action: 'setPin', staffId: id, pin: '2580' }).data.token);
   let acks = 0;
-  posts.forEach((p) => tokens.forEach((t, i) => { if (doPost({ action: 'ack', token: t, postId: p, sig: PNG(p + i) }).ok) acks++; }));
+  posts.forEach((p) => tokens.forEach((t, i) => { if (doPost({ action: 'ack', token: t, postId: p, sig: p === posts[2] ? JPG(p + i) : PNG(p + i) }).ok) acks++; }));   // 第三則的 15 張用 JPEG（兩種格式都要測到）
   doPost({ action: 'staffAdd', atoken, name: '還沒設密碼', unit: 'cf' });
   eq('（前提）GAS 上 3 則公告、16 人、45 張簽名（Drive 上）', [posts.length, FG.sheetRows('同仁').length, acks, Object.keys(FG.drive.files).length], [3, 16, 45, 45]);
   const tokA = tokens[0];
@@ -131,7 +133,7 @@ async function main() {
   eq('操作紀錄＝GAS 分頁筆數（凍結後 GAS 沒有新增）', [n(dir, 'log'), FG.sheetRows('操作紀錄').length], [gasLog, gasLog]);
   const rows = q(dir, 'SELECT postId, staffId, sigId, driveSigId FROM reads ORDER BY rowid');
   eq('已讀：driveSigId＝GAS 的 Drive id、sigId＝本機檔名（與伺服器同一套命名）',
-    rows.every((x, i) => x.driveSigId === exp.reads[i].sigId && x.sigId === x.postId + '_' + x.staffId + '.png'), true);
+    rows.every((x, i) => x.driveSigId === exp.reads[i].sigId && x.sigId === x.postId + '_' + x.staffId + (x.postId === posts[2] ? '.jpg' : '.png')), true);
   eq('簽名圖檔內容＝Drive 上的原圖（逐張）', rows.every((x) => fs.readFileSync(path.join(dir, 'sigs', x.sigId)).equals(Buffer.from(FG.drive.files[x.driveSigId].bytes.map((b) => b & 255)))), true);
   eq('提示刪除匯出檔', r.out.includes('rm ' + file), true);
   eq('輸出不含 secret', r.out.includes(SECRET), false);
@@ -267,12 +269,14 @@ async function main() {
     const t1 = fs.readFileSync(path.join(dl, imgs[1])); fs.writeFileSync(path.join(dl, imgs[1]), t1.subarray(0, 6));   // ② 截斷（manifest 保持原樣＝長度／sha 不符）
     const t2 = fs.readFileSync(path.join(dl, imgs[2])); t2[0] = 0x00; fs.writeFileSync(path.join(dl, imgs[2]), t2);    // ③ 魔術數字錯（manifest 改成一致，只剩檔頭擋得住）
     fs.writeFileSync(man(imgs[2]), JSON.stringify({ type: 'png', sha: shaOf(t2), len: t2.length }));
+    const t3 = fs.readFileSync(path.join(dl, imgs[3])); t3[t3.length - 2] ^= 0xff; fs.writeFileSync(path.join(dl, imgs[3]), t3);   // ④ 中間內容壞掉（長度、檔頭都對，manifest 保持原樣＝只剩 sha 擋得住）
     const cnt = { n: 0, ids: 0, call: async (op, p, t) => { if (op === 'sigs') { cnt.n++; cnt.ids += p.get.length; } return bridge.call(op, p, t); } };
     const r2 = await quietRun({ dir: d, bridge: cnt });
-    eq('重跑：3 張壞暫存（0 byte／截斷／魔術數字）被丟掉、重下 28 張（2 次 sigs）', [/暫存裡有 3 張簽名圖不完整/.test(r2.out), cnt.ids, cnt.n], [true, 28, 2]);
-    eq('重跑：六項全 ✅、暫存刪掉、提示上次已下載 17 張', [r2.code, status(r2), fs.existsSync(dl), /上次已下載 17 張/.test(r2.out)], [0, ALL, false, true]);
+    eq('重跑：4 張壞暫存（0 byte／截斷／魔術數字／內容 sha 不符）被丟掉、重下 29 張（2 次 sigs）', [/暫存裡有 4 張簽名圖不完整/.test(r2.out), cnt.ids, cnt.n], [true, 29, 2]);
+    eq('重跑：六項全 ✅、暫存刪掉、提示上次已下載 16 張', [r2.code, status(r2), fs.existsSync(dl), /上次已下載 16 張/.test(r2.out)], [0, ALL, false, true]);
     const rows2 = q(d, 'SELECT sigId, driveSigId FROM reads ORDER BY rowid');
-    eq('每張最後寫進 sigs/ 的檔＝Drive 原圖、副檔名與實際格式一致（.png＋PNG 檔頭）', rows2.every((x) => { const b = fs.readFileSync(path.join(d, 'sigs', x.sigId)); return x.sigId.endsWith('.png') && b.subarray(0, 4).equals(PNG_MAGIC.subarray(0, 4)) && b.equals(Buffer.from(FG.drive.files[x.driveSigId].bytes.map((v) => v & 255))); }), true);
+    const fmtOk = (x, b) => (x.sigId.endsWith('.png') ? b.subarray(0, 4).equals(PNG_MAGIC.subarray(0, 4)) : x.sigId.endsWith('.jpg') && b.subarray(0, 3).equals(JPG_MAGIC.subarray(0, 3)));
+    eq('每張最後寫進 sigs/ 的檔＝Drive 原圖、副檔名與實際格式一致（.png＋PNG 檔頭／.jpg＋FF D8 FF）', [rows2.every((x) => { const b = fs.readFileSync(path.join(d, 'sigs', x.sigId)); return fmtOk(x, b) && b.equals(Buffer.from(FG.drive.files[x.driveSigId].bytes.map((v) => v & 255))); }), rows2.filter((x) => x.sigId.endsWith('.jpg')).length], [true, 15]);
     eq('非 0 結束也提醒刪匯出檔', /匯出檔仍在/.test(r1.out), true); }
 
   // Drive 上那張不是有效的 PNG（檔頭不對）→ 當作讀不到，簽名圖 ❌
@@ -281,6 +285,13 @@ async function main() {
     FG.drive.files[id].bytes = keep;
     eq('Drive 圖檔頭不對：exit 1、只有簽名圖 ❌、印出格式警告', [res.code, status(res), /不是有效的 PNG／JPEG/.test(res.out)], [1, ALL.map((x) => (x === '✅簽名圖' ? '❌簽名圖' : x)), true]); }
 
+  // Drive 上宣稱是 JPEG、但只有第 1 個 byte 對（FF 00 00…）→ 當作讀不到（JPEG 檔頭要完整 FF D8 FF）
+  { const r = exp.reads.find((x) => x.postId === posts[2]), keep = FG.drive.files[r.sigId].bytes;
+    FG.drive.files[r.sigId].bytes = Array.from(Buffer.concat([Buffer.from([0xff, 0x00, 0x00]), Buffer.from('壞 JPEG')]));
+    const d = path.join(tmp(), 'data'), res = await quietRun({ dir: d });
+    FG.drive.files[r.sigId].bytes = keep;
+    eq('JPEG 檔頭只有 FF 對（FF 00 00）：exit 1、只有簽名圖 ❌', [res.code, status(res), /不是有效的 PNG／JPEG/.test(res.out)], [1, ALL.map((x) => (x === '✅簽名圖' ? '❌簽名圖' : x)), true]); }
+
   // 公告／同仁 id 重複：GAS 語意不一致（看板顯示兩筆、編輯只認第一列）→ 列出並停下，dry-run 也停
   for (const [label, mut, want] of [['公告', (x) => { x.posts.push(Object.assign({}, x.posts[0], { title: '重複那列' })); }, posts[0]], ['同仁', (x) => { x.staff.push(Object.assign({}, x.staff[2], { name: '重複那列' })); }, staff[2]]]) {
     const b2 = tmp(), f2 = path.join(b2, 'dupid.json'), d2 = path.join(b2, 'data'), x = JSON.parse(JSON.stringify(exp));
@@ -288,6 +299,43 @@ async function main() {
     const rd = await runJob('migrate.js', ['--from', f2, '--dry-run'], ENV(d2)), rr = await runJob('migrate.js', ['--from', f2], ENV(d2));
     eq(`${label} id 重複：dry-run 與正式都 exit 3、列出重複的 id、沒寫入`, [rd.code, rr.code, rd.out.includes(label + ' id 重複 1 個：' + want), fs.existsSync(path.join(d2, 'bulletin.db'))], [3, 3, true, false]);
   }
+
+  // ================= server/oldkey-check.sh：舊金鑰驗證（CUTOVER.md 第 7 步），用本機假 Apps Script 模擬 302 轉址 =================
+  { const store = new Map(); let seq = 0, lastBody = '';
+    const fake = http.createServer((req, res) => {
+      let b = ''; req.on('data', (c) => { b += c; });
+      req.on('end', () => {
+        const u = new URL(req.url, 'http://x');
+        if (u.pathname === '/exec' && req.method === 'POST') {           // 真的 Apps Script：/exec 處理完回 302 → echo 網址
+          lastBody = b; let key = ''; try { key = JSON.parse(b).key; } catch (e) {}
+          const out = key === 'OLD-KEY-0123456789012345678901234567' ? '{"ok":false,"code":"AUTH","message":"橋接金鑰錯誤"}'
+            : key === 'STILL-VALID-KEY-01234567890123456789' ? '{"ok":true,"data":{"limit":1,"usage":0}}' : '<html>Google 暫時錯誤</html>';
+          store.set(String(++seq), out); res.writeHead(302, { Location: '/echo?id=' + seq }); return res.end();
+        }
+        if (u.pathname === '/echo') {                                       // echo 網址只收 GET（非 GET 回 405 HTML）
+          if (req.method !== 'GET') { res.writeHead(405, { 'Content-Type': 'text/html' }); return res.end('<html>405</html>'); }
+          res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(store.get(u.searchParams.get('id')) || '');
+        }
+        res.writeHead(404); res.end();
+      });
+    });
+    await new Promise((ok) => fake.listen(0, '127.0.0.1', ok));
+    const W = 'http://127.0.0.1:' + fake.address().port + '/exec';
+    const envOf = (key) => { const f = path.join(tmp(), '.env'); fs.writeFileSync(f, `BRIDGE_URL="${W}"\nBRIDGE_KEY='${key}'\n`, { mode: 0o600 }); return f; };
+    const run = (f) => new Promise((ok) => { const c = spawn('sh', [path.join(ROOT, 'server/oldkey-check.sh'), f], { stdio: ['ignore', 'pipe', 'pipe'] }); procs.push(c); let o = ''; c.stdout.on('data', (x) => { o += x; }); c.stderr.on('data', (x) => { o += x; }); c.on('exit', (code) => ok({ code, o })); });
+    const a = await run(envOf('OLD-KEY-0123456789012345678901234567'));
+    eq('oldkey-check：跟著 302 拿到 AUTH → exit 0、印「舊金鑰已失效」、不印金鑰', [a.code, /舊金鑰已失效/.test(a.o), a.o.includes('OLD-KEY')], [0, true, false]);
+    eq('oldkey-check：金鑰真的有送到（POST 本體），引號已去掉', JSON.parse(lastBody).key, 'OLD-KEY-0123456789012345678901234567');
+    const b = await run(envOf('STILL-VALID-KEY-01234567890123456789'));
+    eq('oldkey-check：回 ok:true → exit 1、請 Eason 確認屬性', [b.code, /舊金鑰仍然有效/.test(b.o)], [1, true]);
+    const c = await run(envOf('WHATEVER-KEY-0123456789012345678901'));
+    eq('oldkey-check：其他回應 → exit 3、停下並印原文', [c.code, /其他回應/.test(c.o), /Google 暫時錯誤/.test(c.o)], [3, true, true]);
+    const nf = path.join(tmp(), '.env'); fs.writeFileSync(nf, 'PORT=1\n');
+    eq('oldkey-check：.env 沒有金鑰 → exit 2', (await run(nf)).code, 2);
+    // 對照：第 2 輪手冊的寫法（-X POST）跟著 302 仍用 POST，echo 回 405，什麼 JSON 都拿不到
+    const old = await new Promise((ok) => { const p2 = spawn('sh', ['-c', `printf '{"action":"bridge","key":"OLD-KEY-0123456789012345678901234567","op":"quota"}' | curl -sL -X POST -H 'Content-Type: text/plain' --data-binary @- "${W}"`], { stdio: ['ignore', 'pipe', 'ignore'] }); procs.push(p2); let o = ''; p2.stdout.on('data', (x) => { o += x; }); p2.on('exit', () => ok(o)); });
+    eq('對照：加 -X POST 的舊寫法拿不到 AUTH（證明 R1 的問題存在）', /AUTH/.test(old), false);
+    await new Promise((ok) => fake.close(ok)); }
 
   // ================= mirror.js 空庫保險：切換日 PRIMARY=mini 後、搬遷前，空庫不可蓋掉試算表 =================
   { const d = tmp(); makeSqliteStore(d).close();

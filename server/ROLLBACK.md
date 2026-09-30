@@ -84,7 +84,11 @@ node -e "const j=require(process.argv[1]+'/logs/mirror-last.json');console.log({
 
 `--all` 不設每輪上限，會重複掃描：把本機有圖、但還沒上 Drive 的簽名批次上傳（每批 ≤20 張），然後整份鏡像回試算表。
 
-**判準**（M3 語意，#14 S2）：**`--all` 結束時印出 `pending=0`，而且 `ok:true`，就算完成。**
+**判準**（M3 語意，#14 S2）：**`--all` 結束時印出 `pending=0`、`ok:true`，而且這一輪是在 READONLY 建立之後才完成的，就算完成。**
+
+```sh
+node -e "const fs=require('fs'),d=process.argv[1],j=require(d+'/logs/mirror-last.json'),r=fs.statSync(d+'/READONLY').mtimeMs;console.log((j.ok&&j.pending===0&&Date.parse(j.at)>r)?'✅ 最後一次鏡像成功、在 READONLY 之後':'❌ 還不算完成', {ok:j.ok,pending:j.pending,at:j.at,readonly:new Date(r).toISOString()})" "$DATA_DIR"
+```
 
 - `pending`＝本機有圖、還沒回填，是 mirror.js 還能處理的部分。**必須是 0**，不是 0 就再跑一次 `--all`。
 - `missing`＝已讀有 `sigId`，但本機找不到圖檔。
@@ -101,11 +105,20 @@ node -e "const j=require(process.argv[1]+'/logs/mirror-last.json');console.log({
   - 網路正常卻一直失敗：停在這裡回報，**不要跳到第 4 步**，否則 Mac mini 期間的資料會丟。
 - `另一輪鏡像還在跑`：每小時鏡像剛好在跑。等它結束（`logs/mirror.lock` 消失）再跑。
 - `mirror` 回 AUTH：代表有人已經把 GAS 的 `PRIMARY` 改成 `gas`。
-  - **只有在第 5 步還沒做**（前端仍指向 Mac mini）時，才可以請 Eason 暫時改回 `PRIMARY=mini` 再重跑。
-  - 改回之前，請 Eason 先確認試算表「操作紀錄」**列數沒有變**（等於第 1 步 `counts` 的 log 數字）。`PRIMARY` 曾經是 `gas` 的那段時間，還開著舊頁面（舊 config.js、指向 GAS）的人可能已經寫進 GAS；有新列就**不可以**改回 mini（鏡像會把它蓋掉），停下來找 MacBook 的 Claude。
-  - 沒有新列才改回：這時舊頁面寫入會回 MOVED，新頁面打的是 READONLY 的 Mac mini，所以是安全的。
-- `mirror` 被拒絕（`BAD_REQ`，例如「筆數比現有少」「少一半以上」「全空」）：GAS 的防呆擋下了這次覆寫。mirror.js 沒有可以傳下去的 `--force`，重跑也一樣。**停下來回報，不進第 3 步**：把 `error` 原文、第 1 步 `counts`、試算表四個分頁的列數貼給 MacBook 的 Claude 判斷（例如試算表被人手動加了列，或 Mac mini 庫不對）。Mac mini 維持 READONLY，資料不會丟。
-  - 第 5 步已經做了就**禁止**這樣做（鐵則 3），改照第 6 步〈失敗怎麼辦〉處理。
+  - **第 5 步已經做了**：**禁止**改回 mini（鐵則 3），改照第 6 步〈失敗怎麼辦〉處理。
+  - **第 5 步還沒做**（前端仍指向 Mac mini）：可以請 Eason 暫時改回 `PRIMARY=mini` 再跑 `--all`，但成功與否**以 Mac mini 這邊為準**：
+    - 通過＝上面那段判準印出 ✅：`mirror-last.json` 是 `ok:true`、`pending=0`，而且 `at` 晚於 READONLY 建立時間。
+    - 被 GAS 拒絕（`BAD_REQ`，例如「操作紀錄筆數比現有少」，這是 M2 b998db9 的防呆）＝`PRIMARY` 是 `gas` 的那段時間，還開著舊頁面的人已經寫進 GAS。**不可以**想辦法硬蓋過去，照下一項 BAD_REQ 處理。
+    - 為什麼不用「試算表列數＝`counts`」判斷：試算表只到**上一次鏡像成功**為止，Mac mini 的 `counts` 是最新的，只要回退前有人簽名，兩邊本來就不相等（誤擋）；反過來，Mac mini 有 k 筆還沒鏡像、GAS 剛好又被寫進 k 筆時，列數會巧合相等（誤放，鏡像會把 GAS 那 k 筆蓋掉）。
+    - 補一道人工確認（改回 mini 之前）：Mac mini 的 Claude 印出 `logs/mirror.log` 最後一行「鏡像完成」的時間；Eason 看試算表「操作紀錄」最後幾列，**有任何一列的時間晚於那個時間**，就代表 GAS 被寫進了新資料，不可以改回 mini，停下來找 MacBook 的 Claude。
+- `mirror` 被拒絕（`BAD_REQ`，例如「筆數比現有少」「少一半以上」「全空」）：GAS 的防呆擋下了這次覆寫。mirror.js 沒有可以傳下去的 `--force`，重跑也一樣。
+  - **停下來回報，不進第 3 步**：把 `error` 原文、第 1 步 `counts`、試算表四個分頁的列數貼給 MacBook 的 Claude 判斷（例如試算表被人手動加了列，或 Mac mini 庫不對）。Mac mini 維持 READONLY，資料不會丟。
+  - 如果討論後決定**不回退了**（前端仍指向 Mac mini、GAS 仍是 `PRIMARY=mini`），要把 Mac mini 恢復成可寫，否則全員不能簽名會一直拖下去：
+    ```sh
+    rm "$DATA_DIR/READONLY"
+    job_on com.dzy.bulletin.mirror
+    ```
+    確認：`curl -s -X POST http://127.0.0.1:8793/ -H 'Content-Type: text/plain' --data '{"action":"ack"}'` 回的不再是 MOVED（沒帶 token 會回 AUTH，這是對的）；Eason 在 LINE 說明可以簽名了。
 
 ## 3. 硬關卡：確認簽名檔 id 都是 Drive id、每小時鏡像已停
 
@@ -123,7 +136,7 @@ node -e "const{DatabaseSync}=require('node:sqlite');const d=new DatabaseSync(pro
 - 筆數比較多：回第 2 步。
 
 **3-2　試算表（Eason）**：打開主試算表，確認三件事。
-- 四個分頁「公告」「同仁」「已讀」「操作紀錄」的列數（扣掉表頭）＝第 1 步 `counts` 的四個數字。
+- 四個分頁「公告」「同仁」「已讀」「操作紀錄」的列數（扣掉表頭）＝第 1 步 `counts` 的四個數字。這裡可以比列數，是因為第 2 步的判準已確認最後一次鏡像成功、而且在 READONLY 之後（之後 Mac mini 不再有寫入），試算表應與 Mac mini 完全相同；第 2 步判準還沒 ✅ 就不要拿列數判斷（理由見第 2 步 AUTH 那一項）。
 - 「已讀」分頁最後 10 列（Mac mini 期間簽的）的「簽名檔 id」欄，全部是 **Drive id**（一串英數、沒有副檔名）。
   - 不可以是 `P-…_S-….png` 這種本機檔名。
   - 只有 3-1 清單裡的那幾筆可以是空白。
@@ -235,6 +248,7 @@ curl -s "https://dzy-bulletin.github.io/$V" | grep -E "VERSION|GAS_URL"
      4. 上方工具列的函式下拉選單選 `mirrorHeal`，按「執行」。
      5. 第一次執行會跳出「需要授權」視窗：選自己的帳號 →「允許」。
      6. 下方「執行紀錄」會出現一行「鏡像修復：clean」「鏡像修復：forward」或「鏡像修復：restore」，三種都是正常結果。截圖給 MacBook 的 Claude。
+     7. 如果印的是「鏡像進行中，稍後再試」（結果 `busy`）：代表有一輪鏡像還拿著鎖（例如 Mac mini 死前送出的最後一輪還在 Google 那邊跑完）。等 1 分鐘再按一次「執行」，直到出現上面三種之一。
    - 執行完回試算表檢查分頁名稱：四個正式分頁「公告」「同仁」「已讀」「操作紀錄」都在，沒有 `__上一輪`。只剩 `__鏡像中` 無妨。
 2. **Eason**：GAS `PRIMARY=gas`（第 4 步）。
 3. **MacBook 的 Claude**：前端改回（第 5 步）。

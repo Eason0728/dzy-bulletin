@@ -14,7 +14,19 @@ const BRIDGE_MSG = { BRIDGE: 'Google 雲端暫時連不上，請稍後再試', B
 function bridgeErr(code, detail) { const e = new Error(BRIDGE_MSG[code]); e.code = code; e.detail = detail || ''; return e; }
 
 function makeBridge(url, key) {
+  // 回應不是 JSON 時自動重試一次（2026-09-30 切換當天實測）：madesiaosinla 帳號的 Apps Script 排隊 20～56 秒，
+  // 等超過約 30 秒時 Google 偶爾回雲端硬碟的「找不到網頁」404 頁，而不是結果（約兩成）。金鑰錯會回 JSON 的 AUTH，不會走到這裡。
+  // 逾時不重試（已經等滿 timeoutSec，再等一輪前端早就放棄）；export 不重試（EXPORT_ONCE 只能用一次，GAS 可能已執行並刪掉它）。
+  // upload／sigs put 若第一次其實已在 GAS 完成、只是回應丟了，重試會多一個沒被公告引用的檔（不分享、不公開），可接受。
   async function call(op, payload, timeoutSec) {
+    try { return await once(op, payload, timeoutSec); }
+    catch (e) {
+      if (!e.notJson || op === 'export') throw e;
+      console.error('bridge ' + op + ': 回應不是 JSON，重試一次');
+      return once(op, payload, timeoutSec);
+    }
+  }
+  async function once(op, payload, timeoutSec) {
     if (!url || !key) throw bridgeErr('BRIDGE', '未設定 Google 橋接（BRIDGE_URL／BRIDGE_KEY）');
     const body = JSON.stringify(Object.assign({ action: 'bridge', key, op }, payload || {}));
     let text;
@@ -27,7 +39,7 @@ function makeBridge(url, key) {
       throw bridgeErr(timeout ? 'BRIDGE_TIMEOUT' : 'BRIDGE', op + ': ' + (e && e.message));
     }
     let j;
-    try { j = JSON.parse(text); } catch (e) { throw bridgeErr('BRIDGE', op + ': 回應不是 JSON'); }
+    try { j = JSON.parse(text); } catch (e) { const be = bridgeErr('BRIDGE', op + ': 回應不是 JSON'); be.notJson = true; throw be; }
     if (!j.ok) {
       if (BUSINESS.indexOf(j.code) >= 0 && j.message) throw businessErr(j.code, j.message);
       throw bridgeErr('BRIDGE', op + ': ' + (j.code || '') + ' ' + (j.message || ''));

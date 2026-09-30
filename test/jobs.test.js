@@ -897,10 +897,11 @@ async function main() {
     eq('BRIDGE_URL 錯：同仁照樣能簽名', ack.json.ok, true);
     eq('/health 不帶錯誤原文', /127\.0\.0\.1|BRIDGE|fetch/.test(JSON.stringify(hr.json)), false);
 
-    // 同一輪不重試：sigs 那次 Google 回 500 → 只打 1 次 sigs，下一輪才補
+    // Google 回一次非 JSON（500 錯誤頁）→ 橋接層自動重試一次就成功（2026-09-30 切換當天發現的 404 頁問題）；
+    // 「Drive 端整批失敗、同一輪不重試」由其他 null 情境的測試驗
     FG.st.hits = {}; FG.st.failNext = 'sigs';
     r = await runJob('mirror.js', [], JOB);
-    eq('sigs 失敗：同一輪只打 1 次 sigs、鏡像照做、pending 1', [r.code, FG.st.hits.sigs, FG.st.hits.mirror, last(dir, 'mirror-last.json').pending], [1, 1, 1, 1]);
+    eq('sigs 回一次非 JSON：橋接重試一次成功（sigs 2 次）、鏡像照做、pending 0', [r.code, FG.st.hits.sigs, FG.st.hits.mirror, last(dir, 'mirror-last.json').pending], [0, 2, 1, 0]);
     r = await runJob('mirror.js', [], JOB);
     eq('下一輪補上：pending 0、fails 歸 0', [r.code, last(dir, 'mirror-last.json').pending, last(dir, 'mirror-last.json').fails], [0, 0, 0]);
 

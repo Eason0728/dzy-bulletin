@@ -34,7 +34,7 @@ const PNG = (s) => 'data:image/png;base64,' + Buffer.concat([PNG_MAGIC, Buffer.f
 function freePort() { return new Promise((ok, no) => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => ok(p)); }); s.on('error', no); }); }
 function runJob(script, args, env) {
   return new Promise((ok) => {
-    const e = Object.assign({ PATH: process.env.PATH, HOME: env.HOME || tmp('dzyb-home-') }, env);
+    const e = Object.assign({ PATH: process.env.PATH, DZYB_NO_DOTENV: '1', HOME: env.HOME || tmp('dzyb-home-') }, env);
     const p = spawn(process.execPath, [path.join(ROOT, 'server', script)].concat(args || []), { env: e, stdio: ['ignore', 'pipe', 'pipe'] });
     procs.push(p);
     let out = '', err = '';
@@ -44,7 +44,7 @@ function runJob(script, args, env) {
 }
 async function startServer(dir) {   // 正式模式（非 E2E）、沒有橋接：只測資料層與登入憑證
   const port = await freePort();
-  const p = spawn(process.execPath, [path.join(ROOT, 'server/index.js')], { env: { PATH: process.env.PATH, HOME: tmp('dzyb-home-'), PORT: String(port), DATA_DIR: dir, ALLOW_ORIGIN: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const p = spawn(process.execPath, [path.join(ROOT, 'server/index.js')], { env: { PATH: process.env.PATH, DZYB_NO_DOTENV: '1', HOME: tmp('dzyb-home-'), PORT: String(port), DATA_DIR: dir, ALLOW_ORIGIN: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
   procs.push(p);
   let out = '';
   p.stdout.on('data', (c) => { out += c; }); p.stderr.on('data', () => {});
@@ -384,7 +384,7 @@ async function main() {
     const nh = await runJob('latency.js', ['--hours'], {});
     eq('latency.js --hours 沒接數字 → exit 2、不丟 RangeError', [nh.code, /RangeError/.test(nh.err)], [2, false]);
     // 真伺服器的每請求紀錄格式要能被 latency.js 讀到（index.js 的格式一改這裡就會紅）
-    const p = spawn(process.execPath, [path.join(ROOT, 'server/index.js')], { env: { PATH: process.env.PATH, HOME: tmp('dzyb-home-'), PORT: String(await freePort()), DATA_DIR: path.join(tmp(), 'lat'), ALLOW_ORIGIN: '' }, stdio: ['ignore', 'pipe', 'ignore'] });
+    const p = spawn(process.execPath, [path.join(ROOT, 'server/index.js')], { env: { PATH: process.env.PATH, DZYB_NO_DOTENV: '1', HOME: tmp('dzyb-home-'), PORT: String(await freePort()), DATA_DIR: path.join(tmp(), 'lat'), ALLOW_ORIGIN: '' }, stdio: ['ignore', 'pipe', 'ignore'] });
     procs.push(p);
     let out = ''; p.stdout.on('data', (c) => { out += c; });
     await new Promise((ok) => { const t = setInterval(() => { if (/啟動/.test(out)) { clearInterval(t); ok(); } }, 20); });

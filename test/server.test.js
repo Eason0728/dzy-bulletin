@@ -24,6 +24,7 @@ function freePort() {
 function cleanEnv(extra) {
   const e = Object.assign({}, process.env);
   ['E2E', 'ALLOW_ORIGIN', 'BRIDGE_URL', 'BRIDGE_KEY', 'MAX_INFLIGHT_MB', 'BRIDGE_FAKE_DELAY_MS', 'DZYB_NODE_VERSION', 'PORT', 'DATA_DIR'].forEach((k) => delete e[k]);
+  e.DZYB_NO_DOTENV = '1';
   return Object.assign(e, extra);
 }
 // 啟動伺服器；回傳 { port, dir, out(), stop() }。啟動失敗（程序結束）時回傳 { code, stderr }

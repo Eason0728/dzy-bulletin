@@ -93,7 +93,7 @@ function seedDb(dir, nSig, noOld) {   // noOld：不放搬遷來的那筆（它�
 // 子程序：跑一支 server/*.js（只帶指定的環境變數＋PATH／HOME，不繼承 BRIDGE_* 等）
 function runJob(script, args, env) {
   return new Promise((ok) => {
-    const e = Object.assign({ PATH: process.env.PATH, HOME: env.HOME || tmp('dzyb-home-'), MIRROR_BACKOFF_MS: '0' }, env);
+    const e = Object.assign({ PATH: process.env.PATH, DZYB_NO_DOTENV: '1', HOME: env.HOME || tmp('dzyb-home-'), MIRROR_BACKOFF_MS: '0' }, env);
     const p = spawn(process.execPath, [path.join(ROOT, 'server', script)].concat(args || []), { env: e, stdio: ['ignore', 'pipe', 'pipe'] });
     procs.push(p);
     let out = '', err = '';
@@ -103,7 +103,7 @@ function runJob(script, args, env) {
 }
 async function startServer(dir, extra) {
   const port = await freePort();
-  const p = spawn(process.execPath, [path.join(ROOT, 'server/index.js')], { env: Object.assign({ PATH: process.env.PATH, HOME: tmp('dzyb-home-'), PORT: String(port), DATA_DIR: dir }, extra || {}), stdio: ['ignore', 'pipe', 'pipe'] });
+  const p = spawn(process.execPath, [path.join(ROOT, 'server/index.js')], { env: Object.assign({ PATH: process.env.PATH, DZYB_NO_DOTENV: '1', HOME: tmp('dzyb-home-'), PORT: String(port), DATA_DIR: dir }, extra || {}), stdio: ['ignore', 'pipe', 'pipe'] });
   procs.push(p);
   let out = '';
   p.stdout.on('data', (c) => { out += c; }); p.stderr.on('data', () => {});

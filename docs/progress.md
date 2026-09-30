@@ -65,3 +65,10 @@
 
 - GitHub：repo `dzy-bulletin/dzy-bulletin.github.io`（組織 dzy-bulletin，public），網址 **https://dzy-bulletin.github.io**（2026-09-29 由 Eason0728/dzy-bulletin 轉移改名；舊網址已 404）
 - 打卡同步來源 ID 放 `gas/Config.local.js`（gitignore，只經 clasp 推送）
+
+## 2026-09-30　後端搬到 Mac mini（方案 C）已上線
+- 19:54 正式切換：前端 `GAS_URL` 改指 Mac mini 的 Tailscale Funnel（網址只在 `js/config.js`），v0.6.0；20:52 v0.6.1（橋接非 JSON 自動重試一次、前端拉長經橋接動作的等待）。
+- Apps Script 改當「Google 橋接」（@28，指令碼屬性 `PRIMARY=mini`）：附件、打卡名單、每小時鏡像、每日備份、附件備份（fileget／filelist）。
+- Mac mini：程式 `~/dzy-bulletin`、資料 `~/dzy-bulletin-data`（`bulletin.db`、`sigs/`、`files/`、`backups/`、`logs/`），DEPLOY 附錄 A 路線（FileVault On、LaunchDaemon system domain、Homebrew tailscaled）。
+- 監看：排程守門 `bulletinCore_`（07:30／09:30／10:30）＋指揮台艦隊「佈告欄伺服器」格；紅燈寄信。
+- 待辦：第 9 步觀察（排程 `dzyb-step9-observe` 10/01 10:45）、第 10 步回退演練（需 Eason）、第 11 步收尾（排程 `dzyb-step11-closeout` 10/08 09:00）。

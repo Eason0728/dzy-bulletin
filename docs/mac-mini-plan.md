@@ -1,7 +1,7 @@
 # 後端搬到 Mac mini 規劃（方案 C）
 
 - 版本：v1 / 2026-09-30
-- 狀態：**等 Eason 確認**
+- 狀態：**已實施（2026-09-30 19:54 正式切換到 Mac mini）**，實作與審查紀錄見 issue #5～#11、#18；部署、切換、回退手冊在 `server/DEPLOY.md`、`server/CUTOVER.md`、`server/ROLLBACK.md`
 - 已定案（2026-09-30）：後端走 Mac mini；Mac mini 已在公司開機連網；附件繼續放 Google 雲端硬碟；對外連線用 Tailscale Funnel；暫不加 UPS。
 
 ## 1. 為什麼

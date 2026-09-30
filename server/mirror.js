@@ -5,12 +5,15 @@
  *      M2 契約：saveSigs 逐張處理，失敗的那張回 null——拿到 id 的照常回填，null 的留到下一輪只重傳它（不整批作廢，#14 B1）。
  *      壞圖的判定改成直接驗證、不從上傳成敗推測（#14 第 3 輪，Eason 拍板）：
  *        a. 本機先驗圖：0 位元組、開頭不是 PNG（89 50 4E 47）或 JPEG（FF D8 FF）→ 直接算壞圖（本機檔損毀），不上傳。
- *        b. Drive 拒收：同一批有別張成功＝Drive 當下正常；整批都 null 時先傳一張內建的極小測試圖（_canary.png，每次執行最多一張）：
- *           測試圖成功＝Drive 正常 → 這批失敗的每張算 1 次（每小時模式：同一張兩次計數至少隔 30 分鐘、一次執行最多 1 次，3 次成壞圖；
- *           --all：Drive 已被證明正常，直接判成壞圖）；測試圖也失敗＝Drive 故障 → 不計數、這一輪結束回填、ok:false（--all exit 1）。
- *        「其他時候有沒有成功」的間接證據已拿掉：測試圖是同一時間的直接證據，回退時（先 READONLY、不再有新簽名）也拿得到。
- *      --all 最後把「Drive 拒收」的壞圖再帶上重試一次（不計數）：成功就回填、失敗維持壞圖，減少好圖被冤枉。
- *      註：測試圖每次會在簽名資料夾留一個 _canary.png（橋接沒有刪簽名圖的 op）；只在整批失敗時才傳，量很小。
+ *        b. Drive 拒收（證據綁在每一張圖上，#14 第 4 輪）：一批裡回 null 的，先確認 Drive 當下正常——同批有成功，或整批 null 時
+ *           這一批自己傳一張內建的極小測試圖（_canary.png；**不沿用**到後面的批次，每次執行最多 10 張，用完當 Drive 不穩）——
+ *           再把 null 的逐張單獨重傳：成功就回填；單獨重傳仍失敗的才算這張 1 次（每小時模式：同一張兩次計數至少隔 30 分鐘、
+ *           一次執行最多 1 次，3 次成壞圖；--all 直接判壞）。單獨重傳連續 2 張失敗就再傳一次測試圖，失敗＝Drive 故障、那張不計。
+ *           測試圖失敗＝Drive 故障 → 不計數、這一輪結束回填、ok:false（--all exit 1）。
+ *      --all 收尾把所有「Drive 拒收」的壞圖（含這次剛判壞的）先傳測試圖確認、再重試一次（不計數）：成功就回填、失敗維持壞圖；
+ *      測試圖失敗就 ok:false——Drive 中途掛掉時不會印出 pending=0 讓人往下走。
+ *      已知限制：寫到一半就截斷的圖（檔頭正常）本機驗不出來、Drive 也照收，Drive 上的圖跟本機副本一樣是壞的。
+ *      註：測試圖每次會在簽名資料夾留一個 _canary.png（橋接沒有刪簽名圖的 op）；只在需要確認 Drive 時才傳，量很小。
  *   2. 鏡像：Mac mini 正本整份寫回試算表四分頁（走 `mirror` op；Apps Script 先寫暫存分頁再換名，見 gas/Store.js）。
  *      四份資料＋待回填清單在同一個讀交易裡取（同一個快照，#14 S1），COMMIT 之後才呼叫橋接（不在交易開著時等 Google，免得擋住 checkpoint）。
  *      已讀帶 driveSigId（Drive id），試算表「簽名檔 id」只寫它、還沒回填的留空——回退到 GAS 後 readSig(id) 才讀得到。
@@ -43,6 +46,7 @@ const SIGS_MAX = 20;                                        // 與 gas/Code.js S
 const SIG_BAD_AFTER = 3;                                    // Drive 拒收幾次算壞圖（每小時模式）
 const LAST = 'mirror-last.json', STATE = 'sig-state.json';
 const LIST_MAX = 50;                                        // 結果檔與警告最多列幾筆
+const CANARY_MAX = 10;                                      // 每次執行最多傳幾張測試圖
 const FAIL_GAP_MS = 30 * 60e3;                              // 同一張兩次失敗計數至少隔 30 分鐘（每小時模式）
 // 測試圖：1×1 的合法 PNG
 const CANARY = { name: '_canary', data: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=' };
@@ -116,14 +120,15 @@ async function runMirror(o) {
       counted.add(k); fails[k] = { n: o.all ? SIG_BAD_AFTER : f.n + 1, at: now };
       return true;
     };
-    // 測試圖：每次執行最多傳一張，結果沿用（'ok'／'fail'；橋接本身出錯就丟出去，當作橋接錯誤）
-    let canary = null;
+    // 測試圖：**不沿用**——每次需要確認 Drive 狀態就重傳一張（上一批的「成功」不能當這一批的證據，#14 B4）。
+    // 每次執行最多 CANARY_MAX 張，用完就當 Drive 不穩（不再判任何壞圖、ok:false、--all exit 1）。橋接本身出錯就丟出去。
+    let canaries = 0;
     const probe = async () => {
-      if (canary) return canary;
+      if (canaries >= CANARY_MAX) { res.canary = 'limit'; return 'limit'; }
+      canaries++; res.canaries = canaries;
       const out = await bridge.call('sigs', { put: [CANARY] }, 120);
-      canary = out && Array.isArray(out.ids) && typeof out.ids[0] === 'string' && out.ids[0] ? 'ok' : 'fail';
-      res.canary = canary;
-      return canary;
+      res.canary = out && Array.isArray(out.ids) && typeof out.ids[0] === 'string' && out.ids[0] ? 'ok' : 'fail';
+      return res.canary;
     };
     // 只寫 driveSigId 一欄；已有 id 的不覆蓋、sigId 變了（上傳這幾分鐘裡被 load() 重建）的不套用
     const upd = db.prepare("UPDATE reads SET driveSigId = ? WHERE postId = ? AND staffId = ? AND sigId = ? AND driveSigId = ''");
@@ -166,36 +171,64 @@ async function runMirror(o) {
     };
     let pick = J.rows(db, TODO_SQL).filter((r) => !unsaved[keyOf(r)] && !isBad(r) && hasFile(r) && !isDamaged(r));
     if (budget !== Infinity) pick = pick.slice(0, budget);
+    // Drive 故障（測試圖失敗／用完上限）：不計數、結束回填、ok:false
+    const driveDown = (why) => { res.driveDown = true; errs.push(why); stop = true; };
+    const downMsg = (c, what) => c === 'limit'
+      ? `簽名回填：${what}，測試圖已傳滿 ${CANARY_MAX} 張仍無法確認——Drive 不穩，未計入壞圖，稍後再跑`
+      : `簽名回填：${what}，測試圖也上傳失敗——Drive 暫時故障，未計入壞圖，稍後再跑`;
+    // 一批上傳後有 null 的：逐張單獨重傳（一次一張）。Drive 當下正常的直接證據＝緊接在前的一次成功（同批有成功、測試圖成功、
+    // 或前一張單獨重傳成功）；單獨重傳仍失敗才算這張 1 次。連續 2 張單獨重傳失敗 → 再傳測試圖確認，失敗就當 Drive 故障、這張不計。
+    const retrySingly = async (items) => {
+      const good = [];
+      let consec = 0;
+      for (const x of items) {
+        if (stop) break;
+        let id;
+        try { id = (await put([x]))[0]; } catch (e) { errs.push('簽名回填：' + J.errText(e)); stop = true; break; }
+        if (id) { good.push({ r: x.r, id }); done.add(keyOf(x.r)); consec = 0; continue; }
+        consec++;
+        if (consec >= 2) {
+          let c; try { c = await probe(); } catch (e) { errs.push('簽名回填：' + J.errText(e)); stop = true; break; }
+          if (c !== 'ok') { driveDown(downMsg(c, '單獨重傳連續失敗')); break; }
+          consec = 0;
+        }
+        res.failed++;                                        // Drive 正常卻拒收這張（單獨重傳也失敗）
+        countFail(x.r);
+        rejected.push(label(x.r) + `（${(fails[keyOf(x.r)] || {}).n || 0}/${SIG_BAD_AFTER}）`);
+      }
+      return good;
+    };
     for (let i = 0; i < pick.length && !stop; i += batch) {
       const part = readPart(pick.slice(i, i + batch));
       if (o.all) release.touch();                            // --all 可能跑很久：每批更新鎖檔 mtime，不被當成殘留鎖
       let ids;
       try {
         ids = await put(part);
-        if (!ids.some(Boolean) && (await probe()) !== 'ok') {   // 整批 null：先用測試圖驗 Drive
-          res.driveDown = true; res.failed += part.length;
-          errs.push(`簽名回填：這批 ${part.length} 張全部失敗，測試圖也上傳失敗——Drive 暫時故障，未計入壞圖，稍後再跑`);
-          stop = true; break;
+        if (!ids.some(Boolean)) {                            // 整批 null：這一批自己傳測試圖驗 Drive
+          const c = await probe();
+          if (c !== 'ok') { driveDown(downMsg(c, `這批 ${part.length} 張全部失敗`)); break; }
         }
       } catch (e) { errs.push('簽名回填：' + J.errText(e)); stop = true; break; }   // 橋接出錯：同一輪不重試，剩下的留給下一輪
-      const good = [];
-      part.forEach((x, k) => {
-        if (ids[k]) { good.push({ r: x.r, id: ids[k] }); done.add(keyOf(x.r)); return; }
-        res.failed++;                                        // Drive 正常（同批有成功或測試圖成功）卻拒收這張
-        countFail(x.r);
-        rejected.push(label(x.r) + `（${(fails[keyOf(x.r)] || {}).n || 0}/${SIG_BAD_AFTER}）`);
-      });
-      if (writeIds(good)) res.uploaded += good.length; else stop = true;
+      const good = part.map((x, k) => (ids[k] ? { r: x.r, id: ids[k] } : null)).filter(Boolean);
+      good.forEach((g) => done.add(keyOf(g.r)));
+      const nulls = part.filter((x, k) => !ids[k]);
+      if (writeIds(good)) res.uploaded += good.length; else { stop = true; break; }
+      if (nulls.length) { const g2 = await retrySingly(nulls); if (writeIds(g2)) res.uploaded += g2.length; else stop = true; }
       saveState();
     }
-    // 1c. --all 收尾：「Drive 拒收」的壞圖（這次執行之前就標壞的）再重試一次、不計數——成功就回填，失敗維持壞圖
+    // 1c. --all 收尾：所有「Drive 拒收」的壞圖（含這次執行剛判壞的）先傳測試圖確認 Drive 正常，再重試一次、不計數——
+    //     成功就回填，失敗維持壞圖；測試圖失敗＝Drive 故障（ok:false、exit 1），不能印出 pending=0 就讓人往下走
     if (o.all && !stop) {
-      const again = J.rows(db, TODO_SQL).filter((r) => isBad(r) && !counted.has(keyOf(r)) && !unsaved[keyOf(r)] && hasFile(r) && !isDamaged(r));
+      const again = J.rows(db, TODO_SQL).filter((r) => isBad(r) && !unsaved[keyOf(r)] && hasFile(r) && !isDamaged(r));
+      if (again.length) {
+        let c; try { c = await probe(); } catch (e) { errs.push('壞圖重試：' + J.errText(e)); c = null; stop = true; }
+        if (c && c !== 'ok') driveDown(downMsg(c, `收尾重試 ${again.length} 張壞圖前`));
+      }
       for (let i = 0; i < again.length && !stop; i += batch) {
         const part = readPart(again.slice(i, i + batch));
         release.touch();
         let ids;
-        try { ids = await put(part); } catch (e) { warns.push('壞圖重試：' + J.errText(e)); break; }   // 重試失敗不影響本輪結果
+        try { ids = await put(part); } catch (e) { errs.push('壞圖重試：' + J.errText(e)); break; }
         const good = part.map((x, k) => (ids[k] ? { r: x.r, id: ids[k] } : null)).filter(Boolean);
         if (good.length && writeIds(good)) { res.uploaded += good.length; res.recovered = (res.recovered || 0) + good.length; }
         saveState();

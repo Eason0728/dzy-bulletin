@@ -41,7 +41,10 @@ function makeBridge(url, key) {
       upload: (name, mime, b64) => call('upload', { name, mime, data: b64 }, 180),
       share: async (ids) => { await call('share', { ids }, 90); },
       revoke: async (ids) => { try { await call('revoke', { ids }, 90); } catch (e) { console.error('revoke: ' + (e.detail || e.message)); } },
-      quota: () => call('quota', {}, 30)
+      quota: () => call('quota', {}, 30),
+      // M7（#18）附件備份：分段讀位元組（每段 ≤ 8MB、逾時 120 秒）、列出附件資料夾（含垃圾桶）。mirror.js 直接用 call(op) 打同樣的 op
+      get: (id, off, len) => call('fileget', { id, off, len }, 120),
+      list: (pageToken) => call('filelist', { pageToken: pageToken || '' }, 120)
     },
     clockSrc: { read: () => call('clock', {}, 90) }
   };
@@ -50,8 +53,8 @@ function makeBridge(url, key) {
 // 測試用：不連 Google 的假橋接（附件存在記憶體）。delayMs＞0 時每個橋接動作都延遲（阻塞測試用）；calls() 回傳各動作呼叫次數；
 // failAll＝每個動作都丟出帶 code:'AUTH' 的錯誤（模擬 Apps Script 回「橋接金鑰錯誤」，驗 index.js 不會原樣回傳）。
 function makeFakeBridge(delayMs, failAll) {
-  const blobs = {}; let seq = 0; let clock = { rows: [], errors: [], sources: ['gf', 'cf', 'js'], counts: {} };
-  const calls = { upload: 0, share: 0, revoke: 0, quota: 0, clock: 0 };
+  const blobs = {}, trash = {}, names = {}; let seq = 0; let clock = { rows: [], errors: [], sources: ['gf', 'cf', 'js'], counts: {} };
+  const calls = { upload: 0, share: 0, revoke: 0, quota: 0, clock: 0, fileget: 0, filelist: 0 };
   const typeOf = (n) => ({ pdf: 'pdf', doc: 'docx', docx: 'docx', xls: 'xlsx', xlsx: 'xlsx' })[String(n).split('.').pop().toLowerCase()] || null;
   const wait = () => (delayMs > 0 ? new Promise((ok) => setTimeout(ok, delayMs)) : Promise.resolve());
   const op = (name, fn) => async (...a) => {
@@ -61,11 +64,25 @@ function makeFakeBridge(delayMs, failAll) {
   };
   return {
     kind: 'fake',
-    call: async () => { throw new Error('fake'); },
+    // M7：fileget／filelist 用 blobs（上架中）＋trash（revoke 丟進垃圾桶的，仍讀得到，比照 Drive 30 天內）
+    call: async (name, p) => {
+      if (name !== 'fileget' && name !== 'filelist') throw new Error('fake');
+      return op(name, () => {
+        const all = Object.assign({}, trash, blobs), meta = (id) => {
+          const m = /^data:([^;]+);base64,(.*)$/.exec(all[id]), buf = Buffer.from(m[2], 'base64');
+          return { buf, file: { id, name: names[id] || id, mime: m[1], size: buf.length,
+            md5: require('crypto').createHash('md5').update(buf).digest('hex'), trashed: !blobs[id] } };
+        };
+        if (name === 'filelist') return { files: Object.keys(all).map((id) => meta(id).file), nextPageToken: '' };
+        if (!all[p.id]) return { file: null };
+        const { buf, file } = meta(p.id), off = Number(p.off) || 0, len = Number(p.len) || 0, end = Math.min(buf.length, off + len);
+        return { file, off, data: buf.subarray(off, end).toString('base64'), eof: end >= buf.length };
+      })();
+    },
     files: {
-      upload: op('upload', (name, mime, b64) => { const id = 'F-' + (++seq); blobs[id] = 'data:' + mime + ';base64,' + b64; return { id, name, type: typeOf(name), size: Math.floor(b64.length * 3 / 4) }; }),
+      upload: op('upload', (name, mime, b64) => { const id = 'F-' + (++seq); blobs[id] = 'data:' + mime + ';base64,' + b64; names[id] = name; return { id, name, type: typeOf(name), size: Buffer.from(b64, 'base64').length }; }),   // size 與 Drive 一樣回實際位元組數（M7 驗 meta.size）
       share: op('share', (ids) => { if (ids.indexOf('F-GONE') >= 0) { const e = new Error('找不到附件檔案'); e.code = 'BAD_REQ'; e.business = true; throw e; } }),   // F-GONE＝模擬 Drive 上已刪除的附件
-      revoke: op('revoke', (ids) => ids.forEach((i) => delete blobs[i])),
+      revoke: op('revoke', (ids) => ids.forEach((i) => { if (blobs[i]) trash[i] = blobs[i]; delete blobs[i]; })),   // 丟垃圾桶：blobOf 看不到、fileget 仍讀得到
       quota: op('quota', () => ({ limit: 16106127360, usage: 7935000000 }))
     },
     clockSrc: { read: op('clock', () => JSON.parse(JSON.stringify(clock))) },

@@ -7,6 +7,16 @@
  *      四份資料＋待回填清單在同一個讀交易裡取（同一個快照，#14 S1），COMMIT 之後才呼叫橋接（不在交易開著時等 Google，免得擋住 checkpoint）。
  *      已讀帶 driveSigId（Drive id），試算表「簽名檔 id」只寫它、還沒回填的留空——回退到 GAS 後 readSig(id) 才讀得到。
  *   先回填再鏡像：這一輪剛拿到的 Drive id 就跟著這一輪寫進試算表。
+ *   3. 附件補齊（M7，#18 D3～D6）：Mac mini 保留公告附件的位元組（DATA_DIR/files/，格式見 server/files-local.js），只當備份。
+ *      待補清單每輪從檔案系統算出來、不另存：① files/*.json 有 meta 沒位元組 ② 公告目前引用、本機沒 meta 的（當場補建 meta）
+ *      ③ 每天第一輪（台北日期換了）用 `filelist` 掃附件資料夾（含垃圾桶）補建 meta；扣掉位元組已在的與 logs/file-skip.json 列的。
+ *      逐檔用 `fileget` 分段下載（每段 ≤ 8MB）到 .tmp，收齊後 md5（Drive 的 md5Checksum）與 size 都對才 rename；每輪上限 10 個檔或 100MB。
+ *      與鏡像完全隔開（D4）：第 3 步自己 try/catch，**不寫進 errs**，不影響 ok／pending／fails（回退門檻與守門的鏡像燈號），
+ *      結果只寫在 mirror-last.json 的 files：{ ok, count, bytes, pending, stale, fetched, failed, skipped, lastScanAt, … }。
+ *      失敗語意（D5，與上面簽名的簡化設計一致）：橋接錯誤、fileget 回 file:null（Drive 找不到）、md5／size 不符，一律暫時故障——
+ *      刪 .tmp、留 pending、同一輪不重試、剩下的檔照常繼續；程式永遠不判定放棄。要放棄由人寫進 logs/file-skip.json＝{ "<fileId>": "原因" }
+ *      （格式同 sig-skip.json；格式錯就 files.ok=false、這一輪不略過任何一個），略過的另計 skipped、不轉黃。
+ *      /health：files.stale（待補超過 24 小時）> 0 → 黃；pending > 0 但 stale = 0 是正常排隊，不轉燈。
  *
  * 壞圖只由本機判定（#14 第 5 輪設計簡化，Eason 拍板的「直接驗證」）：
  *   0 位元組；PNG 開頭不是 89 50 4E 47 或結尾沒有 IEND chunk；JPEG 開頭不是 FF D8 FF 或結尾不是 FF D9 → 本機檔損毀，計入 bad、不上傳。
@@ -34,12 +44,18 @@
  * 用法：node server/mirror.js          （launchd 每小時）
  *       node server/mirror.js --all    （回退前手動跑：不設每輪上限、重複掃描；完成條件是印出 pending=0 並 exit 0，見 #10）
  *       node server/mirror.js --force  （還原後、確認試算表可被覆寫時手動跑：越過筆數防呆，並帶 force:true 給 Apps Script）
+ *       --all 不做第 3 步（附件與回退無關，不拖長回退窗口；files 欄位沿用上一輪）；庫不存在或是空庫（還沒搬遷）也不做。以下三個只做第 3 步、不碰簽名與鏡像：
+ *       node server/mirror.js --files        （不設上限補到 pending=0 才 exit 0；CUTOVER 之後首次拉檔用。分批做、每批放掉鏡像鎖，每小時那輪照常插得進來）
+ *       node server/mirror.js --files-scan   （先 filelist 掃附件資料夾〔含垃圾桶〕再補；**M7 部署當天必跑一次**、切回 Mac mini 後也跑一次）
+ *       node server/mirror.js --files-verify （重算本機每個附件的 sha256 與 meta 比對，不符的列出來、不自動刪）
  *   手動執行撞到另一輪正在跑時印「已跳過」並以非 0 結束。
- * 環境變數：DATA_DIR  BRIDGE_URL  BRIDGE_KEY（server/.env）；SIG_BATCH（每批張數，預設 15、上限 20）；SIG_MAX_PER_RUN（預設 60） */
+ * 環境變數：DATA_DIR  BRIDGE_URL  BRIDGE_KEY（server/.env）；SIG_BATCH（每批張數，預設 15、上限 20）；SIG_MAX_PER_RUN（預設 60）；
+ *   FILES_MAX_PER_RUN（第 3 步每輪最多幾個檔，預設 10）；FILES_MAX_MB_PER_RUN（每輪最多下載幾 MB，預設 100） */
 'use strict';
 const fs = require('fs');
 const path = require('path');
 const J = require('./job-common.js');
+const FL = require('./files-local.js');
 
 const SIGS_MAX = 20;                                        // 與 gas/Code.js SIGS_MAX_ 相同：Apps Script 一次最多收 20 張
 const LAST = 'mirror-last.json', STATE = 'sig-state.json', SKIP = 'sig-skip.json';
@@ -61,6 +77,177 @@ const allStrings = (o) => Object.values(o).every((x) => typeof x === 'string' &&
 function clampInt(v, dflt, lo, hi) { const n = Math.floor(Number(v)); return n >= lo ? Math.min(n, hi) : dflt; }
 const keyOf = (r) => r.postId + '\t' + r.staffId + '\t' + r.sigId;   // 含 sigId：同一格被重建成別張圖時，舊的 unsaved id 不沿用
 const label = (r) => r.postId + '/' + r.staffId;
+
+// ================= 3. 附件補齊（M7，#18） =================
+const FILE_SKIP = 'file-skip.json';
+const SEG = 8 * 1024 * 1024;                                 // 與 gas/Code.js FILEGET_MAX_ 相同：每段 ≤ 8MB 原始位元組
+const SEG_MAX = 8;                                           // 每個檔最多幾段（附件 ≤ 20MB＝3 段；多留餘裕，防 eof 永遠不來）
+const STALE_MS = 24 * 3600e3, TMP_OLD_MS = 3600e3;
+const DEAD_MAX = 2;                                          // 每輪最多重試幾個「上次 Drive 回找不到」的檔（死檔另計額度，不吃掉 10 個的名額）
+const taipeiDay = (ms) => J.taipeiStamp(new Date(ms)).slice(0, 10);
+
+// 下載一個檔：成功回 { ok:true, size }；暫時故障回 { ok:false, why }（呼叫端記 failed、留 pending）。.tmp 一律不殘留。
+async function fetchFile(o, id, meta, nowIso) {
+  const dest = FL.bytesPath(o.dir, id), tmp = dest + '.tmp-' + process.pid;
+  const md5 = require('crypto').createHash('md5'), sha = require('crypto').createHash('sha256');
+  let off = 0, file = null;
+  try {
+    fs.mkdirSync(FL.filesDir(o.dir), { recursive: true });
+    fs.writeFileSync(tmp, '');
+    for (let seg = 0; ; seg++) {
+      if (seg >= SEG_MAX) return { ok: false, why: '段數超過上限' };
+      let out;
+      try { out = await o.bridge.call('fileget', { id, off, len: SEG }, 120); }
+      catch (e) { return { ok: false, why: J.errText(e) }; }   // 橋接錯誤：暫時故障，同一輪不重試（不去撞排隊中的 Apps Script）
+      if (o.touch) o.touch();
+      if (!out || !out.file) return { ok: false, dead: true, why: 'Drive 上找不到（暫時，不判遺失）' };
+      if (!file) file = out.file;
+      const size = Number(file.size);
+      if (out.off !== off || typeof out.data !== 'string' || !(size >= 0)) return { ok: false, why: 'fileget 回應格式不符' };
+      const buf = Buffer.from(out.data, 'base64');
+      if (buf.length !== Math.min(SEG, size - off)) return { ok: false, why: 'fileget 段落長度不符' };
+      fs.appendFileSync(tmp, buf); md5.update(buf); sha.update(buf); off += buf.length;
+      if (off >= size) break;
+      if (out.eof) return { ok: false, why: 'fileget 提早結束' };
+    }
+    // 完整性：Drive 的 md5Checksum 與 size 都對才 rename（D4）；不符＝這一輪下載壞了，下一輪重抓
+    const got = md5.digest('hex');
+    if (!file.md5 || got !== String(file.md5).toLowerCase() || off !== Number(file.size)) return { ok: false, why: 'md5／size 與 Drive 不符' };
+    // 寫之前重讀一次 meta 再合併：下載這幾分鐘裡主管剛好在伺服器上移除它（markRemoved 寫了 removedAt），不可以蓋掉
+    const cur = FL.readMeta(o.dir, id) || meta;
+    const m = Object.assign({}, cur, { name: cur.name || String(file.name || ''), mime: String(file.mime || cur.mime || ''), size: off, md5: got, sha256: sha.digest('hex'), savedAt: nowIso, lastTryAt: nowIso, lastDead: false });
+    if (file.trashed && !m.removedAt) { m.removedAt = nowIso; m.removedNote = '補抓時已在 Drive 垃圾桶，實際移除時間不可知'; }
+    FL.writeMeta(o.dir, id, m);                               // meta 先寫、位元組後寫（D0）
+    fs.renameSync(tmp, dest);
+    return { ok: true, size: off };
+  } catch (e) {
+    return { ok: false, why: J.errText(e) };
+  } finally {
+    try { fs.unlinkSync(tmp); } catch (e) {}                  // rename 成功後已不存在；其他情況一律清掉
+  }
+}
+
+// o：{ dir, bridge, unlimited, scan（強制掃描）, now（毫秒，測試用）, maxCount, maxMB, touch }；prev＝上一輪的 files（取 lastScanAt）
+async function fillFiles(o, prev) {
+  const now = o.now || Date.now(), nowIso = new Date(now).toISOString(), dir = o.dir;
+  const f = { ok: true, count: 0, bytes: 0, pending: 0, stale: 0, fetched: 0, failed: 0, skipped: 0, lastScanAt: (prev && prev.lastScanAt) || null };
+  const errors = [], warns = [], failed = new Map();
+  // 人工略過清單：格式錯就 ok:false、這一輪不略過任何一個（補抓照常）
+  const sk = J.readState(dir, FILE_SKIP);
+  let skip = {};
+  if (sk.corrupt || (sk.v && !(plain(sk.v) && allStrings(sk.v)))) { f.ok = false; errors.push(`logs/${FILE_SKIP} 格式錯誤（應為 { "<fileId>": "原因" }），這一輪不略過任何一個`); }
+  else if (sk.v) skip = sk.v;
+  const isSkipped = (id) => Object.prototype.hasOwnProperty.call(skip, id);
+  // 殘留暫存檔（下載或上傳中途當掉）：超過 1 小時的才清（伺服器可能正在寫它自己的 .tmp）
+  const sc0 = FL.scan(dir);
+  sc0.tmps.forEach((n) => { const p = path.join(FL.filesDir(dir), n); try { if (now - fs.statSync(p).mtimeMs > TMP_OLD_MS) fs.unlinkSync(p); } catch (e) {} });
+  // 有位元組沒 meta（只可能是人手動放的）：補 meta
+  sc0.bytes.filter((id) => !sc0.metas.includes(id)).forEach((id) => {
+    try { const b = fs.readFileSync(FL.bytesPath(dir, id)), h = FL.hashes(b); FL.writeMeta(dir, id, { name: '', mime: '', size: b.length, md5: h.md5, sha256: h.sha256, savedAt: nowIso, wantedAt: nowIso, source: 'local' }); }
+    catch (e) { warns.push('補 meta 失敗 ' + id + '：' + J.errText(e)); }
+  });
+  const ensure = (id, base) => {   // 沒 meta 才建；回傳是否新建
+    if (!FL.validId(id) || FL.readMeta(dir, id)) return false;
+    try { FL.writeMeta(dir, id, Object.assign({ wantedAt: nowIso }, base)); return true; } catch (e) { warns.push('建 meta 失敗 ' + id + '：' + J.errText(e)); return false; }
+  };
+  // 第二層：公告目前引用的附件（D1 全失敗也補得回來）。只 SELECT，不寫 DB
+  try {
+    const db = J.openDb(dir, { readOnly: true });
+    try {
+      J.rows(db, 'SELECT json FROM posts').forEach((r) => {
+        let p = null; try { p = JSON.parse(r.json); } catch (e) {}
+        ((p && Array.isArray(p.files)) ? p.files : []).forEach((x) => { if (x && typeof x.id === 'string') ensure(x.id, { name: String(x.name || ''), mime: FL.mimeOf(x.name), size: Number(x.size) || 0, source: 'posts' }); });
+      });
+    } finally { db.close(); }
+  } catch (e) { warns.push('讀不到公告清單（這一輪只補已有 meta 的）：' + J.errText(e)); }
+  // 第三層：filelist（指定時機：--files-scan，或每天第一輪＝台北日期換了）
+  if (f.lastScanAt && isNaN(Date.parse(f.lastScanAt))) f.lastScanAt = null;   // 壞掉（手改）當作沒掃過，這一輪重掃並重寫，不永久失敗
+  if (!o.noScan && (o.scan || !f.lastScanAt || taipeiDay(Date.parse(f.lastScanAt)) !== taipeiDay(now))) {
+    try {
+      let token = '', n = 0, made = 0;
+      for (let page = 0; page < 500; page++) {
+        const out = await o.bridge.call('filelist', { pageToken: token }, 120);
+        if (!out || !Array.isArray(out.files)) throw new Error('filelist 回應格式不符');
+        out.files.forEach((x) => {
+          if (!x || !FL.validId(x.id) || !FL.okMime(x.mime)) return;   // Apps Script 已過白名單，這裡再擋一次
+          n++;
+          const base = { name: String(x.name || ''), mime: String(x.mime || ''), size: Number(x.size) || 0, md5: String(x.md5 || ''), source: 'filelist' };
+          if (x.trashed) Object.assign(base, { trashed: true, removedAt: nowIso, removedNote: '掃描時已在 Drive 垃圾桶，實際移除時間不可知' });
+          if (ensure(x.id, base)) made++;
+          else if (x.trashed) {   // 已有 meta（例如回退到 GAS 期間主管移除的）：補標 removedAt
+            const m = FL.readMeta(dir, x.id);
+            if (m && !m.removedAt) { try { FL.writeMeta(dir, x.id, Object.assign(m, { trashed: true, removedAt: nowIso, removedNote: '掃描時已在 Drive 垃圾桶，實際移除時間不可知' })); } catch (e) {} }
+          }
+        });
+        token = typeof out.nextPageToken === 'string' ? out.nextPageToken : '';
+        if (!token) break;
+      }
+      f.lastScanAt = nowIso; f.scanned = n; f.scanNew = made;
+    } catch (e) { f.ok = false; errors.push('附件掃描（filelist）：' + J.errText(e)); }   // 暫時故障：lastScanAt 不動，下一輪再掃
+  }
+  // 補抓順序：從沒試過的先（依 wantedAt 由舊到新），再依 lastTryAt 由舊到新——補不到的檔不會一直卡在最前面把額度吃光。
+  // 每輪上限 maxCount 個檔（算嘗試次數）或 maxMB（算下載量），先到為準；預估下一個會超過 maxMB 就停。
+  // Drive 回找不到（file:null）不算進 maxCount；上次就找不到的「死檔」每輪最多再試 DEAD_MAX 個。unlimited 重複掃到沒進展
+  const maxN = o.unlimited ? Infinity : o.maxCount, maxB = o.unlimited ? Infinity : o.maxMB * 1024 * 1024;
+  let tried = 0, got = 0, deadTried = 0;
+  const order = (a, b) => (!!a.m.lastTryAt - !!b.m.lastTryAt) ||
+    (a.m.lastTryAt ? String(a.m.lastTryAt).localeCompare(String(b.m.lastTryAt)) : String(a.m.wantedAt || '').localeCompare(String(b.m.wantedAt || '')));
+  const pendingNow = () => FL.scan(dir).metas.filter((id) => !FL.hasBytes(dir, id) && !isSkipped(id))
+    .map((id) => ({ id, m: FL.readMeta(dir, id) || {} })).sort(order);
+  const markTry = (id, dead) => { try { const m = FL.readMeta(dir, id); if (m) FL.writeMeta(dir, id, Object.assign(m, { lastTryAt: nowIso, lastDead: !!dead })); } catch (e) {} };
+  for (let pass = 0; ; pass++) {
+    let progress = 0, stop = false;
+    const round = new Set();
+    failed.clear();
+    for (const x of pendingNow()) {
+      if (tried >= maxN || got >= maxB) { stop = true; break; }
+      const size = Number(x.m.size) || 0;
+      if (tried > 0 && size > 0 && got + size > maxB) { stop = true; break; }
+      if (round.has(x.id)) continue;
+      if (x.m.lastDead && deadTried >= DEAD_MAX) continue;    // 死檔額度用完：這一輪不再試，留 pending
+      round.add(x.id); tried++;
+      const r = await fetchFile(o, x.id, x.m, nowIso);
+      if (r.ok) { f.fetched++; got += r.size; progress++; }
+      else {
+        failed.set(x.id, r.why);
+        if (r.dead) { tried--; deadTried++; }
+        markTry(x.id, r.dead);
+      }
+    }
+    if (!o.unlimited || stop || progress === 0) break;
+  }
+  f.failed = failed.size;
+  if (failed.size) f.failedIds = [...failed.entries()].slice(0, LIST_MAX).map(([id, why]) => id + '（' + why + '）');
+  // 統計（位元組在的才算 count／bytes）
+  const sc = FL.scan(dir), has = new Set(sc.bytes);
+  sc.metas.forEach((id) => {
+    if (has.has(id)) { f.count++; try { f.bytes += fs.statSync(FL.bytesPath(dir, id)).size; } catch (e) {} return; }
+    if (isSkipped(id)) { f.skipped++; return; }
+    f.pending++;
+    const w = Date.parse((FL.readMeta(dir, id) || {}).wantedAt || '');
+    if (!isNaN(w) && now - w > STALE_MS) f.stale++;
+  });
+  if (f.pending) f.pendingIds = sc.metas.filter((id) => !has.has(id) && !isSkipped(id)).slice(0, LIST_MAX);
+  if (f.skipped) f.skippedIds = sc.metas.filter((id) => !has.has(id) && isSkipped(id)).slice(0, LIST_MAX).map((id) => id + '（' + skip[id] + '）');
+  const unmatched = Object.keys(skip).filter((id) => !sc.metas.includes(id));
+  if (unmatched.length) warns.push(`${FILE_SKIP} 有 ${unmatched.length} 個 id 對不到任何附件：` + unmatched.slice(0, LIST_MAX).join('、'));
+  if (errors.length) f.error = errors.join('；');
+  if (warns.length) f.warnings = warns;
+  return f;
+}
+// --files-verify：重算本機每個附件的 sha256 與 meta 比對；不符的列出來、不自動刪（人決定）
+function verifyFiles(dir) {
+  const sc = FL.scan(dir), bad = [];
+  let n = 0;
+  sc.bytes.forEach((id) => {
+    const m = FL.readMeta(dir, id);
+    if (!m || !m.sha256) return;
+    n++;
+    try { if (FL.hashes(fs.readFileSync(FL.bytesPath(dir, id))).sha256 !== m.sha256) bad.push(id); } catch (e) { bad.push(id); }
+  });
+  return { checked: n, bad };
+}
+const filesText = (x) => x ? `附件 count=${x.count} bytes=${x.bytes} pending=${x.pending} stale=${x.stale} fetched=${x.fetched} failed=${x.failed} skipped=${x.skipped}` : '附件（未執行）';
 
 // 跑一輪；回傳結果物件（也寫進 mirror-last.json）。bridge 只需要 call(op, payload, timeoutSec)。
 // o.force：還原後手動覆寫（越過筆數防呆，並帶 force:true 給 Apps Script）。o.busyMs／o.backoffMs：測試用。
@@ -97,14 +284,16 @@ async function runMirror(o) {
   else if (sk.v) skip = sk.v;
   // 存狀態失敗（例如磁碟滿）只記警告，鏡像照做
   const saveState = () => { try { J.writeLast(dir, STATE, { unsaved }); } catch (e) { if (!warns.length) warns.push(`${STATE} 寫不進去：` + J.errText(e)); } };
-  let db = null;
+  let db = null, dbReady = false;                            // dbReady：庫可用且不是空庫（第 3 步才跑；空庫＝還沒搬遷，一次橋接都不打，M5 保險不變）
   try {
     db = J.openDb(dir, { busyMs: o.busyMs });
     if (!db.prepare('PRAGMA table_info(reads)').all().some((c) => c.name === 'driveSigId')) throw new Error('資料庫還沒有 driveSigId 欄（伺服器升級後重新啟動一次即會補上）');
     // 空庫不鏡像（#10）：切換日 PRIMARY=mini 之後、migrate.js 匯入之前，若每小時鏡像先跑到，會把空的 Mac mini 庫整份蓋掉試算表
     // （之後的 export 也就是空的）。正式資料一定有同仁；沒有同仁也沒有公告＝還沒搬遷，拒絕。
     const c0 = J.counts(db);
-    if (!c0.staff && !c0.posts) throw new Error('資料庫是空的（還沒搬遷？），拒絕鏡像以免蓋掉試算表');
+    // 結果檔照樣寫（at＝現在、ok:false），另標 notMigrated：/health 最多判黃「尚未搬遷」，不因部署到搬遷之間的空窗誤判紅燈
+    if (!c0.staff && !c0.posts) { res.notMigrated = true; throw new Error('資料庫是空的（尚未搬遷），拒絕鏡像以免蓋掉試算表'); }
+    dbReady = true;
     const sigDir = path.join(dir, 'sigs');
     const TODO_SQL = "SELECT postId, staffId, sigId FROM reads WHERE sigId <> '' AND driveSigId = '' ORDER BY rowid";
     const fileOf = (r) => path.join(sigDir, path.basename(r.sigId));   // sigId 由 store-sqlite.js 產生（只有安全字元），basename 是多一道保險
@@ -226,6 +415,14 @@ async function runMirror(o) {
     errs.push(J.errText(e));
   } finally {
     try { if (db) db.close(); } catch (e) {}
+  }
+  // ---- 3. 附件補齊（M7）：與上面完全隔開——自己 try/catch、不寫 errs、不動 ok／pending／fails（D4）；--all 不做（沿用上一輪的 files）----
+  const prevFiles = (prev && prev.files) || null;
+  try {
+    res.files = o.all || !dbReady ? prevFiles : await fillFiles({ dir, bridge, now: o.now, maxCount: clampInt(o.filesMax, 10, 1, 100000), maxMB: clampInt(o.filesMaxMB, 100, 1, 1000000) }, prevFiles);
+  } catch (e) {
+    res.files = Object.assign({}, prevFiles || {}, { ok: false, error: '附件補齊：' + J.errText(e) });
+  } finally {
     release();
   }
   if (warns.length) res.warnings = warns;
@@ -240,7 +437,40 @@ async function runMirror(o) {
   if (res.missing) J.logLine(dir, 'mirror.log', `⚠ 本機缺簽名圖 ${res.missing} 筆（無法上傳，需人工判斷）：` + res.missingIds.join('、') + (res.missing > LIST_MAX ? ' …' : ''));
   if (res.bad) J.logLine(dir, 'mirror.log', `⚠ 壞簽名圖 ${res.bad} 筆（本機檔損毀；換好圖檔，或確認放棄後寫進 logs/${SKIP}）：` + res.badIds.join('、') + (res.bad > LIST_MAX ? ' …' : ''));
   if (res.skipped) J.logLine(dir, 'mirror.log', `人工略過 ${res.skipped} 筆（logs/${SKIP}）：` + res.skippedIds.join('、'));
+  if (!o.all && res.files) J.logLine(dir, 'mirror.log', filesText(res.files) + (res.files.failedIds ? '；⚠ 這一輪沒補到：' + res.files.failedIds.join('、') : '') + (res.files.error ? '；' + res.files.error : ''));
   return res;
+}
+
+// --files／--files-scan：只做第 3 步、不設上限；拿同一把 mirror 鎖（與每小時那輪不重疊）。
+// 結果只更新 mirror-last.json 的 files（鏡像欄位 at／ok／pending／fails 原樣保留）；還沒有結果檔（從沒鏡像過）就不寫，只回傳。
+// 分批：每批（上限同每小時那輪）拿一次鏡像鎖、做完就放掉，下一批再拿——首次拉檔跑很久時，每小時的鏡像仍能插進來跑，不會長時間停住。
+// 第一批拿不到鎖＝另一輪正在跑，回 busy；之後的批次拿不到就等（每 o.waitMs 重試，最多 o.maxWaitMs）。只有第一批會掃 filelist。
+async function runFilesOnly(o) {
+  const dir = o.dir, waitMs = o.waitMs >= 0 ? o.waitMs : 5000, maxWaitMs = o.maxWaitMs >= 0 ? o.maxWaitMs : 30 * 60e3;
+  let files = null, fetched = 0, batches = 0;
+  for (;;) {
+    let release = J.takeLock(dir, 'mirror');
+    if (!release) {
+      if (!batches) return { busy: true };
+      const t0 = Date.now();
+      while (!release && Date.now() - t0 < maxWaitMs) { await new Promise((ok) => setTimeout(ok, waitMs)); release = J.takeLock(dir, 'mirror'); }
+      if (!release) { if (files) files.error = (files.error ? files.error + '；' : '') + '等不到鏡像鎖，這次先停（稍後再跑）'; break; }
+    }
+    try {
+      const prev = J.readLast(dir, LAST);
+      const base = (prev && prev.files) || files;
+      files = await fillFiles({ dir, bridge: o.bridge, scan: batches === 0 && !!o.scan, noScan: batches > 0, now: o.now, touch: release.touch,
+        maxCount: clampInt(o.filesMax, 10, 1, 100000), maxMB: clampInt(o.filesMaxMB, 100, 1, 1000000) }, base);
+      fetched += files.fetched;
+      if (prev) J.writeLast(dir, LAST, Object.assign({}, prev, { files }));
+    } finally { release(); }
+    batches++;
+    if (!files.pending || !files.fetched) break;              // 補完了，或這一批沒有任何進展（剩下的都補不到）
+    if (o._betweenBatches) await o._betweenBatches(batches);   // 測試用鉤子：批次之間鎖已放掉（驗每小時那輪插得進來）
+  }
+  files.fetched = fetched; files.batches = batches;
+  J.logLine(dir, 'mirror.log', (o.scan ? '附件掃描補齊（--files-scan）：' : '附件補齊（--files）：') + filesText(files) + `（${batches} 批）` + (files.error ? '；' + files.error : ''));
+  return { files };
 }
 
 // 結束碼：非 0 讓 launchd 記錄失敗（真正的告警靠守門讀 /health）；--all 只要還有 pending（或算不出來）就不 exit 0
@@ -251,8 +481,25 @@ async function main() {
   const { makeBridge } = require('./bridge.js');
   const dir = J.dataDir(process.env);
   const all = process.argv.includes('--all'), force = process.argv.includes('--force');
+  const filesScan = process.argv.includes('--files-scan'), filesOnly = filesScan || process.argv.includes('--files');
+  if (process.argv.includes('--files-verify')) {
+    const v = verifyFiles(dir);
+    console.log(`附件驗證：檢查 ${v.checked} 個，sha256 不符 ${v.bad.length} 個` + (v.bad.length ? '（不自動刪，請人判斷）：' + v.bad.join('、') : ''));
+    process.exit(v.bad.length ? 1 : 0);
+  }
+  if (filesOnly) {
+    const r = await runFilesOnly({ dir, bridge: makeBridge(process.env.BRIDGE_URL, process.env.BRIDGE_KEY), scan: filesScan, filesMax: process.env.FILES_MAX_PER_RUN, filesMaxMB: process.env.FILES_MAX_MB_PER_RUN });
+    if (r.busy) { console.log('✗ 另一輪鏡像正在跑（或正在還原），這次已跳過，請等它結束後再執行'); process.exit(1); }
+    const x = r.files;
+    console.log(`附件補齊${x.ok ? '完成' : '有問題'}｜count=${x.count}｜bytes=${x.bytes}｜pending=${x.pending}｜stale=${x.stale}｜fetched=${x.fetched}｜failed=${x.failed}｜skipped=${x.skipped}` +
+      (x.scanned !== undefined ? `｜掃到 ${x.scanned} 個（新建 meta ${x.scanNew}）` : '') + (x.error ? '｜' + x.error : ''));
+    if (x.failedIds) console.log('✗ 沒補到（暫時故障，稍後再跑；多次重跑仍失敗請找 MacBook Claude）：' + x.failedIds.join('、'));
+    if (x.skippedIds) console.log('人工略過：' + x.skippedIds.join('、'));
+    if (x.warnings) console.log('⚠ ' + x.warnings.join('；'));
+    process.exit(x.ok && x.pending === 0 ? 0 : 1);
+  }
   const res = await runMirror({ dir, bridge: makeBridge(process.env.BRIDGE_URL, process.env.BRIDGE_KEY),
-    batch: process.env.SIG_BATCH, maxPerRun: process.env.SIG_MAX_PER_RUN, all, force });
+    batch: process.env.SIG_BATCH, maxPerRun: process.env.SIG_MAX_PER_RUN, filesMax: process.env.FILES_MAX_PER_RUN, filesMaxMB: process.env.FILES_MAX_MB_PER_RUN, all, force });
   if (res.busy) {   // 另一輪正在跑：手動執行（--all／--force）要讓人看得出被跳過，以非 0 結束
     if (all || force || process.stdout.isTTY) console.log('✗ 另一輪鏡像正在跑（或正在還原），這次已跳過，請等它結束後再執行');
     process.exit(all || force ? 1 : 0);
@@ -264,9 +511,10 @@ async function main() {
     if (res.bad) console.log('⚠ 壞圖：' + res.badIds.join('、'));
     if (res.skipped) console.log('人工略過：' + res.skippedIds.join('、'));
     if (res.warnings) console.log('⚠ ' + res.warnings.join('；'));
+    if (!all) console.log(filesText(res.files) + (res.files && res.files.error ? '｜' + res.files.error : ''));
   }
   process.exit(exitCode(res, all));
 }
 
 if (require.main === module) main().catch((e) => { console.error(e); process.exit(1); });
-module.exports = { runMirror, SIGS_MAX, localDamaged, exitCode };
+module.exports = { runMirror, runFilesOnly, fillFiles, verifyFiles, SIGS_MAX, localDamaged, exitCode };

@@ -59,6 +59,7 @@ counts | tee /tmp/dzyb-rollback-counts.txt
 ```
 
 - 停鏡像用 `disable`，重開機也不會回來：之後若要「再切回」，`PRIMARY=mini` 設下去的那一刻，每小時鏡像若搶先把舊的 Mac mini 庫推上去，會蓋掉 GAS 回退期間的新資料。附錄 A 會再打開。
+- **附件備份 `$DATA_DIR/files/`（M7）原地保留、不刪、不搬**：回退不需要它（附件本來就在雲端硬碟），而主管移除超過 30 天的附件只剩這一份。第 2 步的 `--all` 不碰它。回退期間每小時鏡像停著，附件不會自動補；要補可以手動跑 `node server/mirror.js --files`（只讀 Drive，`fileget`／`filelist` 不受 `PRIMARY` 限制，不會寫試算表、不違反鐵則 3）。
 
 **驗證**
 - `curl -s -X POST http://127.0.0.1:8793/ -H 'Content-Type: text/plain' --data '{"action":"ack"}'` 要回 `"code":"MOVED"`。凍結檢查在驗 token 之前，所以不帶 token 也會回 MOVED。
@@ -325,6 +326,10 @@ curl -s "https://dzy-bulletin.github.io/$V" | grep -E "VERSION|GAS_URL"
    job_on com.dzy.bulletin.mirror    # RunAtLoad：載入即跑一輪
    ```
    跑完後 `logs/mirror-last.json` 要是 `ok:true`。
+   再跑一次附件掃描（M7，#18 D6）：回退期間主管在 GAS 上傳或移除的附件，Mac mini 本機沒有，要從雲端硬碟（含垃圾桶）補回來：
+   ```sh
+   node server/mirror.js --files-scan; echo "exit=$?"   # 印出 count／pending；pending≠0 就再跑 node server/mirror.js --files 到 pending=0
+   ```
 5. **MacBook 的 Claude**：前端改回 Mac mini 網址、進位版本，做法同 [`CUTOVER.md`](CUTOVER.md)〈5. 前端切到 Mac mini〉。
 6. **Eason**：手機簽一筆；打開回退期間那筆的回條，簽名圖看得到。
 7. **Mac mini 的 Claude**：刪掉匯出檔 `rm <匯出檔>`（內含密碼雜湊與登入金鑰）。

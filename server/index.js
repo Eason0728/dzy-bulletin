@@ -82,6 +82,7 @@ function makeApp(cfg) {
   const { makeSqliteStore } = require('./store-sqlite.js');
   const { makeBridge, makeFakeBridge } = require('./bridge.js');
   const { judgeHealth } = require('./health-rules.js');
+  const FL = require('./files-local.js');
 
   const VERSION = (/VERSION: '([0-9.]+)'/.exec(fs.readFileSync(path.join(ROOT, 'js/config.js'), 'utf8')) || [])[1] || '?';
   const { DATA_DIR, E2E, ALLOW, MAX_INFLIGHT } = cfg;
@@ -227,8 +228,11 @@ function makeApp(cfg) {
     const h = {
       ok: true, v: VERSION, uptime: Math.round(process.uptime()), e2e: E2E,
       bridge: (cfg.BRIDGE_URL && cfg.BRIDGE_KEY && !E2E) ? 'configured' : 'missing',
-      mirror: job('mirror-last.json', (j) => ({ at: j.at || null, ok: !!j.ok, sigPending: num(j.pending !== undefined ? j.pending : j.sigPending), missing: num(j.missing) || 0, bad: num(j.bad) || 0, skipped: num(j.skipped) || 0, fails: num(j.fails) || 0 })),
+      mirror: job('mirror-last.json', (j) => ({ at: j.at || null, ok: !!j.ok, sigPending: num(j.pending !== undefined ? j.pending : j.sigPending), missing: num(j.missing) || 0, bad: num(j.bad) || 0, skipped: num(j.skipped) || 0, fails: num(j.fails) || 0, notMigrated: !!j.notMigrated })),
       backup: job('backup-last.json', (j) => ({ at: j.at || null, ok: !!j.ok, sharedWith: num(j.sharedWith) })),
+      // M7（#18 D8）：附件本機備份（mirror.js 第 3 步寫在 mirror-last.json 的 files）；只挑六個狀態欄位，錯誤原文不外露
+      files: job('mirror-last.json', (j) => { const f = j.files; if (!f || typeof f !== 'object') return null;
+        return { count: num(f.count), bytes: num(f.bytes), pending: num(f.pending), stale: num(f.stale), skipped: num(f.skipped) || 0, lastScanAt: typeof f.lastScanAt === 'string' ? f.lastScanAt : null }; }),
       disk: { freeMB }
     };
     return Object.assign(h, judgeHealth(h, Date.now()));
@@ -256,6 +260,12 @@ function makeApp(cfg) {
     if (pathname === '/__adminInit') { fs.writeFileSync(path.join(DATA_DIR, 'ADMIN_INIT.txt'), String(body.pass)); return send(res, 200, { ok: true }); }
     if (pathname === '/__blob') return send(res, 200, { ok: true, data: bridge.blobOf(url.searchParams.get('id')) });
     if (pathname === '/__bridgeCalls') return send(res, 200, { ok: true, data: bridge.calls() });
+    // M7：假橋接的 fileget／filelist（測試讓 mirror.js 第 3 步打這台伺服器的假 Drive）；本機 files/ 現況（run.py 驗移除後仍保留）
+    if (pathname === '/__bridge') return bridge.call(String(body.op), body).then((d) => send(res, 200, { ok: true, data: d }), (e) => send(res, 200, { ok: false, code: e.code || 'SERVER', message: e.message }));
+    if (pathname === '/__files') {
+      const sc = FL.scan(DATA_DIR);
+      return send(res, 200, { ok: true, data: sc.metas.map((id) => ({ id, meta: FL.readMeta(DATA_DIR, id), bytes: FL.hasBytes(DATA_DIR, id) })) });
+    }
     return send(res, 404, { ok: false, code: 'NOT_FOUND', message: 'no' });
   }
 
@@ -289,6 +299,20 @@ function makeApp(cfg) {
       catch (e) { console.error(action + ': ' + (e && e.stack || e)); r = { out: { ok: false, code: 'SERVER', message: '系統忙碌，請稍後再試' }, revoke: [] }; }
       logLine(action, Date.now() - t0, r.out);
       send(res, 200, r.out);
+      // M7（#18 D1）：附件本機備份。回應已送出、lease 還沒釋放（base64 佔的額度仍算在上限內）；失敗只進 stderr，
+      // 之後由 mirror.js 第 3 步補（meta 寫進去了＝pending；meta 也沒寫進去＝公告引用時從 posts 補建）。不進 tx：不碰 SQLite。
+      // 第二輪 Service 失敗（撤孤兒檔那條路，out.ok=false）不存。
+      if (action === 'uploadFile' && r.out.ok && r.out.data) {
+        const fid = r.out.data.id;
+        try { const w = await FL.saveLocal(DATA_DIR, fid, q.name, q.data, r.out.data.size); if (w) console.error(ts() + ' 附件本機備份 ' + fid + '：' + w); }
+        catch (e) { console.error(ts() + ' 附件本機備份失敗 ' + (FL.validId(fid) ? fid : '-') + '：' + (e && (e.code || e.message))); }
+      }
+      // 移除後永久保留：送 revoke 之前先確保 meta 存在並標 removedAt（位元組永遠不刪，revoke 只動 Drive）
+      if (action === 'savePost' && r.out.ok && r.revoke.length) {
+        for (const fid of r.revoke) {
+          try { await FL.markRemoved(DATA_DIR, fid, ''); } catch (e) { console.error(ts() + ' 附件移除標記失敗 ' + (FL.validId(fid) ? fid : '-') + '：' + (e && (e.code || e.message))); }
+        }
+      }
       if (r.revoke.length) Promise.resolve().then(() => bridge.files.revoke(r.revoke)).catch((e) => console.error('revoke: ' + e.message));
     } finally { release(lease); }
   }

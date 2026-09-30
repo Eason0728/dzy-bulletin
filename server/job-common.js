@@ -12,6 +12,7 @@ const BUSY_MS = 5000;                                       // 與 store-sqlite.
 
 // server/.env（只補沒設的變數）；與 index.js 同一個格式
 function loadEnv(file) {
+  if (process.env.DZYB_NO_DOTENV === '1') return;          // 測試一律不讀 server/.env：已部署的機器上有真的 BRIDGE_URL／KEY，讀進來會讓 E2E 拒絕啟動，正式模式的測試還會打到真的 Apps Script
   try {
     fs.readFileSync(file, 'utf8').split('\n').forEach((line) => {
       const m = /^\s*([A-Z_0-9]+)\s*=\s*(.*)\s*$/.exec(line);

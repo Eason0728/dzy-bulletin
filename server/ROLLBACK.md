@@ -79,33 +79,46 @@ counts | tee /tmp/dzyb-rollback-counts.txt
 
 ```sh
 node server/mirror.js --all; echo "exit=$?"
-node -e "const j=require(process.argv[1]+'/logs/mirror-last.json');console.log({ok:j.ok,pending:j.pending,missing:j.missing,bad:j.bad,missingIds:j.missingIds||[],badIds:j.badIds||[],error:j.error||''})" "$DATA_DIR"
+node -e "const j=require(process.argv[1]+'/logs/mirror-last.json');console.log({ok:j.ok,pending:j.pending,missing:j.missing,bad:j.bad,skipped:j.skipped,running:!!j.running,busy:!!j.busy,missingIds:j.missingIds||[],badIds:j.badIds||[],skippedIds:j.skippedIds||[],error:j.error||''})" "$DATA_DIR"
 ```
 
 `--all` 不設每輪上限，會重複掃描：把本機有圖、但還沒上 Drive 的簽名批次上傳（每批 ≤20 張），然後整份鏡像回試算表。
 
-**判準**（M3 語意，#14 S2）：**`--all` 結束時印出 `pending=0`、`ok:true`，而且這一輪是在 READONLY 建立之後才完成的，就算完成。**
+**判準**（M3 定稿語意）：**`--all` 印出 `pending=0` 而且 `exit=0`，這一輪是在 READONLY 建立之後才開始的，就算完成。** 只要 `pending≠0`，`--all` 就是 `exit=1`，不算完成。
 
 ```sh
-node -e "const fs=require('fs'),d=process.argv[1];if(!fs.existsSync(d+'/READONLY')){console.log('❌ 沒有 READONLY 檔：先回第 1 步');process.exit(1)}if(!fs.existsSync(d+'/logs/mirror-last.json')){console.log('❌ 還沒有鏡像結果：先跑 --all');process.exit(1)}const j=JSON.parse(fs.readFileSync(d+'/logs/mirror-last.json','utf8')),r=fs.statSync(d+'/READONLY').mtimeMs;console.log((j.ok&&j.pending===0&&Date.parse(j.at)>r)?'✅ 最後一次鏡像成功、在 READONLY 之後開始':'❌ 還不算完成', {ok:j.ok,pending:j.pending,at:j.at,readonly:new Date(r).toISOString()})" "$DATA_DIR"
+node -e "const fs=require('fs'),d=process.argv[1];if(!fs.existsSync(d+'/READONLY')){console.log('❌ 沒有 READONLY 檔：先回第 1 步');process.exit(1)}if(!fs.existsSync(d+'/logs/mirror-last.json')){console.log('❌ 還沒有鏡像結果：先跑 --all');process.exit(1)}const j=JSON.parse(fs.readFileSync(d+'/logs/mirror-last.json','utf8')),r=fs.statSync(d+'/READONLY').mtimeMs;console.log((j.ok&&j.pending===0&&!j.running&&!j.busy&&Date.parse(j.at)>r)?'✅ 最後一次鏡像成功、在 READONLY 之後開始':'❌ 還不算完成', {ok:j.ok,pending:j.pending,running:!!j.running,busy:!!j.busy,at:j.at,readonly:new Date(r).toISOString()})" "$DATA_DIR"
 ```
 
 - `at` 是那一輪**開始**的時間。這一輪在 READONLY 之後才開始，讀到的就一定包含凍結後的全部資料（READONLY 之後 Mac mini 不再有寫入）。
-
-- `pending`＝本機有圖、還沒回填，是 mirror.js 還能處理的部分。**必須是 0**，不是 0 就再跑一次 `--all`。
-- `missing`＝已讀有 `sigId`，但本機找不到圖檔。
-- `bad`＝連續上傳失敗 3 次的壞圖。
-- missing 和 bad **不要求為 0**。程式會列出是哪幾筆（`missingIds`／`badIds`），由人判斷：
-  - 這幾張在 Drive 上沒有備份，回退後在 GAS **看不到簽名圖**；已讀紀錄本身（誰、哪則、時間）照樣會鏡像過去。
-  - 把清單交給 Eason。Eason 決定接受的話，回退完成後在 LINE 告知那幾位同仁「簽名圖遺失，已讀紀錄仍在」，然後繼續第 3 步。
-  - 想再試壞圖：從 `$DATA_DIR/logs/sig-state.json` 的 `fails` 刪掉那一筆，再跑一次 `--all`。
-  - missing 通常是 `sigs/` 裡的檔被刪或搬走。先 `ls "$DATA_DIR/sigs" | wc -l` 看看；能找回原檔放回去，就再跑一次。
+- `mirror-last.json` 的幾個欄位：
+  - `running: true`＝`--all` 還在跑（它每一輪會更新 `at` 當心跳），等它結束再看，**不算完成**。
+  - `busy: true`＝這次撞到另一輪正在跑、被跳過（手動執行時 exit 1），等 `logs/mirror.lock` 消失再跑一次。
+  - `pending`＝本機有圖、驗過、還沒回填、沒被人工略過，是 mirror.js 還能處理的部分。**必須是 0**。
+    - `pending≠0` 而且印出「Drive 端有 N 張傳不上去，稍後再跑」：這是 Drive 端暫時故障，等幾分鐘再跑 `--all`；多次重跑仍失敗就停下來找 MacBook 的 Claude。
+  - `missing`＝已讀有 `sigId`，但本機找不到圖檔。
+  - `bad`＝本機圖檔損毀（0 byte、檔頭或結尾不對）。
+  - `skipped`＝寫在 `logs/sig-skip.json`、由人判斷過要略過的。
+- **missing／bad 不是 0 時**（程式會列出是哪幾筆，`missingIds`／`badIds`）：
+  1. **列出來**：Mac mini 的 Claude 把清單交給 Eason。這幾張在 Drive 上沒有備份，回退後在 GAS **看不到簽名圖**；已讀紀錄本身（誰、哪則、時間）照樣會鏡像過去。
+     - missing 通常是 `sigs/` 裡的檔被刪或搬走。先 `ls "$DATA_DIR/sigs" | wc -l` 看看；能找回原檔放回去，就再跑一次 `--all`，不必略過。
+  2. **Eason 決定是否略過**：決定接受的，才由 Mac mini 的 Claude 手動建立或編輯 `$DATA_DIR/logs/sig-skip.json`，一筆一行，格式是
+     ```json
+     { "P-20261001-001/S-013": "本機圖檔遺失，Eason 10/02 同意略過" }
+     ```
+     - 這個檔**只由人手動建立**，程式只讀不寫。
+     - 格式錯（不是合法 JSON）時整份不生效，這一輪 `ok:false` 並寫原因；修好再跑。
+     - 鍵對不到任何已讀（打錯字）會列在警告裡。
+     - 要恢復（不略過了）就刪掉那一行。
+  3. **再跑 `--all`**：略過的那幾筆改算 `skipped`，要看到 `pending=0`、`exit=0`。
+  4. 回退完成後，Eason 在 LINE 告知那幾位同仁「簽名圖遺失，已讀紀錄仍在」。
+- **不要手改 `logs/sig-state.json`**：那是程式自用的檔案（記「已上傳、還沒寫進庫」的 Drive id），手改或刪掉會讓圖重傳、在 Drive 留下孤兒檔。
 
 **失敗怎麼辦**（看 `error`）
 - `鏡像：BRIDGE …`（連不到 Google、逾時）：等 1～2 分鐘再跑，Apps Script 偶爾會排隊。
   - 連續 3 次失敗：先確認 `curl -sI https://script.google.com` 通不通。
   - 網路正常卻一直失敗：停在這裡回報，**不要跳到第 4 步**，否則 Mac mini 期間的資料會丟。
-- `另一輪鏡像還在跑`：每小時鏡像剛好在跑。等它結束（`logs/mirror.lock` 消失）再跑。
+- 印出「已跳過」／`busy: true`：另一輪鏡像還拿著鎖。等它結束（`logs/mirror.lock` 消失）再跑。
 - `mirror` 回 AUTH：代表有人已經把 GAS 的 `PRIMARY` 改成 `gas`。
   - **第 5 步已經做了**：**禁止**改回 mini（鐵則 3），改照第 6 步〈失敗怎麼辦〉處理。
   - **第 5 步還沒做**（前端仍指向 Mac mini）：照下面的順序，**先改回 mini 凍結 GAS、再確認、通過才跑 `--all`**。
@@ -147,13 +160,13 @@ node -e "const fs=require('fs'),d=process.argv[1];if(!fs.existsSync(d+'/READONLY
 
 **兩項都通過才可以進第 4 步，不准跳過。** 第 4 步之後就不能再鏡像（鐵則 3），這裡沒過就往下走，Mac mini 期間的簽名在 GAS 會永遠看不到。
 
-**3-1　資料庫（Mac mini 的 Claude）**：還沒拿到 Drive id 的簽名，筆數必須剛好等於第 2 步列出的 missing＋bad。
+**3-1　資料庫（Mac mini 的 Claude）**：還沒拿到 Drive id 的簽名，筆數必須剛好等於第 2 步最後一次 `--all` 列出的 missing＋bad＋skipped。
 
 ```sh
 node -e "const{DatabaseSync}=require('node:sqlite');const d=new DatabaseSync(process.argv[1]+'/bulletin.db',{readOnly:true});const r=d.prepare(\"SELECT postId,staffId FROM reads WHERE sigId<>'' AND driveSigId=''\").all();console.log('沒有 Drive id 的簽名：'+r.length+' 筆');r.slice(0,50).forEach(x=>console.log('  '+x.postId+'/'+x.staffId))" "$DATA_DIR"
 ```
 
-- 筆數＝missing＋bad，而且清單與 `missingIds`／`badIds` 相同：通過。
+- 筆數＝missing＋bad＋skipped，而且清單與 `missingIds`／`badIds`／`skippedIds` 相同：通過。（正常情況 missing、bad 都已由 Eason 決定寫進 sig-skip，只剩 skipped。）
 - 筆數比較多：回第 2 步。
 
 **3-2　試算表（Eason）**：打開主試算表，確認三件事。
@@ -227,7 +240,7 @@ curl -s "https://dzy-bulletin.github.io/$V" | grep -E "VERSION|GAS_URL"
 
 - [ ] 手機重新整理佈告欄，簽一筆，成功。這筆寫進 GAS：「已讀」多一列、「操作紀錄」多一列。
 - [ ] 打開一則**舊公告**的回條（最好是 Mac mini 期間有人簽的），簽名圖看得到，含 Mac mini 期間簽的。例外（本來就看不到，不算失敗）：
-  - 第 2 步 missing／bad 清單裡的那幾筆。
+  - 第 2 步 missing／bad／skipped 清單裡的那幾筆。
   - 切換時 migrate「簽名圖」列為讀不到的那幾筆（CUTOVER 第 3 步記在 #10 的清單）：它們在 Mac mini 上 `sigId` 是空白，不會出現在 missing／bad 清單，但 GAS 上一樣讀不到。
 - [ ] 主管不重新登入就能開設定頁（secret 兩邊相同，舊的 atoken 仍有效）。
   - 例外：Mac mini 期間若用 `ADMIN_INIT.txt` 換過通行碼，GAS 不知道新通行碼，主管要用舊通行碼登入。
@@ -236,7 +249,7 @@ curl -s "https://dzy-bulletin.github.io/$V" | grep -E "VERSION|GAS_URL"
 
 **失敗怎麼辦**（鐵則 3：這時**禁止**再跑 `mirror.js`、禁止再設 `PRIMARY=mini`）
 
-**狀況一：Mac mini 期間簽的某幾筆簽名圖看不到**（而且不在 missing／bad 清單裡）
+**狀況一：Mac mini 期間簽的某幾筆簽名圖看不到**（而且不在 missing／bad／skipped 清單裡）
 
 - 目前**沒有**「只補試算表簽名檔 id 那一欄」的工具（`mirror` 只能整份覆寫）。**停下來找 MacBook 的 Claude。**
 - 在那之前：Mac mini **維持 READONLY、鏡像維持 disable**，什麼都不要刪。
@@ -244,7 +257,7 @@ curl -s "https://dzy-bulletin.github.io/$V" | grep -E "VERSION|GAS_URL"
   1. 受影響的清單：在 GAS 回條看不到圖的 `postId/staffId`（Eason 提供截圖）。
   2. 那幾筆在 Mac mini 資料庫的列：`SELECT postId,staffId,at,sigId,driveSigId FROM reads WHERE …`，輸出存成文字檔。
   3. 對應的圖檔 `$DATA_DIR/sigs/<sigId>`，各複製一份。
-  4. `logs/mirror-last.json`、`logs/mirror.log`、`logs/sig-state.json`，各複製一份。
+  4. `logs/mirror-last.json`、`logs/mirror.log`、`logs/sig-state.json`、`logs/sig-skip.json`（有的話），各複製一份（只複製，不要改）。
   5. 資料庫快照：用 `node -e` 開唯讀連線，執行 `VACUUM INTO '<evidence 資料夾>/bulletin.db'`。
   6. 試算表那幾列「簽名檔 id」欄的截圖（Eason 提供）。
 - 可能的補法由 MacBook 的 Claude 評估後再做，**本手冊不授權**：
@@ -335,7 +348,7 @@ curl -s "https://dzy-bulletin.github.io/$V" | grep -E "VERSION|GAS_URL"
 ## 驗收對照（#10 步驟 10）
 
 - [ ] 第 1 步之後 Mac mini 操作紀錄 0 筆新增（第 1、6 步的 `counts`）。
-- [ ] 第 2 步 `--all` 結束時印出 `pending=0`；missing／bad 不是 0 時，清單已由 Eason 判斷。
+- [ ] 第 2 步 `--all` 印出 `pending=0`、`exit=0`；missing／bad 不是 0 時，清單已由 Eason 判斷、決定略過的已寫進 `sig-skip.json`。
 - [ ] 第 3 步硬關卡兩項都通過。
 - [ ] 回退後在 GAS 簽的那一筆，再切回後在 Mac mini 上；兩邊的簽名圖都看得到，含 Mac mini 期間簽的。
 - [ ] 本檔進 repo。

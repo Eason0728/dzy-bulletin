@@ -210,8 +210,8 @@ node server/migrate.js --from <dry-run 印出的匯出檔>
 - [ ] 試算表「操作紀錄」的總列數與最後一列時間，**與第 2 步記下的相同**，代表凍結後 GAS 0 筆新增。
 - [ ] Mac mini 的 Claude 裝回每小時鏡像（與 DEPLOY.md〈交接給 M5〉第 1 條相同，另外多一個 enable）：
   `job_on com.dzy.bulletin.mirror`（plist 設了 RunAtLoad，載入就會跑一輪）
-  - 等它跑完（`logs/mirror.lock` 消失），`logs/mirror-last.json` 要是 `ok:true`、`pending:0`。剛搬來的已讀都已經有 Drive id，所以 pending 是 0。
-  - 第 3 步有 Drive 讀不到的圖時：migrate 把那幾筆的本機 `sigId` 設成空白、`driveSigId` 保留原值，所以 mirror.js **不會**把它們算進 pending／missing／bad（三種都只看 `sigId` 有值的列），`missing` 仍是 0。這幾筆在 Mac mini 與 GAS 上都看不到圖，清單以第 3 步 migrate 印出的「簽名圖」❌ 為準，記在 #10。
+  - 等它跑完（`logs/mirror.lock` 消失），`logs/mirror-last.json` 要是 `ok:true`、`pending:0`，而且沒有 `running`／`busy`。剛搬來的已讀都已經有 Drive id，所以 pending 是 0。
+  - 第 3 步有 Drive 讀不到的圖時：migrate 把那幾筆的本機 `sigId` 設成空白、`driveSigId` 保留原值，所以 mirror.js **不會**把它們算進 pending／missing／bad／skipped（四種都只看 `sigId` 有值的列），也**不需要**寫進 `logs/sig-skip.json`，`missing` 仍是 0。這幾筆在 Mac mini 與 GAS 上都看不到圖，清單以第 3 步 migrate 印出的「簽名圖」❌ 為準，記在 #10。
 
 **失敗怎麼辦**
 - 操作紀錄有新增：代表凍結沒生效期間有人寫入，而且在 export 之後。

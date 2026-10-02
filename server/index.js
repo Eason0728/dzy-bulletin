@@ -239,8 +239,8 @@ function makeApp(cfg) {
         return { count: num(f.count), bytes: num(f.bytes), pending: num(f.pending), stale: num(f.stale), skipped: num(f.skipped) || 0, lastScanAt: typeof f.lastScanAt === 'string' ? f.lastScanAt : null }; }),
       // #26 光復未簽提醒（server/sign-remind.js，選用）：只挑 at／ok／people；檔案不存在（沒裝或還沒啟用）＝null。最後一次失敗 → 黃
       remind: job('remind-last.json', (j) => ({ at: j.at || null, ok: !!j.ok, people: num(j.people) })),
-      // #28 新公告上架通知（server/announce.js，伺服器內計時器）：null＝沒啟用（.env 沒設或 E2E）；啟用但第一輪還沒跑完＝三欄 null。最後一輪失敗 → 黃
-      announce: announcer ? (announcer.health() || { at: null, ok: null, pending: null }) : null,
+      // #28 新公告上架通知（server/announce.js，伺服器內計時器）：null＝沒啟用（.env 沒設或 E2E）；啟用但第一輪還沒跑完＝四欄 null。最後一輪失敗、或有放棄的（gaveup>0）→ 黃
+      announce: announcer ? (announcer.health() || { at: null, ok: null, pending: null, gaveup: null }) : null,
       disk: { freeMB }
     };
     return Object.assign(h, judgeHealth(h, Date.now()));

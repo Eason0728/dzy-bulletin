@@ -7,7 +7,8 @@
  *       任一時間戳比現在晚 5 分鐘以上（系統時鐘被往回調，不然會一直綠燈；#14 建議 6）、
  *       files.stale > 0（M7 #18 D5：有附件待補超過 24 小時；pending > 0 但 stale = 0 是正常排隊，不轉燈）
  *       remind.ok=false（#26 光復未簽提醒最後一次送出失敗；remind 為 null＝沒裝或沒啟用、ok=true＝成功，都不影響燈號）
- *       announce.ok=false（#28 新公告通知最後一輪有失敗；announce 為 null＝沒啟用、ok=null＝第一輪還沒跑完，都不影響燈號）
+ *       announce.ok=false（#28 新公告通知最後一輪有失敗；announce 為 null＝沒啟用、ok=null＝第一輪還沒跑完，都不影響燈號）、
+ *       announce.gaveup > 0（有公告連續失敗被放棄；持續黃燈直到 `node server/announce.js --retry` 清掉，#29 S1）
  *   結果檔存在但讀不到（at 為 null）→ 紅「結果檔讀不到」，與「從沒跑過」分開寫。
  *   mirror.notMigrated（空庫、尚未搬遷，mirror.js 在本機拒絕）→ 黃「尚未搬遷」，蓋掉「鏡像連續失敗」與「超過 3 小時」兩個黃燈；
  *   **鏡像超過 6 小時沒跑的紅燈照判**（空庫時每輪照樣更新 at，at 變舊＝launchd 的 mirror 死了）。快照、磁碟、附件等其他規則照常。
@@ -40,6 +41,7 @@ function judgeHealth(h, nowMs) {
   if (h && h.files && Number(h.files.stale) > 0) yellow.push('有附件超過 24 小時沒補齊');
   if (h && h.remind && h.remind.ok === false) yellow.push('未簽提醒送出失敗');
   if (h && h.announce && h.announce.ok === false) yellow.push('新公告通知失敗');
+  if (h && h.announce && Number(h.announce.gaveup) > 0) yellow.push('有新公告通知已放棄');
   return { level: red.length ? 'red' : yellow.length ? 'yellow' : 'green', why: red.concat(yellow) };
 }
 

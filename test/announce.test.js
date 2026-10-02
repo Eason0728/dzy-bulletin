@@ -25,9 +25,11 @@ const TPE = (s) => new Date(s + '+08:00');
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
 
 // 假小幫手：mode＝'push'｜'fallback'｜'dup'｜'pushFail'（ok:false mode push）｜'drop'（每次斷線）｜'notJson'｜'badToken'
-// 模擬 GAS 的 label 永久判重：同一 label 第二次回 dup
+//   ｜'legacy'（舊版小幫手：不認得 push_text，回裸的 {ok:true}）｜'noEcho'（有 mode 沒 action 回聲）｜'badMode'（mode 不認得）｜'busy'
+//   delayMs＞0：每個回應延遲（測第一輪還沒跑完的 /health）
+// 模擬 GAS 的 label 永久判重：同一 label 第二次回 dup；成功回應都帶 action:'push_text'
 function fakeHelper() {
-  const h = { mode: 'push', bodies: [], hits: 0, seen: new Set() };
+  const h = { mode: 'push', bodies: [], hits: 0, seen: new Set(), delayMs: 0 };
   h.server = http.createServer((req, res) => {
     let b = '';
     req.on('data', (c) => { b += c; });
@@ -37,14 +39,21 @@ function fakeHelper() {
       let j = {}; try { j = JSON.parse(b); } catch (e) {}
       h.bodies.push(j);
       res.setHeader('Content-Type', 'application/json');
+      const end = res.end.bind(res);
+      res.end = (x) => (h.delayMs ? setTimeout(() => end(x), h.delayMs) : end(x));
+      const E = (o) => JSON.stringify(Object.assign({ action: 'push_text' }, o));
+      if (h.mode === 'legacy') return res.end(JSON.stringify({ ok: true }));
+      if (h.mode === 'noEcho') return res.end(JSON.stringify({ ok: true, mode: 'push', sent: 1 }));
+      if (h.mode === 'badMode') return res.end(E({ ok: true, mode: 'weird' }));
+      if (h.mode === 'busy') return res.end(E({ ok: false, error: 'busy' }));
       if (h.mode === 'notJson') return res.end('<html>找不到網頁</html>');
       if (j.action !== 'push_text' || j.token !== 'T-test' || h.mode === 'badToken') return res.end(JSON.stringify({ ok: false, error: 'bad token' }));
-      if (h.mode === 'pushFail') return res.end(JSON.stringify({ ok: false, mode: 'push', fail: 1 }));
-      if (h.seen.has(j.label)) return res.end(JSON.stringify({ ok: true, mode: 'dup' }));
+      if (h.mode === 'pushFail') return res.end(E({ ok: false, mode: 'push', fail: 1 }));
+      if (h.seen.has(j.label)) return res.end(E({ ok: true, mode: 'dup' }));
       h.seen.add(j.label);
-      if (h.mode === 'fallback') return res.end(JSON.stringify({ ok: true, mode: 'fallback', queued: 1 }));
-      if (h.mode === 'dup') return res.end(JSON.stringify({ ok: true, mode: 'dup' }));
-      res.end(JSON.stringify({ ok: true, mode: 'push', sent: 1 }));
+      if (h.mode === 'fallback') return res.end(E({ ok: true, mode: 'fallback', queued: 1 }));
+      if (h.mode === 'dup') return res.end(E({ ok: true, mode: 'dup' }));
+      res.end(E({ ok: true, mode: 'push', sent: 1 }));
     });
   });
   return new Promise((ok) => h.server.listen(0, '127.0.0.1', () => { h.url = 'http://127.0.0.1:' + h.server.address().port + '/exec'; ok(h); }));
@@ -162,25 +171,100 @@ async function main() {
     }
 
     // ---- A6 失敗重試與 3 次上限（ok:false／斷線／不是 JSON／token 錯）----
-    for (const mode of ['pushFail', 'drop', 'notJson', 'badToken']) {
+    for (const mode of ['pushFail', 'drop', 'notJson', 'badToken', 'legacy', 'noEcho', 'badMode', 'busy']) {
       const s = newStore([]);
       h.bodies = []; h.hits = 0; h.seen.clear(); h.mode = 'push';
       const a = ann(s, h, '2026-10-02T09:00');
       await a.run(); putPost(s, P('F-1'));
       h.mode = mode;
       const r1 = await a.run();
-      eq('A6 ' + mode + ' 第 1 次失敗：不標記、pending=1、ok=false', [r1.ok, r1.pending, r1.failed, !!kv(s, A.KV_DONE)['F-1'], kv(s, A.KV_FAILS)['F-1']], [false, 1, 1, false, 1]);
+      eq('A6 ' + mode + ' 第 1 次失敗：不標記、pending=1、ok=false', [r1.ok, r1.pending, r1.failed, !!kv(s, A.KV_DONE)['F-1'], kv(s, A.KV_FAILS)['F-1'].n], [false, 1, 1, false, 1]);
       const retryHits = mode === 'drop' || mode === 'notJson' ? 2 : 1;   // 網路類錯誤當輪重試一次
       eq('A6 ' + mode + ' 當輪打幾次', h.hits, retryHits);
-      eq('A6 ' + mode + ' /health 欄位', a.health(), { at: r1.at, ok: false, pending: 1 });
+      eq('A6 ' + mode + ' /health 欄位', a.health(), { at: r1.at, ok: false, pending: 1, gaveup: 0 });
+      a.setNow('2026-10-02T10:00');
       const r2 = await a.run();
-      eq('A6 ' + mode + ' 第 2 次', [r2.ok, r2.pending, kv(s, A.KV_FAILS)['F-1']], [false, 1, 2]);
+      eq('A6 ' + mode + ' 第 2 次', [r2.ok, r2.pending, kv(s, A.KV_FAILS)['F-1'].n], [false, 1, 2]);
+      a.setNow('2026-10-02T11:00');
       const r3 = await a.run();
       eq('A6 ' + mode + ' 第 3 次放棄：標 gaveup、pending=0', [r3.ok, r3.pending, r3.gaveUp, kv(s, A.KV_DONE)['F-1'].mode, kv(s, A.KV_FAILS)['F-1']], [false, 0, 1, 'gaveup', undefined]);
       const hits = h.hits; h.mode = 'push';
+      a.setNow('2026-10-02T12:00');
       const r4 = await a.run();
       eq('A6 ' + mode + ' 放棄後不再重試', [h.hits - hits, r4.ok, r4.pending], [0, true, 0]);
+      eq('A6 ' + mode + ' 放棄後 /health gaveup=1（持續）', a.health().gaveup, 1);
       eq('A6 ' + mode + ' 結果檔不含 token', /T-test/.test(fs.readFileSync(path.join(s.dir, 'logs', 'announce-last.json'), 'utf8') + fs.readFileSync(path.join(s.dir, 'logs', 'announce.log'), 'utf8')), false);
+      s.st.close();
+    }
+
+    // ---- A6b 舊版小幫手（裸 {ok:true}）不會記成已推（#29 B1）；部署新版後下一輪推出 ----
+    {
+      const s = newStore([]);
+      h.bodies = []; h.seen.clear(); h.mode = 'push';
+      const a = ann(s, h, '2026-10-02T09:00');
+      await a.run(); putPost(s, P('LEG-1'));
+      h.mode = 'legacy'; const r = await a.run();
+      eq('A6b 舊版 {ok:true} → 失敗、不標記', [r.ok, r.sent, r.failed, !!kv(s, A.KV_DONE)['LEG-1']], [false, 0, 1, false]);
+      eq('A6b log 寫原因', /小幫手回應不符/.test(fs.readFileSync(path.join(s.dir, 'logs', 'announce.log'), 'utf8')), true);
+      h.mode = 'push'; a.setNow('2026-10-02T10:00'); const r2 = await a.run();
+      eq('A6b 部署新版後推出', [r2.ok, r2.sent, kv(s, A.KV_DONE)['LEG-1'].mode], [true, 1, 'push']);
+      eq('A6b accepted()', [A.accepted({ ok: true }), A.accepted({ ok: true, mode: 'push' }), A.accepted({ ok: true, action: 'push_text', mode: 'x' }),
+        A.accepted({ ok: false, action: 'push_text', mode: 'push' }), A.accepted({ ok: true, action: 'push_text', mode: 'fallback' })], [false, false, false, false, true]);
+      s.st.close();
+    }
+
+    // ---- A6c 失敗次數用時間判斷：距上次不到 50 分鐘不累加（#29 S2）----
+    {
+      const s = newStore([]);
+      h.bodies = []; h.seen.clear(); h.mode = 'push';
+      const a = ann(s, h, '2026-10-02T09:00');
+      await a.run(); putPost(s, P('GAP-1'));
+      h.mode = 'pushFail';
+      for (const t of ['09:00', '09:05', '09:10', '09:20', '09:49']) { a.setNow('2026-10-02T' + t); await a.run(); }
+      eq('A6c 49 分鐘內 5 次失敗只算 1 次、沒放棄', [kv(s, A.KV_FAILS)['GAP-1'].n, !!kv(s, A.KV_DONE)['GAP-1']], [1, false]);
+      a.setNow('2026-10-02T09:50'); await a.run();
+      eq('A6c 滿 50 分鐘才算第 2 次', kv(s, A.KV_FAILS)['GAP-1'].n, 2);
+      a.setNow('2026-10-02T10:30'); await a.run();
+      eq('A6c 從第 2 次算起不到 50 分鐘不累加', kv(s, A.KV_FAILS)['GAP-1'].n, 2);
+      a.setNow('2026-10-02T10:40'); await a.run();
+      eq('A6c 第 3 次（距第 2 次 50 分）→ 放棄', kv(s, A.KV_DONE)['GAP-1'].mode, 'gaveup');
+      // 舊格式（純數字）讀得懂
+      s.st.kvSet(A.KV_FAILS, JSON.stringify({ OLD: 2 })); putPost(s, P('OLD')); 
+      a.setNow('2026-10-02T10:41'); await a.run();
+      eq('A6c 舊格式數字 2 → 第 3 次放棄', kv(s, A.KV_DONE)['OLD'].mode, 'gaveup');
+      s.st.close();
+    }
+
+    // ---- A6d --retry／--retry-all 補推（#29 S1）----
+    {
+      const s = newStore([]);
+      h.bodies = []; h.seen.clear(); h.mode = 'push';
+      const a = ann(s, h, '2026-10-02T09:00');
+      await a.run(); putPost(s, P('G-1')); putPost(s, P('G-2')); putPost(s, P('G-3'));
+      h.mode = 'pushFail';
+      for (const t of ['09:00', '10:00', '11:00']) { a.setNow('2026-10-02T' + t); await a.run(); }
+      eq('A6d 三則都放棄、gaveup=3', a.health().gaveup, 3);
+      putPost(s, P('G-4')); a.setNow('2026-10-02T12:00'); await a.run();   // G-4 失敗中（1 次）
+      // 子程序跑 --retry G-1（伺服器開著也行：只動 kv）
+      const cli = (args) => new Promise((ok) => {
+        const p = spawn(process.execPath, [path.join(ROOT, 'server', 'announce.js')].concat(args), { env: { PATH: process.env.PATH, DZYB_NO_DOTENV: '1', DATA_DIR: s.dir }, stdio: ['ignore', 'pipe', 'pipe'] });
+        let out = ''; p.stdout.on('data', (c) => { out += c; }); p.stderr.on('data', (c) => { out += c; }); p.on('exit', (code) => ok({ code, out }));
+      });
+      const c1 = await cli(['--retry', 'G-1']);
+      eq('A6d --retry G-1', [c1.code, /G-1：已清除/.test(c1.out), a.health().gaveup], [0, true, 2]);
+      const c0 = await cli([]);
+      eq('A6d 沒給參數 → 印用法 exit 2', [c0.code, /用法/.test(c0.out)], [2, true]);
+      const cDone = await cli(['--retry', 'NOPE']);
+      eq('A6d 沒紀錄的 id', [cDone.code, /沒有放棄或失敗紀錄/.test(cDone.out)], [0, true]);
+      h.mode = 'push'; h.bodies = []; a.setNow('2026-10-02T13:00'); await a.run();
+      eq('A6d 下一輪只重推 G-1 與失敗中的 G-4', labels(h).sort(), ['佈告欄新公告:G-1', '佈告欄新公告:G-4']);
+      const cOk = await cli(['--retry', 'G-1']);
+      eq('A6d 已通知的不動', /已通知過（push），不動/.test(cOk.out), true);
+      const cAll = await cli(['--retry-all']);
+      eq('A6d --retry-all 清掉剩下兩則', [cAll.code, (cAll.out.match(/已清除/g) || []).length, a.health().gaveup], [0, 2, 0]);
+      h.bodies = []; a.setNow('2026-10-02T14:00'); await a.run();
+      eq('A6d 下一輪推出 G-2、G-3', labels(h).sort(), ['佈告欄新公告:G-2', '佈告欄新公告:G-3']);
+      eq('A6d announce.log 記手動補推', /手動補推：G-1：已清除/.test(fs.readFileSync(path.join(s.dir, 'logs', 'announce.log'), 'utf8')), true);
       s.st.close();
     }
 
@@ -230,6 +314,8 @@ async function main() {
       const lv = (an) => judgeHealth(Object.assign({}, base, { announce: an }), now);
       eq('A10 燈號', [lv(null).level, lv({ at: null, ok: null, pending: null }).level, lv({ at: ago(1), ok: true, pending: 0 }).level, lv({ at: ago(1), ok: false, pending: 1 })],
         ['green', 'green', 'green', { level: 'yellow', why: ['新公告通知失敗'] }]);
+      eq('A10 gaveup>0 持續黃（就算這輪 ok）', [lv({ at: ago(1), ok: true, pending: 0, gaveup: 1 }), lv({ at: ago(1), ok: true, pending: 0, gaveup: 0 }).level],
+        [{ level: 'yellow', why: ['有新公告通知已放棄'] }, 'green']);
     }
 
     // ---- B 真伺服器（子程序）----
@@ -243,6 +329,21 @@ async function main() {
           for (let i = 0; i < 60; i++) { hh = await getJson(sv0.port, '/health'); if (hh.announce && hh.announce.at) break; await sleep(50); }
           eq('B0 啟動即跑第一輪、log 寫間隔', [!!(hh.announce && hh.announce.at), /已啟動（每 10 分鐘一次）/.test(sv0.out())], [true, true]);
         } finally { await sv0.stop(); }
+      }
+      // B0b 第一輪還沒跑完時 /health 的 announce 是四欄 null（和「沒啟用」的 null 分得開；#29 建議 1）
+      {
+        const dirB = tmp('dzyb-ann-data-');
+        const stB = makeSqliteStore(dirB);
+        stB.load({ posts: [P('SLOW-1', { publishOn: L.today() })], staff: [], reads: [], log: [] });
+        stB.kvSet(A.KV_DONE, '{}');                            // 已啟用過 → 第一輪會真的去打小幫手
+        stB.close();
+        h.bodies = []; h.seen.clear(); h.mode = 'push'; h.delayMs = 1500;
+        const svB = await startServer({ DATA_DIR: dirB, REMIND_ENQUEUE_URL: h.url, REMIND_ENQUEUE_TOKEN: 'T-test', ANNOUNCE_EVERY_MS: '600000' });
+        try {
+          for (let i = 0; i < 40 && h.hits === 0 && h.bodies.length === 0; i++) await sleep(25);
+          const hh = await getJson(svB.port, '/health');
+          eq('B0b 第一輪進行中：announce 四欄 null', hh.announce, { at: null, ok: null, pending: null, gaveup: null });
+        } finally { await svB.stop(); h.delayMs = 0; }
       }
       // B1 設定了：啟動先跑一次（首次啟用，不推舊公告），之後依 ANNOUNCE_EVERY_MS 再跑；新公告會推；/health 有 announce
       const dir = tmp('dzyb-ann-data-');

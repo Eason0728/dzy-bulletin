@@ -234,6 +234,8 @@ function makeApp(cfg) {
       // M7（#18 D8）：附件本機備份（mirror.js 第 3 步寫在 mirror-last.json 的 files）；只挑六個狀態欄位，錯誤原文不外露
       files: job('mirror-last.json', (j) => { const f = j.files; if (!f || typeof f !== 'object') return null;
         return { count: num(f.count), bytes: num(f.bytes), pending: num(f.pending), stale: num(f.stale), skipped: num(f.skipped) || 0, lastScanAt: typeof f.lastScanAt === 'string' ? f.lastScanAt : null }; }),
+      // #26 光復未簽提醒（server/sign-remind.js，選用）：只挑 at／ok／people；檔案不存在（沒裝或還沒啟用）＝null。最後一次失敗 → 黃
+      remind: job('remind-last.json', (j) => ({ at: j.at || null, ok: !!j.ok, people: num(j.people) })),
       disk: { freeMB }
     };
     return Object.assign(h, judgeHealth(h, Date.now()));

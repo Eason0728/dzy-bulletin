@@ -798,6 +798,10 @@ async function main() {
     const H = (m, b, free) => judgeHealth({ mirror: m, backup: b, disk: { freeMB: free === undefined ? 50000 : free } }, now);
     const okM = { at: ago(0.5), ok: true, sigPending: 0, fails: 0 }, okB = { at: ago(5), ok: true };
     eq('全部正常 → green', H(okM, okB), { level: 'green', why: [] });
+    eq('#26 remind：null／ok=true 不影響、ok=false → 黃', [judgeHealth({ mirror: okM, backup: okB, remind: null, disk: { freeMB: 50000 } }, now).level,
+      judgeHealth({ mirror: okM, backup: okB, remind: { at: ago(1), ok: true, people: 2 }, disk: { freeMB: 50000 } }, now).level,
+      judgeHealth({ mirror: okM, backup: okB, remind: { at: ago(1), ok: false, people: 2 }, disk: { freeMB: 50000 } }, now)],
+      ['green', 'green', { level: 'yellow', why: ['未簽提醒送出失敗'] }]);
     eq('mirror.at > 3h → yellow；> 6h → red', [H(Object.assign({}, okM, { at: ago(3.5) }), okB).level, H(Object.assign({}, okM, { at: ago(6.5) }), okB).level], ['yellow', 'red']);
     eq('backup.at > 26h → red（25h 還是 green）', [H(okM, { at: ago(26.5), ok: true }).level, H(okM, { at: ago(25), ok: true }).level], ['red', 'green']);
     eq('mirror 連續失敗 1 次不黃、2 次黃', [H(Object.assign({}, okM, { ok: false, fails: 1 }), okB).level, H(Object.assign({}, okM, { ok: false, fails: 2 }), okB).level], ['green', 'yellow']);

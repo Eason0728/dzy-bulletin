@@ -8,7 +8,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { makeSqliteStore } = require('../server/store-sqlite.js');
-const { runRemind, buildText, LABEL, MAX_CHARS } = require('../server/sign-remind.js');
+const { runRemind, buildText, LABEL, MAX_CHARS, UNSYNCED_TITLE } = require('../server/sign-remind.js');
 const L = require('../js/logic.js');
 
 const ROOT = path.join(__dirname, '..');
@@ -128,6 +128,9 @@ async function main() {
     h.bodies = []; h.hits = 0; h.seen.clear();
     const utc = await quiet(() => runRemind(opt(dir, { now: new Date('2026-10-03T15:59:00Z'), dryRun: true })));   // ＝台北 10/3 23:59
     eq('A2 以台北日期計算', /十月排班/.test(utc.text), false);
+    // #27 建議 1：unit=mala、在職、沒有 gf: 來源的同仁列出來（不提醒）；離職、總部、他店不列
+    eq('A2 列出沒有打卡來源的小辛辣同仁', utc.unsynced, ['手動建']);
+    eq('A2 remind.log 有那一行', fs.readFileSync(path.join(dir, 'logs', 'remind.log'), 'utf8').includes(UNSYNCED_TITLE + '（1 位）：手動建'), true);
   }
 
   // ===== A3 沒有人要提醒 → 不打小幫手 =====
@@ -161,12 +164,45 @@ async function main() {
     h.mode = 'ok';
   }
 
-  // ===== A5 長度上限：超過就截斷並加「…等」，網址留著 =====
+  // ===== A5 長度上限：超過就截斷並加「…等」，網址留著；不切斷姓名、不切出孤立代理字元、截斷後要接近上限（#27 S1／S3） =====
   {
-    const names = Array.from({ length: 900 }, (_, i) => '同仁' + i);
-    const t = buildText([{ title: '很長', days: 4, names }]);
-    eq('A5 ≤ 上限', t.length <= MAX_CHARS, true);
-    eq('A5 有「…等」與網址', [/…等\n請到 https:\/\/dzy-bulletin\.github\.io 簽名，謝謝！$/.test(t), t.startsWith('📋 佈告欄未簽提醒\n')], [true, true]);
+    const LONE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+    const TAIL = /…等\n請到 https:\/\/dzy-bulletin\.github\.io 簽名，謝謝！$/;
+    const lastName = (t) => { const m = /([^、：\n]*)…等\n/.exec(t); return m ? m[1] : null; };
+    const check = (tag, groups) => {
+      const t = buildText(groups), all = new Set([].concat(...groups.map((g) => g.names)));
+      const maxName = Math.max(...[...all].map((n) => n.length));
+      eq(tag + ' ≤ 上限、接近上限', [t.length <= MAX_CHARS, t.length >= MAX_CHARS - maxName - 2], [true, true]);
+      eq(tag + ' 開頭、「…等」與網址', [t.startsWith('📋 佈告欄未簽提醒\n'), TAIL.test(t)], [true, true]);
+      eq(tag + ' 「…等」前是完整姓名、不以「、」結尾', [all.has(lastName(t)), /、…等/.test(t)], [true, false]);
+      eq(tag + ' 沒有孤立代理字元', LONE.test(t), false);
+    };
+    // 姓名長度 2～4 字輪流：切點一定會有落在姓名中間的時候；pad 改變前綴長度，讓切點掃過不同位置
+    for (let pad = 0; pad < 4; pad++) {
+      check('A5 一般 pad' + pad, [{ title: '很長' + 'x'.repeat(pad), days: 4, names: Array.from({ length: 1500 }, (_, i) => ['張三', '李小四', '歐陽娜娜'][i % 3] + i) }]);
+      check('A5 emoji pad' + pad, [{ title: '🎉中秋公告😀' + 'x'.repeat(pad), days: 4, names: Array.from({ length: 1500 }, (_, i) => '😀' + ['甲', '乙乙', '丙丙丙'][i % 3] + i) }]);
+    }
+    // 切點恰好落在姓名中間：算好前綴，讓第一個不放得下的名字跨過切點
+    { const head = '📋 佈告欄未簽提醒', foot = '請到 https://dzy-bulletin.github.io 簽名，謝謝！';
+      const room = MAX_CHARS - head.length - foot.length - 2 - 2;
+      const pre = '《t》上架 3 天：', names = [];
+      let len = pre.length;
+      for (let i = 0; len < room; i++) { const n = '名' + String(i).padStart(4, '0'); names.push(n); len += n.length + (i ? 1 : 0); }
+      // 現在最後一個名字跨過切點（len ≥ room）；如果剛好等於 room 就再加一個，確保有切到
+      names.push('跨切點的名字');
+      const t = buildText([{ title: 't', days: 3, names }]);
+      eq('A5 切點在姓名中間：不留半個名字', [/名\d{0,3}…等/.test(t), /名\d{4}…等/.test(t)], [false, true]);
+      eq('A5 切點在姓名中間：不以「、」結尾', /、…等/.test(t), false); }
+    // 多則公告：切點落在下一行的標題前綴裡 → 退回上一行結尾，不留半截標題
+    { const t = buildText([{ title: 'A', days: 3, names: Array.from({ length: 1000 }, (_, i) => '甲' + i) }, { title: '第二則很長的標題'.repeat(5), days: 9, names: ['乙'] }]);
+      eq('A5 不留半截標題', [/第二則/.test(t), /《[^》\n]*…等/.test(t)], [false, false]); }
+    // 第一則剛好放得下、切點落在第二則的標題前綴裡 → 退回第一則行尾（換行），第一則的最後一個名字要留著
+    { const head = '📋 佈告欄未簽提醒', foot = '請到 https://dzy-bulletin.github.io 簽名，謝謝！';
+      const room = MAX_CHARS - head.length - foot.length - 2 - 2, pre = '《A》上架 3 天：', names = [];
+      let len = pre.length;
+      for (let i = 0; len + 6 < room - 10; i++) { const n = '名' + String(i).padStart(4, '0'); names.push(n); len += n.length + (i ? 1 : 0); }
+      const t = buildText([{ title: 'A', days: 3, names }, { title: '第二則很長的標題'.repeat(5), days: 9, names: ['乙'] }]);
+      eq('A5 退回換行：第一則名單完整保留', [t.includes(names[names.length - 1] + '…等'), /第二則/.test(t)], [true, false]); }
     eq('A5 短的不截', buildText([{ title: 'x', days: 3, names: ['甲'] }]).includes('…等'), false);
   }
 
@@ -192,6 +228,7 @@ async function main() {
     const b2 = await runJob(['--dry-run'], { DATA_DIR: dir, REMIND_ENQUEUE_URL: h.url, REMIND_ENQUEUE_TOKEN: 'T-test' });
     eq('B2 dry-run exit 0、不送、不寫結果', [b2.code, h.hits, hasLast(dir)], [0, 0, false]);
     eq('B2 印出訊息', /^📋 佈告欄未簽提醒\n《十月排班》上架 3 天：張羽成、蕭妏芳\n/.test(b2.out), true);
+    eq('B2 列出不在打卡同步名單的光復同仁', b2.out.includes('⚠ 以下光復同仁不在打卡同步名單，不會被提醒（1 位）：手動建'), true);
     const b2b = await runJob(['--dry-run'], { DATA_DIR: dir });
     eq('B2 dry-run 不需要先設定', [b2b.code, /《十月排班》/.test(b2b.out), h.hits], [0, true, 0]);
     // B3 正式送出

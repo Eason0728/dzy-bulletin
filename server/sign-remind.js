@@ -63,15 +63,29 @@ function pending(data, td) {
     .filter((g) => g.names.length > 0);
 }
 
-// 訊息本文；超過 MAX_CHARS 就截斷中間的名單並加「…等」，第一行與最後的網址一定留著
+// 訊息本文；超過 MAX_CHARS 就截斷名單並加「…等」，第一行與最後的網址一定留著（#27 S1）
+//   以碼點（Array.from）為單位累加，不切出孤立代理字元（emoji 是兩個 UTF-16 單位）；長度仍以 UTF-16 單位（String.length）計，
+//   與小幫手 text.slice(0, 5000) 的算法一致。切點往回退到最後一個「、」或換行之前，不切斷姓名、尾端不留「、」。
 function buildText(groups) {
-  const head = '📋 佈告欄未簽提醒', foot = `請到 ${SITE} 簽名，謝謝！`;
+  const head = '📋 佈告欄未簽提醒', foot = `請到 ${SITE} 簽名，謝謝！`, more = '…等';
   const body = groups.map((g) => `《${g.title}》上架 ${g.days} 天：${g.names.join('、')}`).join('\n');
   const full = head + '\n' + body + '\n' + foot;
   if (full.length <= MAX_CHARS) return full;
-  const room = MAX_CHARS - head.length - foot.length - 2 - '…等'.length;
-  return head + '\n' + body.slice(0, room).replace(/[、\n]+$/, '') + '…等\n' + foot;
+  const room = MAX_CHARS - head.length - foot.length - 2 - more.length;
+  const cps = Array.from(body);
+  let k = 0, len = 0;
+  while (k < cps.length && len + cps[k].length <= room) len += cps[k++].length;
+  let cut = cps.slice(0, k).join('');
+  if (cps[k] !== '、' && cps[k] !== '\n') cut = cut.slice(0, Math.max(cut.lastIndexOf('、'), cut.lastIndexOf('\n'), 0));   // 切點在姓名中間：退回上一個分隔
+  return head + '\n' + cut + more + '\n' + foot;
 }
+
+// unit=mala、在職、但沒有 gf: 來源的同仁（手動建的、刪除後又手動加回的）：不會被提醒，列給 Eason 對照回條（#27 建議 1）
+//   mala 沒有門市欄位，分不出光復／美村／南昌，所以只列出、不納入提醒
+function unsynced(staff) {
+  return staff.filter((s) => s.active && s.unit === 'mala' && String(s.src || '').indexOf(SRC_PREFIX) !== 0).map((s) => s.name);
+}
+const UNSYNCED_TITLE = '⚠ 以下光復同仁不在打卡同步名單，不會被提醒';
 
 // 打小幫手一次：網路錯誤／逾時／回應不是 JSON → e.retry＝true；小幫手回 ok:false → 不重試
 async function postOnce(url, payload) {
@@ -93,9 +107,11 @@ async function postOnce(url, payload) {
 async function runRemind(o) {
   const dir = o.dir, td = L.today(o.now || new Date());
   const res = { at: new Date().toISOString(), ok: false, people: 0, posts: 0, queued: 0 };
-  let groups, text;
+  let groups, text, miss = [];
   try {
-    groups = pending(loadData(dir), td);
+    const data = loadData(dir);
+    groups = pending(data, td);
+    miss = unsynced(data.staff);
     res.posts = groups.length;
     res.people = groups.reduce((n, g) => n + g.names.length, 0);
     text = groups.length ? buildText(groups) : '';
@@ -105,9 +121,12 @@ async function runRemind(o) {
     J.logLine(dir, LOG, '讀取資料失敗：' + res.error);
     return res;
   }
+  const missText = miss.length ? `${UNSYNCED_TITLE}（${miss.length} 位）：${miss.join('、')}` : '';
+  if (missText) J.logLine(dir, LOG, missText);           // 每天一行進 remind.log（本機檔，不外送）
   if (o.dryRun) {
     console.log(text || `（${td}：沒有人需要提醒，不會送出）`);
-    res.ok = true; res.dryRun = true; res.text = text;   // 只回給呼叫端（測試用），--dry-run 不寫結果檔
+    if (missText) console.log('\n' + missText);
+    res.ok = true; res.dryRun = true; res.text = text; res.unsynced = miss;   // 只回給呼叫端（測試用），--dry-run 不寫結果檔
     J.logLine(dir, LOG, `試跑（--dry-run，未送出）：${res.posts} 則公告、${res.people} 人次`);
     return res;
   }
@@ -147,4 +166,4 @@ async function main() {
 }
 
 if (require.main === module) main().catch((e) => { console.error(J.errText(e)); process.exit(1); });
-module.exports = { runRemind, pending, buildText, daysBetween, LABEL, MAX_CHARS };
+module.exports = { runRemind, pending, buildText, unsynced, daysBetween, LABEL, MAX_CHARS, UNSYNCED_TITLE };

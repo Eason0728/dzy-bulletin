@@ -718,6 +718,35 @@ launchctl bootstrap "$U" "$HOME/Library/LaunchAgents/$J.plist" && launchctl prin
 
 **停用**：一般路線 `launchctl bootout "$U/com.dzy.bulletin.remind"; rm -f ~/Library/LaunchAgents/com.dzy.bulletin.remind.plist`；附錄 A 路線請 Eason `sudo launchctl bootout system/com.dzy.bulletin.remind; sudo rm -f /Library/LaunchDaemons/com.dzy.bulletin.remind.plist`。或只把 `.env` 兩行刪掉（job 照跑、印「尚未啟用」）。
 
+## 新公告上架通知（#28，沿用未簽提醒的 .env）
+
+做什麼：主管上架的公告若是**小辛辣光復同仁要簽的**（單位含小辛辣或「全部」），伺服器就經**光復小幫手**（訂貨小幫手 @954wknja）的 `push_text` 入口**直接 push** 到光復群組（不走候補、吃小幫手每月額度；額度快滿時小幫手自動退回候補）。訊息：
+
+```
+📢 佈告欄新公告
+《公告標題》
+請到 https://dzy-bulletin.github.io 閱讀並簽名
+```
+
+- **不另裝 launchd job**：計時器在伺服器程序裡（`server/announce.js`），伺服器啟動時先跑一次，之後**每 1 小時**一次。所以主管上架後最慢約 1 小時群組收到；排定未來上架的，到上架日後的第一輪才推。
+- **沿用未簽提醒那兩個鍵**（`REMIND_ENQUEUE_URL`、`REMIND_ENQUEUE_TOKEN`，見上一節第 1 步），同一個小幫手、同一組 token，不用新增任何金鑰。沒設這兩個鍵 → 伺服器啟動時印一行「新公告通知：未設定 REMIND_ENQUEUE_URL／TOKEN，不啟動」，其他照常。
+- **前提**：小幫手的 Apps Script 已部署含 `push_text` 的版本（協調者負責；舊版小幫手不認得 `push_text`，會回非 JSON 或拒收，佈告欄這邊會記失敗、3 輪後停止）。
+- 每則公告只推一次（判重在佈告欄 SQLite kv `announced`，小幫手端也以 label `佈告欄新公告:<公告ID>` 永久判重）：編輯公告不重推、下架後重新上架也不重推。
+- **第一次啟用不補推舊公告**：kv 沒有 `announced` 時，把現有公告（排定未來上架的除外）全部標成已通知。
+- 失敗（連不上、逾時、不是 JSON、小幫手回 `ok:false`）：那一則不標記，下一輪（1 小時後）重試；同一則**連續失敗 3 次**（約 3 小時）就停止重試，記在 `announce.log`。
+- 結果在 `$DATA/logs/announce-last.json`（`at`、`ok`、`pending`、`sent`、`failed`、`gaveUp`）與 `$DATA/logs/announce.log`（有動作才寫）；`/health` 帶出 `announce: { at, ok, pending }`（沒啟用＝`null`；剛啟動、第一輪還沒跑完＝三欄 `null`）。最後一輪 `ok:false` 時燈號轉黃、原因「新公告通知失敗」，下一輪成功就恢復。
+
+**啟用／更新**：照附錄 B 更新程式到 main 後**重啟伺服器**（附錄 A 路線沒 sudo 時用 kill 讓 KeepAlive 重起）就生效——伺服器的 `.env` 只在啟動時讀，之後若才貼或換那兩個鍵，也要再重啟一次。
+
+**驗證（不要上架測試公告）**：
+1. 重啟後 `curl -s http://127.0.0.1:8793/health`：要有 `announce` 欄位，且 `ok` 不是 `false`（剛啟動幾秒內可能三欄都是 `null`，稍等再查一次）。`announce` 是 `null` → 兩個鍵沒讀到，對照上一節第 1 步的 `grep -c`。
+2. 伺服器 log 要有首次啟用那一行：`grep '首次啟用：已將' "$DATA/logs/server.log" "$DATA/logs/announce.log"`（例：「首次啟用：已將 12 則現有公告標記為已通知」；只會出現一次，之後重啟不會再印）。
+3. 等下一則正式公告上架（單位含小辛辣或「全部」），**1 小時內**光復群組會收到通知；`announce.log` 會有「已通知 <公告ID>（push）」。
+
+`ok:false` 時看 `announce.log`：`小幫手拒收：bad token` → `REMIND_ENQUEUE_TOKEN` 錯（未簽提醒也會一起壞）；`小幫手回應不是 JSON` → 小幫手還沒部署 `push_text` 版、或網址錯；`連不上`／`逾時` → Google 暫時不通，下一輪自動重試。
+
+**停用**：把 `.env` 那兩行刪掉後重啟伺服器（未簽提醒也會一起停）。
+
 ---
 
 ## 附錄 A：如果 FileVault 已經開了（或 Eason 不接受自動登入）→ 改走 (B) LaunchDaemon

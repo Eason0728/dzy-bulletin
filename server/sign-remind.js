@@ -33,7 +33,6 @@ const MIN_DAYS = 3;
 const MAX_CHARS = 4500;                                     // 小幫手寫入候補時截 5000 字（text.slice(0, 5000)），留餘裕
 const SITE = 'https://dzy-bulletin.github.io';
 const SRC_PREFIX = 'gf:';                                   // gf＝小辛辣光復（cf＝央廚、js＝墨竹亭金山）
-const TIMEOUT_SEC = 60;                                     // 小幫手 Apps Script 冷啟動＋寫試算表，60 秒很寬
 
 // 日期差（兩個 YYYY-MM-DD，以 UTC 午夜計，不受夏令時間影響；台灣也沒有）
 function daysBetween(from, to) { return Math.round((Date.parse(to + 'T00:00:00Z') - Date.parse(from + 'T00:00:00Z')) / 86400e3); }
@@ -87,23 +86,6 @@ function unsynced(staff) {
 }
 const UNSYNCED_TITLE = '⚠ 以下光復同仁不在打卡同步名單，不會被提醒';
 
-// 打小幫手一次：網路錯誤／逾時／回應不是 JSON → e.retry＝true；小幫手回 ok:false → 不重試
-async function postOnce(url, payload) {
-  let text;
-  try {
-    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(payload),
-      redirect: 'follow', signal: AbortSignal.timeout(TIMEOUT_SEC * 1000) });
-    text = await res.text();
-  } catch (e) {
-    const x = new Error((e && (e.name === 'TimeoutError' || e.name === 'AbortError')) ? '連線小幫手逾時' : '連不上小幫手：' + (e && e.message));
-    x.retry = true; throw x;
-  }
-  let j;
-  try { j = JSON.parse(text); } catch (e) { const x = new Error('小幫手回應不是 JSON'); x.retry = true; throw x; }
-  if (!j || !j.ok) throw new Error('小幫手拒收：' + String((j && j.error) || '未知原因').slice(0, 100));   // 只留對方的短句，不會含我們的 token
-  return j;
-}
-
 async function runRemind(o) {
   const dir = o.dir, td = L.today(o.now || new Date());
   const res = { at: new Date().toISOString(), ok: false, people: 0, posts: 0, queued: 0 };
@@ -138,14 +120,7 @@ async function runRemind(o) {
   }
   const payload = { action: 'enqueue_text', token: o.token, label: LABEL, text };
   try {
-    let r;
-    try { r = await postOnce(o.url, payload); }
-    catch (e) {
-      if (!e.retry) throw e;
-      J.logLine(dir, LOG, e.message + '，重試一次');
-      await new Promise((ok) => setTimeout(ok, o.retryMs >= 0 ? o.retryMs : 5000));
-      r = await postOnce(o.url, payload);
-    }
+    const r = await J.postHelperRetry(o.url, payload, { retryMs: o.retryMs, onRetry: (m) => J.logLine(dir, LOG, m) });   // 打法與重試共用 job-common.js（#28 抽出）
     res.queued = Number(r.queued) || 0;
     res.ok = true;
   } catch (e) { res.error = J.errText(e); }
@@ -157,7 +132,7 @@ async function runRemind(o) {
 async function main() {
   J.loadEnv(path.join(__dirname, '.env'));
   const dryRun = process.argv.includes('--dry-run');
-  const url = process.env.REMIND_ENQUEUE_URL || '', token = process.env.REMIND_ENQUEUE_TOKEN || '';
+  const { url, token } = J.helperEnv(process.env);
   if (!dryRun && (!url || !token)) { console.log('未設定 REMIND_ENQUEUE_URL／TOKEN，尚未啟用'); process.exit(0); }
   const retryMs = process.env.REMIND_RETRY_MS === undefined ? 5000 : Number(process.env.REMIND_RETRY_MS);
   const res = await runRemind({ dir: J.dataDir(process.env), url, token, dryRun, retryMs });

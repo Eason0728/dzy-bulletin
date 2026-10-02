@@ -128,8 +128,8 @@ async function main() {
   eq('prod GET /__blob is 404', (await request(P.port, 'GET', '/__blob?id=x')).status, 404);
   eq('prod POST /__bridge and /__files (M7 test routes) are 404', [(await request(P.port, 'POST', '/__bridge', { op: 'filelist' })).status, (await request(P.port, 'POST', '/__files', {})).status], [404, 404]);
   { const h = await request(P.port, 'GET', '/health');
-    eq('health shape', Object.keys(h.json).sort(), ['backup', 'bridge', 'disk', 'e2e', 'files', 'level', 'mirror', 'ok', 'uptime', 'v', 'why']);
-    eq('health prod values', [h.json.ok, h.json.e2e, h.json.bridge, h.json.mirror, h.json.backup, h.json.files, typeof h.json.disk.freeMB], [true, false, 'missing', null, null, null, 'number']);
+    eq('health shape', Object.keys(h.json).sort(), ['backup', 'bridge', 'disk', 'e2e', 'files', 'level', 'mirror', 'ok', 'remind', 'uptime', 'v', 'why']);
+    eq('health prod values', [h.json.ok, h.json.e2e, h.json.bridge, h.json.mirror, h.json.backup, h.json.files, h.json.remind, typeof h.json.disk.freeMB], [true, false, 'missing', null, null, null, null, 'number']);
     eq('health level red when jobs never ran', [h.json.level, h.json.why.slice(0, 2)], ['red', ['沒有鏡像紀錄', '沒有快照紀錄']]);
     eq('response has Content-Length', Number(h.headers['content-length']) > 0, true); }
   { fs.mkdirSync(path.join(P.dir, 'logs'));
@@ -146,7 +146,14 @@ async function main() {
     eq('health files stale > 0 → yellow reason', h2.why.includes('有附件超過 24 小時沒補齊'), true);
     eq('health files: no raw error text / id list', /secret|Users|F-9/.test(JSON.stringify(h2)), false);
     fs.writeFileSync(path.join(P.dir, 'logs/mirror-last.json'), JSON.stringify({ at: new Date().toISOString(), ok: true, pending: 0, fails: 0, files: { count: 1, bytes: 1, pending: 3, stale: 0, skipped: 0, lastScanAt: null } }));
-    eq('health files pending > 0 && stale = 0 → no files reason', (await request(P.port, 'GET', '/health')).json.why.includes('有附件超過 24 小時沒補齊'), false); }
+    eq('health files pending > 0 && stale = 0 → no files reason', (await request(P.port, 'GET', '/health')).json.why.includes('有附件超過 24 小時沒補齊'), false);
+    // #26：/health 帶出 remind 三個欄位（從 remind-last.json 挑），錯誤原文不外露；ok=false → 黃「未簽提醒送出失敗」，ok=true 不影響
+    fs.writeFileSync(path.join(P.dir, 'logs/remind-last.json'), JSON.stringify({ at: '2026-10-02T10:00:00.000Z', ok: false, people: 3, posts: 2, queued: 0, error: '小幫手拒收：/Users/secret' }));
+    const h3 = (await request(P.port, 'GET', '/health')).json;
+    eq('health remind: three fields only', h3.remind, { at: '2026-10-02T10:00:00.000Z', ok: false, people: 3 });
+    eq('health remind ok=false → yellow reason、no raw error', [h3.why.includes('未簽提醒送出失敗'), /secret|Users|拒收/.test(JSON.stringify(h3))], [true, false]);
+    fs.writeFileSync(path.join(P.dir, 'logs/remind-last.json'), JSON.stringify({ at: '2026-10-02T10:00:00.000Z', ok: true, people: 0, posts: 0, queued: 0 }));
+    eq('health remind ok=true → no remind reason', (await request(P.port, 'GET', '/health')).json.why.includes('未簽提醒送出失敗'), false); }
   { const big = Buffer.alloc(41 * 1024 * 1024, 0x41);
     eq('41MB body → 413', (await request(P.port, 'POST', '/', big)).status, 413);
     eq('41MB chunked body → 413', (await request(P.port, 'POST', '/', big, { chunked: true })).status, 413);

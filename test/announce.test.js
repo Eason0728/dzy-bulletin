@@ -97,7 +97,16 @@ async function main() {
     // ---- A1 訊息格式、標題 200 字（以碼點計）----
     eq('A1 訊息格式', A.buildText('  十月排班  '), '📢 佈告欄新公告\n《十月排班》\n請到 https://dzy-bulletin.github.io 閱讀並簽名');
     const long = '😀'.repeat(250);
-    eq('A1 標題截 200 個字（emoji 不切半）', Array.from(A.buildText(long).split('\n')[1]).length, 202);
+    eq('A1 標題全 emoji：受 340 個 UTF-16 單位限制（170 個 emoji、不切半）', Array.from(A.buildText(long).split('\n')[1]).length, 172);
+    eq('A1 標題中文：截 200 個字', Array.from(A.buildText('字'.repeat(250)).split('\n')[1]).length, 202);
+    // 小幫手 GAS 的嚴格格式（與 ~/mala-gas/line-oa-scheduler/程式碼.js 的 PUSH_TEXT_RE／PUSH_TITLE_BAD 相同；第 2 輪審查 R1）
+    const GAS_RE = /^📢 佈告欄新公告\n《([^\r\n]*)》\n請到 https:\/\/dzy-bulletin\.github\.io 閱讀並簽名$/, GAS_BAD = /http|:\/\/|www\./i;
+    const gasOk = (t) => { const m = GAS_RE.exec(t); return !!m && !GAS_BAD.test(m[1]) && t.length <= 400; };
+    const nasty = ['第一行\n第二行', 'a\r\nb\u2028c', '點 https://evil.example/login 領獎', '到 dzy-bulletin.github.io.evil.example', 'HTTP://X.COM',
+      'www.evil.example', 'ftp://x', 'hTTps', '《書名號》與 emoji 😀', '😀'.repeat(250), '字'.repeat(250), '', '   '];
+    eq('A1 各種標題清理後都符合小幫手格式', nasty.filter((t) => !gasOk(A.buildText(t))), []);
+    eq('A1 換行改空白、網址改全形', A.buildText('a\nb https://x.y www.z').split('\n')[1], '《a b ｈｔｔｐｓ：／／x.y ｗｗｗ．z》');
+    eq('A1 一般標題不變', A.buildText('十月排班 10/1 起'), '📢 佈告欄新公告\n《十月排班 10/1 起》\n請到 https://dzy-bulletin.github.io 閱讀並簽名');
     eq('A1 常數：每小時、3 次', [A.ANNOUNCE_EVERY_MS, A.MAX_FAILS], [3600000, 3]);
 
     // ---- A2 首次啟用：現有公告（排定未來的除外）標記已通知、不補推；印出那一行 ----
@@ -265,6 +274,33 @@ async function main() {
       h.bodies = []; a.setNow('2026-10-02T14:00'); await a.run();
       eq('A6d 下一輪推出 G-2、G-3', labels(h).sort(), ['佈告欄新公告:G-2', '佈告欄新公告:G-3']);
       eq('A6d announce.log 記手動補推', /手動補推：G-1：已清除/.test(fs.readFileSync(path.join(s.dir, 'logs', 'announce.log'), 'utf8')), true);
+      // --skip：確認不推（標 skip、清黃燈、之後不推）
+      putPost(s, P('SK-1')); h.mode = 'pushFail';
+      for (const t of ['15:00', '16:00', '17:00']) { a.setNow('2026-10-02T' + t); await a.run(); }
+      eq('A6d SK-1 放棄 → gaveup=1', a.health().gaveup, 1);
+      const cSk = await cli(['--skip', 'SK-1']);
+      eq('A6d --skip SK-1', [cSk.code, /SK-1：已標記為不推/.test(cSk.out), a.health().gaveup, kv(s, A.KV_DONE)['SK-1'].mode], [0, true, 0, 'skip']);
+      putPost(s, P('SK-2')); h.mode = 'pushFail'; a.setNow('2026-10-02T18:00'); await a.run();
+      const cSk2 = await cli(['--skip', 'SK-2']);
+      eq('A6d --skip 失敗中的：清掉失敗計數', [/已標記為不推/.test(cSk2.out), kv(s, A.KV_FAILS)['SK-2'], kv(s, A.KV_DONE)['SK-2'].mode], [true, undefined, 'skip']);
+      h.mode = 'push'; h.bodies = []; a.setNow('2026-10-02T19:00'); await a.run();
+      eq('A6d skip 的之後不推', labels(h), []);
+      const cSk3 = await cli(['--skip', 'G-1']);
+      eq('A6d --skip 已推過的不動', [/已通知過（push），不動/.test(cSk3.out), kv(s, A.KV_DONE)['G-1'].mode], [true, 'push']);
+      const cBoth = await cli(['--skip', 'X', '--retry', 'Y']);
+      eq('A6d 同時給兩種 → 用法 exit 2', cBoth.code, 2);
+      eq('A6d announce.log 記手動不推', /手動不推：SK-1：已標記為不推/.test(fs.readFileSync(path.join(s.dir, 'logs', 'announce.log'), 'utf8')), true);
+      // 交易：伺服器正卡在 await（假小幫手延遲）時跑 --skip，伺服器寫回後 skip 不被蓋掉
+      putPost(s, P('TX-1')); putPost(s, P('TX-2')); h.mode = 'push'; h.delayMs = 400; h.bodies = [];
+      a.setNow('2026-10-02T20:00');
+      const round = a.run();
+      for (let k = 0; k < 40 && h.hits === 0; k++) await sleep(10);
+      await sleep(50);
+      const first = String(h.bodies[0] && h.bodies[0].label || '').replace(A.LABEL_PREFIX, ''), other = first === 'TX-1' ? 'TX-2' : 'TX-1';
+      const cTx = await cli(['--skip', other]);              // 第一則還卡在 await 時，標掉第二則
+      await round; h.delayMs = 0;
+      eq('A6d 伺服器輪次中 --skip：第一則寫回 push、第二則仍是 skip 且沒推', [/已標記為不推/.test(cTx.out), (kv(s, A.KV_DONE)[first] || {}).mode, (kv(s, A.KV_DONE)[other] || {}).mode, labels(h)],
+        [true, 'push', 'skip', [A.LABEL_PREFIX + first]]);
       s.st.close();
     }
 

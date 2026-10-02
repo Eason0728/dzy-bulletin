@@ -24,6 +24,7 @@
  * 補推（伺服器開著也可以跑；只動 kv 這兩個鍵，計時器每次 await 之後都會重讀，不會蓋回去）：
  *   node server/announce.js --retry <postId>   把這則的放棄標記與失敗計數清掉，下一輪（1 小時內）重新推
  *   node server/announce.js --retry-all        所有放棄的與失敗中的都清掉
+ *   node server/announce.js --skip <postId>    確認不推：標成已通知（mode:'skip'），清掉黃燈（已自己在群組講過時用）
  *   小幫手端若其實已推出過，會回 dup，不會重推。
  * 不卡請求：整段 async，只在 await 之間做同步的 kv 讀寫（不進 store.tx、不持有寫鎖）；同一時間只跑一輪。
  * 環境變數：ANNOUNCE_EVERY_MS（間隔，預設 3600000，只給測試縮短）、ANNOUNCE_RETRY_MS（當輪重試前等幾毫秒，預設 5000）。 */
@@ -33,7 +34,7 @@ const J = require('./job-common.js');
 const L = require(path.join(__dirname, '..', 'js', 'logic.js'));
 
 const ANNOUNCE_EVERY_MS = 3600e3;
-const MAX_FAILS = 3;                                        // 每小時一輪 → 約 3 小時後放棄
+const MAX_FAILS = 3;                                        // 每小時一輪：第 1、2、3 次失敗在 0、60、120 分 → 約 2 小時後放棄（重啟時最快約 100 分）
 const FAIL_GAP_MS = 50 * 60e3;                              // 距上次失敗不到 50 分鐘不累加（重啟、崩潰重起）
 const OK_MODES = new Set(['push', 'fallback', 'dup']);
 const MAX_TITLE = 200;
@@ -42,9 +43,20 @@ const LABEL_PREFIX = '佈告欄新公告:';
 const KV_DONE = 'announced', KV_FAILS = 'announceFails';
 const LAST = 'announce-last.json', LOG = 'announce.log';
 
-// 訊息本文（標題以碼點截 200 字，不切出孤立代理字元）
+// 標題清理（第 2 輪審查 R1）：小幫手只收嚴格三行格式——標題不可換行、不可含 http、://、www.（不分大小寫）。
+//   換行（含 \r、U+2028/2029）改空白；網址字樣改成全形，看得懂但不會變成連結。送出的訊息因此一定符合小幫手的格式。
+function cleanTitle(title) {
+  return String(title || '').replace(/[\r\n\u2028\u2029]+/g, ' ')
+    .replace(/https?/gi, (m) => Array.from(m).map((c) => String.fromCharCode(c.charCodeAt(0) + 0xFEE0)).join(''))
+    .replace(/:\/\//g, '：／／').replace(/www\./gi, (m) => Array.from(m.slice(0, 3)).map((c) => String.fromCharCode(c.charCodeAt(0) + 0xFEE0)).join('') + '．')
+    .trim();
+}
+// 訊息本文（標題清理後以碼點截 200 字，不切出孤立代理字元）
+//   另限 UTF-16 長度 MAX_TITLE_UNITS，整則一定 ≤ 小幫手的 400 字上限（固定文字 51 字）
+const MAX_TITLE_UNITS = 340;
 function buildText(title) {
-  const t = Array.from(String(title || '').trim()).slice(0, MAX_TITLE).join('');
+  let t = '', n = 0;
+  for (const c of Array.from(cleanTitle(title))) { if (n >= MAX_TITLE || t.length + c.length > MAX_TITLE_UNITS) break; t += c; n++; }
   return `📢 佈告欄新公告\n《${t}》\n請到 ${SITE} 閱讀並簽名`;
 }
 // 這則公告該不該通知（不看是否已通知）
@@ -69,7 +81,7 @@ function makeAnnouncer(o) {
     if (readJson(o.store, KV_DONE)) return;
     const at = new Date().toISOString(), done = {};
     posts.forEach((p) => { if (L.status(p, td).state !== 'plan') done[p.id] = { at, mode: 'init' }; });
-    o.store.kvSet(KV_DONE, JSON.stringify(done));
+    o.store.tx(() => { o.store.kvSet(KV_DONE, JSON.stringify(done)); });
     note(`首次啟用：已將 ${Object.keys(done).length} 則現有公告標記為已通知`);
   }
 
@@ -82,6 +94,7 @@ function makeAnnouncer(o) {
       const done0 = readJson(o.store, KV_DONE) || {};
       const todo = posts.filter((p) => eligible(p, td) && !done0[p.id]).sort(L.sortBoard);
       for (const p of todo) {
+        if ((readJson(o.store, KV_DONE) || {})[p.id]) continue;   // 這一輪開始後才被標掉的（例如另一個程序跑了 --skip）：不推
         const payload = { action: 'push_text', token: o.token, label: LABEL_PREFIX + p.id, text: buildText(p.title) };
         let r = null, err = null;
         try {
@@ -89,31 +102,33 @@ function makeAnnouncer(o) {
           if (!accepted(r)) { r = null; throw new Error('小幫手回應不符（沒有 push_text 回聲或 mode，可能還沒部署 push_text 版）'); }
         }
         catch (e) { r = null; err = J.errText(e); }
-        // await 之後重讀再寫（只有本計時器寫這兩個鍵，同一時間只跑一輪）
-        const done = readJson(o.store, KV_DONE) || {}, fails = readJson(o.store, KV_FAILS) || {};
-        if (r) {
-          done[p.id] = { at: new Date().toISOString(), mode: String(r.mode || 'push') };
-          delete fails[p.id];
-          res.sent++;
-          note(`已通知 ${p.id}（${done[p.id].mode}` + (Number(r.fail) > 0 ? `，${Number(r.fail)} 個群組失敗` : '') + (r.capped ? '，已達每日 push 上限改走候補' : '') + '）');
-        } else {
-          const f = failOf(fails[p.id]);
-          const counted = !f.lastAt || nowMs - f.lastAt >= FAIL_GAP_MS;   // 50 分鐘內的再次失敗不累加
-          const n = counted ? f.n + 1 : f.n;
-          res.ok = false; res.failed++;
-          if (n >= MAX_FAILS) {
-            done[p.id] = { at: new Date().toISOString(), mode: 'gaveup', error: err };
+        // await 之後在 BEGIN IMMEDIATE 交易裡「重讀→改→寫回」：--retry／--skip（另一個程序）也用交易，誰都不會蓋掉對方剛寫的（第 2 輪審查建議 2）
+        o.store.tx(() => {
+          const done = readJson(o.store, KV_DONE) || {}, fails = readJson(o.store, KV_FAILS) || {};
+          if (r) {
+            done[p.id] = { at: new Date().toISOString(), mode: String(r.mode || 'push') };
             delete fails[p.id];
-            res.gaveUp++;
-            note(`通知 ${p.id} 連續失敗 ${n} 次，停止重試：${err}`);
+            res.sent++;
+            note(`已通知 ${p.id}（${done[p.id].mode}` + (Number(r.fail) > 0 ? `，${Number(r.fail)} 個群組失敗` : '') + (r.capped ? '，已達每日 push 上限改走候補' : '') + '）');
           } else {
-            fails[p.id] = { n, lastAt: counted ? nowMs : f.lastAt };
-            res.pending++;
-            note(`通知 ${p.id} 失敗（第 ${n} 次` + (counted ? '' : '，距上次不到 50 分鐘不累加') + `，下一輪重試）：${err}`);
+            const f = failOf(fails[p.id]);
+            const counted = !f.lastAt || nowMs - f.lastAt >= FAIL_GAP_MS;   // 50 分鐘內的再次失敗不累加
+            const n = counted ? f.n + 1 : f.n;
+            res.ok = false; res.failed++;
+            if (n >= MAX_FAILS) {
+              done[p.id] = { at: new Date().toISOString(), mode: 'gaveup', error: err };
+              delete fails[p.id];
+              res.gaveUp++;
+              note(`通知 ${p.id} 連續失敗 ${n} 次，停止重試：${err}`);
+            } else {
+              fails[p.id] = { n, lastAt: counted ? nowMs : f.lastAt };
+              res.pending++;
+              note(`通知 ${p.id} 失敗（第 ${n} 次` + (counted ? '' : '，距上次不到 50 分鐘不累加') + `，下一輪重試）：${err}`);
+            }
           }
-        }
-        o.store.kvSet(KV_DONE, JSON.stringify(done));
-        o.store.kvSet(KV_FAILS, JSON.stringify(fails));
+          o.store.kvSet(KV_DONE, JSON.stringify(done));
+          o.store.kvSet(KV_FAILS, JSON.stringify(fails));
+        });
       }
     } catch (e) {
       res.ok = false; res.error = J.errText(e);
@@ -145,13 +160,26 @@ function startAnnouncer(o) {
   return a;
 }
 
-// ---- 指令列：--retry <postId>／--retry-all（直接改 kv，不經 makeSqliteStore，見 job-common.js）----
-function retry(dir, id) {
+// ---- 指令列：--retry <postId>／--retry-all／--skip <postId>（直接改 kv，不經 makeSqliteStore，見 job-common.js）----
+// 讀與寫都在同一個 BEGIN IMMEDIATE 交易裡（伺服器那邊也是），兩個程序不會蓋掉對方剛寫的
+function editKv(dir, fn) {
   const db = J.openDb(dir);
   try {
     const get = (k) => { const r = db.prepare('SELECT v FROM kv WHERE k = ?').get(k); try { return (r && JSON.parse(r.v)) || {}; } catch (e) { return {}; } };
     const put = (k, v) => db.prepare('INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v').run(k, JSON.stringify(v));
-    const done = get(KV_DONE), fails = get(KV_FAILS), out = [];
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const done = get(KV_DONE), fails = get(KV_FAILS);
+      const out = fn(done, fails);
+      put(KV_DONE, done); put(KV_FAILS, fails); db.exec('COMMIT');
+      return out;
+    } catch (e) { try { db.exec('ROLLBACK'); } catch (x) {} throw e; }
+  } finally { db.close(); }
+}
+// 補推：清掉放棄標記與失敗計數，下一輪重新推（已成功通知的不動）
+function retry(dir, id) {
+  return editKv(dir, (done, fails) => {
+    const out = [];
     const ids = id ? [id] : Array.from(new Set(Object.keys(done).filter((k) => done[k] && done[k].mode === 'gaveup').concat(Object.keys(fails))));
     ids.forEach((k) => {
       if (done[k] && done[k].mode !== 'gaveup') { out.push(`${k}：已通知過（${done[k].mode}），不動`); return; }
@@ -159,22 +187,30 @@ function retry(dir, id) {
       delete done[k]; delete fails[k];
       out.push(`${k}：已清除，下一輪重新推`);
     });
-    db.exec('BEGIN IMMEDIATE');
-    try { put(KV_DONE, done); put(KV_FAILS, fails); db.exec('COMMIT'); } catch (e) { db.exec('ROLLBACK'); throw e; }
     return out;
-  } finally { db.close(); }
+  });
+}
+// 確認不推：標成已通知（mode:'skip'）、清掉失敗計數；用來清黃燈（例如已自己在群組講過）。已成功通知的不動
+function skip(dir, id) {
+  return editKv(dir, (done, fails) => {
+    if (done[id] && done[id].mode !== 'gaveup') return [`${id}：已通知過（${done[id].mode}），不動`];
+    done[id] = { at: new Date().toISOString(), mode: 'skip' };
+    delete fails[id];
+    return [`${id}：已標記為不推（skip）`];
+  });
 }
 function main() {
-  const a = process.argv.slice(2), i = a.indexOf('--retry');
-  const id = i >= 0 ? String(a[i + 1] || '') : '';
-  if (!(a.includes('--retry-all') || (i >= 0 && id && !id.startsWith('--')))) {
-    console.log('用法：node server/announce.js --retry <公告ID>｜--retry-all（計時器在伺服器裡，不用單獨執行本檔）'); process.exit(2);
+  const a = process.argv.slice(2);
+  const arg = (flag) => { const i = a.indexOf(flag), v = i >= 0 ? String(a[i + 1] || '') : ''; return v && !v.startsWith('--') ? v : ''; };
+  const rid = arg('--retry'), sid = arg('--skip'), all = a.includes('--retry-all');
+  if ([!!rid, !!sid, all].filter(Boolean).length !== 1) {
+    console.log('用法：node server/announce.js --retry <公告ID>｜--retry-all｜--skip <公告ID>（計時器在伺服器裡，不用單獨執行本檔）'); process.exit(2);
   }
   const dir = J.dataDir(process.env);
-  const out = retry(dir, a.includes('--retry-all') ? '' : id);
+  const out = sid ? skip(dir, sid) : retry(dir, all ? '' : rid);
   const s = out.length ? out.join('\n') : '沒有放棄或失敗中的公告';
-  console.log(s); try { J.logLine(dir, LOG, '手動補推：' + out.join('；')); } catch (e) {}
+  console.log(s); try { J.logLine(dir, LOG, (sid ? '手動不推：' : '手動補推：') + out.join('；')); } catch (e) {}
 }
 if (require.main === module) { try { main(); } catch (e) { console.error(J.errText(e)); process.exit(1); } }
 
-module.exports = { makeAnnouncer, startAnnouncer, buildText, eligible, accepted, retry, ANNOUNCE_EVERY_MS, MAX_FAILS, FAIL_GAP_MS, MAX_TITLE, LABEL_PREFIX, KV_DONE, KV_FAILS };
+module.exports = { makeAnnouncer, startAnnouncer, buildText, cleanTitle, eligible, accepted, retry, skip, MAX_TITLE_UNITS, ANNOUNCE_EVERY_MS, MAX_FAILS, FAIL_GAP_MS, MAX_TITLE, LABEL_PREFIX, KV_DONE, KV_FAILS };

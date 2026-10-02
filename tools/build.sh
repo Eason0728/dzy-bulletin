@@ -11,6 +11,7 @@ if command -v plutil >/dev/null; then for p in server/launchd/*.plist; do plutil
 # test/jobs.test.js（M3）同樣自給自足：假 Google（test/fake-gas.js）＋暫存埠伺服器＋子程序跑 mirror／daily／restore
 # test/migrate.test.js（M5）：假 Google 做出資料 → 子程序跑 server/migrate.js 搬遷 → 真伺服器用搬遷前的 token 驗證不必重登；另驗 server/latency.js
 # test/remind.test.js（#26）：光復未簽提醒，假小幫手（本機 HTTP）＋子程序跑 server/sign-remind.js（DZYB_NO_DOTENV=1）
+# test/announce.test.js（#28）：新公告上架通知，假小幫手（push_text）＋子程序跑真伺服器驗計時器／health（DZYB_NO_DOTENV=1）
 for t in test/*.test.js; do node "$t"; done
 [ -f test/migrate.test.js ] || { echo "✗ 缺 test/migrate.test.js（M5 搬遷測試）"; exit 1; }
 grep -n "VERSION" js/config.js gas/Code.js | grep -o "'[0-9.]*'" | sort -u | awk 'END{ if (NR!=1) { print "✗ 前後端版本號不一致"; exit 1 } else print "版本號一致" }'

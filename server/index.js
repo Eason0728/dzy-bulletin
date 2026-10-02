@@ -84,6 +84,8 @@ function makeApp(cfg) {
   const { makeBridge, makeFakeBridge } = require('./bridge.js');
   const { judgeHealth } = require('./health-rules.js');
   const FL = require('./files-local.js');
+  const J = require('./job-common.js');
+  const { startAnnouncer } = require('./announce.js');
 
   const VERSION = (/VERSION: '([0-9.]+)'/.exec(fs.readFileSync(path.join(ROOT, 'js/config.js'), 'utf8')) || [])[1] || '?';
   const { DATA_DIR, E2E, ALLOW, MAX_INFLIGHT } = cfg;
@@ -100,6 +102,7 @@ function makeApp(cfg) {
   const { BRIDGE_MSG } = require('./bridge.js');
   const WRITE = new Set(makeService_(L, {}, {}, {}, {}).WRITE_ACTIONS);
   let clockOffsetMs = 0;                                    // 只有 E2E 會改
+  let announcer = null;                                     // #28 新公告通知（main() 啟動後經 startAnnounce 掛上）
   const clock = { nowMs: () => Date.now() + clockOffsetMs, today: () => L.today(new Date(Date.now() + clockOffsetMs)) };
   const ts = () => new Date().toISOString();
 
@@ -236,6 +239,8 @@ function makeApp(cfg) {
         return { count: num(f.count), bytes: num(f.bytes), pending: num(f.pending), stale: num(f.stale), skipped: num(f.skipped) || 0, lastScanAt: typeof f.lastScanAt === 'string' ? f.lastScanAt : null }; }),
       // #26 光復未簽提醒（server/sign-remind.js，選用）：只挑 at／ok／people；檔案不存在（沒裝或還沒啟用）＝null。最後一次失敗 → 黃
       remind: job('remind-last.json', (j) => ({ at: j.at || null, ok: !!j.ok, people: num(j.people) })),
+      // #28 新公告上架通知（server/announce.js，伺服器內計時器）：null＝沒啟用（.env 沒設或 E2E）；啟用但第一輪還沒跑完＝四欄 null。最後一輪失敗、或有放棄的（gaveup>0）→ 黃
+      announce: announcer ? (announcer.health() || { at: null, ok: null, pending: null, gaveup: null }) : null,
       disk: { freeMB }
     };
     return Object.assign(h, judgeHealth(h, Date.now()));
@@ -320,8 +325,16 @@ function makeApp(cfg) {
     } finally { release(lease); }
   }
 
+  // #28：新公告上架通知計時器（E2E 不啟動、.env 沒設不啟動；判斷在 announce.js startAnnouncer）
+  function startAnnounce(env) {
+    const { url, token } = J.helperEnv(env);
+    announcer = startAnnouncer({ store, dir: DATA_DIR, url, token, e2e: E2E,
+      everyMs: Number(env.ANNOUNCE_EVERY_MS) || 0, retryMs: env.ANNOUNCE_RETRY_MS === undefined ? 5000 : Number(env.ANNOUNCE_RETRY_MS) });
+    return announcer;
+  }
+
   return {
-    handle, store, refreshQuota, bridgeReady, VERSION,
+    handle, store, refreshQuota, bridgeReady, VERSION, startAnnounce,
     onRequest: (req, res) => { handle(req, res).catch((e) => { console.error(e); try { send(res, 500, { ok: false, code: 'SERVER', message: '系統忙碌' }, true); } catch (x) {} }); }
   };
 }
@@ -339,7 +352,10 @@ function main() {
   server.headersTimeout = 15000;                           // header 15 秒內要送完
   server.requestTimeout = cfg.REQUEST_TIMEOUT_MS;           // 整個請求（含請求體）上限
   server
-    .listen(cfg.PORT, '127.0.0.1', () => console.log(new Date().toISOString() + ` 佈告欄伺服器 v${app.VERSION} 啟動：127.0.0.1:${cfg.PORT}，資料 ${cfg.DATA_DIR}${cfg.E2E ? '（E2E 測試模式）' : ''}`));
+    .listen(cfg.PORT, '127.0.0.1', () => {
+      console.log(new Date().toISOString() + ` 佈告欄伺服器 v${app.VERSION} 啟動：127.0.0.1:${cfg.PORT}，資料 ${cfg.DATA_DIR}${cfg.E2E ? '（E2E 測試模式）' : ''}`);
+      app.startAnnounce(process.env);                       // #28：啟動時先跑一次，之後每小時（ANNOUNCE_EVERY_MS）
+    });
 }
 
 if (require.main === module) main();

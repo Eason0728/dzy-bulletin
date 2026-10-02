@@ -718,6 +718,45 @@ launchctl bootstrap "$U" "$HOME/Library/LaunchAgents/$J.plist" && launchctl prin
 
 **停用**：一般路線 `launchctl bootout "$U/com.dzy.bulletin.remind"; rm -f ~/Library/LaunchAgents/com.dzy.bulletin.remind.plist`；附錄 A 路線請 Eason `sudo launchctl bootout system/com.dzy.bulletin.remind; sudo rm -f /Library/LaunchDaemons/com.dzy.bulletin.remind.plist`。或只把 `.env` 兩行刪掉（job 照跑、印「尚未啟用」）。
 
+## 新公告上架通知（#28，沿用未簽提醒的 .env）
+
+做什麼：主管上架的公告若是**小辛辣光復同仁要簽的**（單位含小辛辣或「全部」），伺服器就經**光復小幫手**（訂貨小幫手 @954wknja）的 `push_text` 入口**直接 push** 到光復群組（吃小幫手每月額度）。額度快滿、被 429、或當天已 push 滿 5 則時，小幫手改走候補：群組有人說話才帶出，到隔天 06:00 沒人說話就作廢，作廢會經通知匣告知 Eason。訊息：
+
+```
+📢 佈告欄新公告
+《公告標題》
+請到 https://dzy-bulletin.github.io 閱讀並簽名
+```
+
+- **不另裝 launchd job**：計時器在伺服器程序裡（`server/announce.js`），伺服器啟動時先跑一次，之後**每 1 小時**一次。所以主管上架後最慢約 1 小時群組收到；排定未來上架的，到上架日後的第一輪才推。
+- **沿用未簽提醒那兩個鍵**（`REMIND_ENQUEUE_URL`、`REMIND_ENQUEUE_TOKEN`，見上一節第 1 步），同一個小幫手、同一組 token，不用新增任何金鑰。沒設這兩個鍵 → 伺服器啟動時印一行「新公告通知：未設定 REMIND_ENQUEUE_URL／TOKEN，不啟動」，其他照常。
+- **部署順序：先部署小幫手含 `push_text` 的版本、確認後，再更新佈告欄伺服器。** 舊版小幫手不認得 `push_text`，會回 `{ok:true}`（沒有 `mode`、也沒有 `action:'push_text'` 回聲）；伺服器只把「`ok:true`＋`mode` 是 push／fallback／dup＋帶 `action:'push_text'`」當成推出，所以舊版的回應會記成失敗（log：「小幫手回應不符」），不會誤記成已推；但 3 次失敗後就會放棄，要用下面的 `--retry-all` 補回來。
+- 小幫手端限制用途：label 必須 `佈告欄新公告:` 開頭；內容必須**整段**是上面的三行格式（標題不可換行、不可含 `http`、`://`、`www.`），不超過 400 字；每天最多 push 5 則，超過改走候補。伺服器送出前會先清理標題（換行改空白、網址字樣改成全形字），所以實際送出的訊息一定符合格式。
+- 每則公告只推一次（判重在佈告欄 SQLite kv `announced`，小幫手端也以 label `佈告欄新公告:<公告ID>` 永久判重）：編輯公告不重推、下架後重新上架也不重推。
+- **第一次啟用不補推舊公告**：kv 沒有 `announced` 時，把現有公告（排定未來上架的除外）全部標成已通知。
+- 失敗（連不上、逾時、不是 JSON、小幫手回 `ok:false`、回應不符）：那一則不標記，下一輪（1 小時後）重試；同一則**失敗 3 次**就停止重試，記在 `announce.log`。距離上次失敗不到 50 分鐘的失敗不累加（伺服器重啟、崩潰重起不會幾分鐘內就放棄），所以實際約 2～3 小時。
+- 結果在 `$DATA/logs/announce-last.json`（`at`、`ok`、`pending`、`sent`、`failed`、`gaveUp`）與 `$DATA/logs/announce.log`（有動作才寫）；`/health` 帶出 `announce: { at, ok, pending, gaveup }`（沒啟用＝`null`；剛啟動、第一輪還沒跑完＝四欄 `null`）。最後一輪 `ok:false` 時燈號轉黃、原因「新公告通知失敗」，下一輪成功就恢復；`gaveup`（已放棄的則數）大於 0 時**一直黃燈**、原因「有新公告通知已放棄」，直到用下面的指令清掉。
+
+**放棄後補推**（伺服器開著也可以跑，不用重啟）：
+```bash
+cd "$REPO" && DATA_DIR="$DATA" node server/announce.js --retry <公告ID>   # 只補這一則（公告 ID 看 announce.log 的「停止重試」那行）
+cd "$REPO" && DATA_DIR="$DATA" node server/announce.js --retry-all        # 所有放棄的、失敗中的都清掉
+cd "$REPO" && DATA_DIR="$DATA" node server/announce.js --skip <公告ID>    # 確認不推：標成已通知（例如已自己在群組講過），只清黃燈、不會推
+```
+`--retry` 清掉後 `/health` 的 `gaveup` 立刻歸零，下一輪（1 小時內）重新推；小幫手若其實已推出過會回 dup，不會重推。`--skip` 之後這則永遠不推，`gaveup` 也立刻歸零。三個指令都不會動已成功通知的公告，伺服器開著時跑也安全（讀寫都在同一筆 SQLite 交易裡）。
+退回候補後作廢的公告不能用 `--retry` 補推（記成 fallback＝已交給小幫手）；作廢會經通知匣告知，要補就請主管在群組貼一次。
+
+**啟用／更新**：照附錄 B 更新程式到 main 後**重啟伺服器**（附錄 A 路線沒 sudo 時用 kill 讓 KeepAlive 重起）就生效——伺服器的 `.env` 只在啟動時讀，之後若才貼或換那兩個鍵，也要再重啟一次。
+
+**驗證（不要上架測試公告）**：
+1. 重啟後 `curl -s http://127.0.0.1:8793/health`：要有 `announce` 欄位，且 `ok` 不是 `false`（剛啟動幾秒內可能三欄都是 `null`，稍等再查一次）。`announce` 是 `null` → 兩個鍵沒讀到，對照上一節第 1 步的 `grep -c`。
+2. 伺服器 log 要有首次啟用那一行：`grep '首次啟用：已將' "$DATA/logs/server.log" "$DATA/logs/announce.log"`（例：「首次啟用：已將 12 則現有公告標記為已通知」；只會出現一次，之後重啟不會再印）。
+3. 等下一則正式公告上架（單位含小辛辣或「全部」），**1 小時內**光復群組會收到通知；`announce.log` 會有「已通知 <公告ID>（push）」。
+
+`ok:false` 時看 `announce.log`：`小幫手拒收：bad token` → `REMIND_ENQUEUE_TOKEN` 錯（未簽提醒也會一起壞）；`小幫手回應不是 JSON` → 小幫手還沒部署 `push_text` 版、或網址錯；`連不上`／`逾時` → Google 暫時不通，下一輪自動重試。
+
+**停用**：把 `.env` 那兩行刪掉後重啟伺服器（未簽提醒也會一起停）。
+
 ---
 
 ## 附錄 A：如果 FileVault 已經開了（或 Eason 不接受自動登入）→ 改走 (B) LaunchDaemon

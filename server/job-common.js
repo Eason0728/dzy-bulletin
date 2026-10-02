@@ -92,7 +92,39 @@ function takeLock(dir, name, maxAgeMs) {
   return null;
 }
 function diskFreeMB(dir) { try { const s = fs.statfsSync(dir); return Math.floor(s.bavail * s.bsize / 1048576); } catch (e) { return null; } }
+// ---- 光復小幫手（訂貨小幫手 @954wknja）的 /exec：sign-remind.js（#26 enqueue_text）與 announce.js（#28 push_text）共用 ----
+// .env 兩個鍵（Eason 親手貼）：REMIND_ENQUEUE_URL、REMIND_ENQUEUE_TOKEN；兩支沿用同一組，換 token 只換一處
+function helperEnv(env) { return { url: env.REMIND_ENQUEUE_URL || '', token: env.REMIND_ENQUEUE_TOKEN || '' }; }
+const HELPER_TIMEOUT_SEC = 60;                              // 小幫手 Apps Script 冷啟動＋寫試算表，60 秒很寬
+// 打小幫手一次：網路錯誤／逾時／回應不是 JSON → e.retry＝true；小幫手回 ok:false → 不重試
+async function postHelper(url, payload, timeoutSec) {
+  let text;
+  try {
+    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(payload),
+      redirect: 'follow', signal: AbortSignal.timeout((timeoutSec || HELPER_TIMEOUT_SEC) * 1000) });
+    text = await res.text();
+  } catch (e) {
+    const x = new Error((e && (e.name === 'TimeoutError' || e.name === 'AbortError')) ? '連線小幫手逾時' : '連不上小幫手：' + (e && e.message));
+    x.retry = true; throw x;
+  }
+  let j;
+  try { j = JSON.parse(text); } catch (e) { const x = new Error('小幫手回應不是 JSON'); x.retry = true; throw x; }
+  if (!j || !j.ok) throw new Error('小幫手拒收：' + String((j && j.error) || (j && j.mode ? j.mode + ' 失敗' : '') || '未知原因').slice(0, 100));   // 只留對方的短句，不會含我們的 token
+  return j;
+}
+// 可重試的錯誤（e.retry）等 retryMs 後再試一次；onRetry(訊息) 給呼叫端記 log
+async function postHelperRetry(url, payload, o) {
+  o = o || {};
+  try { return await postHelper(url, payload, o.timeoutSec); }
+  catch (e) {
+    if (!e.retry) throw e;
+    if (o.onRetry) o.onRetry(e.message + '，重試一次');
+    await new Promise((ok) => setTimeout(ok, o.retryMs >= 0 ? o.retryMs : 5000));
+    return postHelper(url, payload, o.timeoutSec);
+  }
+}
+
 // 錯誤只留代碼與短句（結果檔是本機檔，/health 不會帶出，但也不要把整個 stack 寫進去）
 const errText = (e) => String((e && (e.code ? e.code + ' ' : '') + (e.detail || e.message)) || e).slice(0, 300);
 
-module.exports = { BUSY_MS, loadEnv, dataDir, openDb, rows, counts, countText, taipeiStamp, logLine, readState, readLast, writeLast, takeLock, diskFreeMB, errText };
+module.exports = { helperEnv, postHelper, postHelperRetry, HELPER_TIMEOUT_SEC, BUSY_MS, loadEnv, dataDir, openDb, rows, counts, countText, taipeiStamp, logLine, readState, readLast, writeLast, takeLock, diskFreeMB, errText };

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 鼎兆元｜電子佈告欄 — 光復未簽提醒（server/sign-remind.js，#26，選用）：每天 18:00（系統時區須為台北），
+     與光復小幫手文字候補的 FALLBACK_FROM_HOUR=18 一致。錯過的班（睡眠）會在喚醒後補跑；同一天重跑由小幫手判重，不會重複提醒。
+     server/.env 沒設 REMIND_ENQUEUE_URL／REMIND_ENQUEUE_TOKEN 時只印「尚未啟用」並 exit 0，裝了也不會打小幫手。
+     範本佔位字串同 com.dzy.bulletin.plist；安裝見 DEPLOY.md「未簽提醒（選用）」（附錄 A 路線改裝成 LaunchDaemon）。 -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.dzy.bulletin.remind</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__NODE__</string>
+    <string>__REPO__/server/sign-remind.js</string>
+  </array>
+  <key>WorkingDirectory</key><string>__REPO__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>DATA_DIR</key><string>__DATA_DIR__</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>18</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+  <key>StandardOutPath</key><string>__DATA_DIR__/logs/remind.out.log</string>
+  <key>StandardErrorPath</key><string>__DATA_DIR__/logs/remind.err.log</string>
+</dict>
+</plist>

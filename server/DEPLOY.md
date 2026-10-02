@@ -293,8 +293,8 @@ lsof -nP -iTCP:8793 -sTCP:LISTEN || echo "8793 已釋放"          # 期望「87
 REPO="$HOME/dzy-bulletin"; DATA="$HOME/dzy-bulletin-data"; NODE="$HOME/.local/node/bin/node"; U="gui/$(id -u)"
 lsof -nP -iTCP:8793 -sTCP:LISTEN && { echo "✗ 8793 還有人在聽（第 4 步沒關乾淨？），先處理再載入"; exit 1; }
 mkdir -p "$HOME/Library/LaunchAgents"
-for f in "$REPO"/server/launchd/*.plist; do
-  sed -e "s#__NODE__#$NODE#g" -e "s#__REPO__#$REPO#g" -e "s#__DATA_DIR__#$DATA#g" "$f" > "$HOME/Library/LaunchAgents/$(basename "$f")"
+for j in com.dzy.bulletin com.dzy.bulletin.mirror com.dzy.bulletin.daily; do   # 只裝這三個；選用的 com.dzy.bulletin.remind 見「未簽提醒（選用）」那一節
+  sed -e "s#__NODE__#$NODE#g" -e "s#__REPO__#$REPO#g" -e "s#__DATA_DIR__#$DATA#g" "$REPO/server/launchd/$j.plist" > "$HOME/Library/LaunchAgents/$j.plist"
 done
 cd "$HOME/Library/LaunchAgents"
 plutil -lint com.dzy.bulletin.plist com.dzy.bulletin.mirror.plist com.dzy.bulletin.daily.plist   # 三個都要 OK
@@ -666,6 +666,59 @@ cat "$DATA/logs/mirror-last.json"; echo                     # ⑤ 等一兩分�
 
 ---
 
+## 未簽提醒（選用，#26）
+
+做什麼：每天 18:00 `server/sign-remind.js` 唯讀查資料庫，找出**小辛辣光復店**同仁（`staff.src` 以 `gf:` 開頭、在職）有公告**上架滿 3 天**（台北日期差 ≥ 3，例：10/1 上架 → 10/4 起）還沒簽的，
+依公告分組寫成一則文字，經**光復小幫手**（訂貨小幫手 @954wknja）的文字候補入口（`enqueue_text`，label 固定 `佈告欄未簽提醒`）排進光復群組，群組有人說話時用免費 reply 帶出，不吃月額度。
+每天提醒到簽完為止；沒有人要提醒就不打小幫手；同一天重跑由小幫手判重（`queued` 回 0），不會重複提醒。只寫全名，不 @ 人。小幫手 GAS **不用改**。
+結果在 `$DATA/logs/remind-last.json`（`at`、`ok`、`people`、`posts`、`queued`、`error`）與 `$DATA/logs/remind.log`。失敗（連線失敗已重試 1 次）只影響這則提醒，佈告欄服務不受影響。
+
+**1. `.env` 兩個鍵（Eason 親手貼，Claude 不經手、不印出）**：在 Mac mini 用文字編輯器打開 `~/dzy-bulletin/server/.env`，最後加兩行後存檔：
+
+```
+REMIND_ENQUEUE_URL=<光復小幫手 Apps Script 的 /exec 網址（與其他系統投遞候補用的同一個）>
+REMIND_ENQUEUE_TOKEN=<小幫手的 ENQUEUE_TOKEN>
+```
+
+Claude 只用這行確認兩個鍵都在（只印數量、不印值）：`grep -c '^REMIND_ENQUEUE_\(URL\|TOKEN\)=.' "$REPO/server/.env"`（期望 `2`）。
+沒設定時 job 只印「未設定 REMIND_ENQUEUE_URL／TOKEN，尚未啟用」並 exit 0，所以**可以先裝 plist、之後再貼鍵**。`.env` 只在每次執行時讀，貼完不用重啟任何東西。
+
+**2. `--dry-run` 驗證（Claude，不用 sudo；不送出、不需要先貼鍵）**：
+
+```sh
+export PATH="$HOME/.local/node/bin:$PATH"; REPO="$HOME/dzy-bulletin"; DATA="$HOME/dzy-bulletin-data"
+DATA_DIR="$DATA" node "$REPO/server/sign-remind.js" --dry-run
+```
+
+印出的就是今天 18:00 會送的訊息（沒有人要提醒時印「沒有人需要提醒，不會送出」）。請 Eason 對照佈告欄後台各公告的回條確認名單。
+
+**3a. 安裝 plist（一般路線：LaunchAgent，不用 sudo）**：
+
+```sh
+REPO="$HOME/dzy-bulletin"; DATA="$HOME/dzy-bulletin-data"; NODE="$HOME/.local/node/bin/node"; U="gui/$(id -u)"; J=com.dzy.bulletin.remind
+sed -e "s#__NODE__#$NODE#g" -e "s#__REPO__#$REPO#g" -e "s#__DATA_DIR__#$DATA#g" "$REPO/server/launchd/$J.plist" > "$HOME/Library/LaunchAgents/$J.plist"
+plutil -lint "$HOME/Library/LaunchAgents/$J.plist" && grep -c '__[A-Z_]*__' "$HOME/Library/LaunchAgents/$J.plist"   # 要 OK、0
+launchctl bootstrap "$U" "$HOME/Library/LaunchAgents/$J.plist" && launchctl print "$U/$J" | grep -E '^\s*state ='
+```
+
+**3b. 安裝 plist（附錄 A 路線：LaunchDaemon，Mac mini 現行用這條）**：
+- Claude（不用 sudo）：照附錄 A 第 2 點產生 plist——上面 3a 的 `sed` 改輸出到 `~/.local/src/launchdaemons/com.dzy.bulletin.remind.plist`，並在 `<dict>` 第一層加 `<key>UserName</key><string>部署帳號（whoami 的結果）</string>`；`plutil -lint` OK、佔位字串 0、不含金鑰。
+- Eason（sudo，在他自己的終端機 App）：
+  ```sh
+  S="$HOME/.local/src/launchdaemons"; J=com.dzy.bulletin.remind
+  sudo cp "$S/$J.plist" /Library/LaunchDaemons/ && sudo chown root:wheel /Library/LaunchDaemons/$J.plist && sudo chmod 644 /Library/LaunchDaemons/$J.plist
+  sudo launchctl bootstrap system /Library/LaunchDaemons/$J.plist
+  ```
+- Claude 驗證：`launchctl print system/com.dzy.bulletin.remind | grep -E '^\s*state ='`（讀不到請 Eason 加 sudo）。
+
+**4. 正式跑一次（貼好鍵之後）**：一般路線 `launchctl kickstart "$U/com.dzy.bulletin.remind"`；附錄 A 路線請 Eason `sudo launchctl kickstart system/com.dzy.bulletin.remind`（或 Claude 直接 `DATA_DIR="$DATA" node "$REPO/server/sign-remind.js"`，效果相同）。
+接著 `cat "$DATA/logs/remind-last.json"`：`ok:true`、`queued≥1`（今天已送過則為 0）；小幫手的候補分頁會多一列 `TXT:佈告欄未簽提醒`，光復群組有人說話後帶出。
+`ok:false` 時看 `error`：`小幫手拒收：bad token` → 請 Eason 重貼 `REMIND_ENQUEUE_TOKEN`；`連不上小幫手`／`逾時`／`不是 JSON` → 網址錯或 Google 暫時不通，隔天會自動再試。
+
+**停用**：一般路線 `launchctl bootout "$U/com.dzy.bulletin.remind"; rm -f ~/Library/LaunchAgents/com.dzy.bulletin.remind.plist`；附錄 A 路線請 Eason `sudo launchctl bootout system/com.dzy.bulletin.remind; sudo rm -f /Library/LaunchDaemons/com.dzy.bulletin.remind.plist`。或只把 `.env` 兩行刪掉（job 照跑、印「尚未啟用」）。
+
+---
+
 ## 附錄 A：如果 FileVault 已經開了（或 Eason 不接受自動登入）→ 改走 (B) LaunchDaemon
 
 FileVault 開著就不能自動登入，LaunchAgent 在停電重開後不會啟動。改成 LaunchDaemon（`system` domain，開機即跑、**不需登入任何帳號**）。#9 實機就是走這條（2026-09-30）。
@@ -729,6 +782,7 @@ echo "更新程式：$OLD → $NEW（$(date '+%F %T')）" >> "$DATA/logs/deploy-
   - M4 階段**不要**為了測試去 `kickstart` mirror（每跑一次都被擋、失敗次數 +1）；daily 可以 `launchctl kickstart "$U/com.dzy.bulletin.daily"` 驗一次。
 - `server/launchd/` **有改動**：三個都重做第 5 步的替換、`plutil -lint`，再逐一 `launchctl bootout "$U/<label>"` → `launchctl bootstrap "$U" ~/Library/LaunchAgents/<label>.plist`。注意 mirror 的 `RunAtLoad`：bootstrap 時會馬上跑一輪，M4 階段那一輪被擋、`/health` 可能因此轉黃，屬預期。
 - 兩種情況最後都跑第 5 步的驗證（PID 相符）與 `curl -s http://127.0.0.1:8793/health`。
+- 有裝**未簽提醒**（`com.dzy.bulletin.remind`）且它的範本有改動：照「未簽提醒（選用）」第 3a／3b 步重新產生、`bootout` 再 `bootstrap`；沒改動就不用動（每天新開程序，下一輪自動用新程式）。
 - **附錄 A（LaunchDaemon，`system` domain）**：
   - `server/launchd/` 沒有改動：伺服器用附錄 A 第 9 點的「kill PID、由 KeepAlive 重起」（不用 sudo，印出新舊 PID 確認已換）；有 sudo 時也可請 Eason `sudo launchctl kickstart -k system/com.dzy.bulletin`。mirror、daily 同樣下一輪自動用新程式；確認沒在跑用 `launchctl print system/com.dzy.bulletin.mirror | grep -E '^\s*state ='`（讀不到請 Eason 加 sudo）。daily 要驗一次就請 Eason `sudo launchctl kickstart system/com.dzy.bulletin.daily`。
   - `server/launchd/` 有改動：Claude 照附錄 A 第 2 點重新產生 plist（含 `UserName`），再由 Eason 照附錄 A 第 3 點逐一 `sudo launchctl bootout system/<label>` → `sudo cp`／`chown`／`chmod` → `sudo launchctl bootstrap system /Library/LaunchDaemons/<label>.plist`；daily 的 kickstart 另外隔 10 秒以上再跑。

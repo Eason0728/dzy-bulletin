@@ -10,6 +10,7 @@ if command -v plutil >/dev/null; then for p in server/launchd/*.plist; do plutil
 # test/server.test.js 會自己開暫存埠與暫存資料夾啟動真伺服器（含 10 秒阻塞測試），不需先手動起伺服器
 # test/jobs.test.js（M3）同樣自給自足：假 Google（test/fake-gas.js）＋暫存埠伺服器＋子程序跑 mirror／daily／restore
 # test/migrate.test.js（M5）：假 Google 做出資料 → 子程序跑 server/migrate.js 搬遷 → 真伺服器用搬遷前的 token 驗證不必重登；另驗 server/latency.js
+# test/remind.test.js（#26）：光復未簽提醒，假小幫手（本機 HTTP）＋子程序跑 server/sign-remind.js（DZYB_NO_DOTENV=1）
 for t in test/*.test.js; do node "$t"; done
 [ -f test/migrate.test.js ] || { echo "✗ 缺 test/migrate.test.js（M5 搬遷測試）"; exit 1; }
 grep -n "VERSION" js/config.js gas/Code.js | grep -o "'[0-9.]*'" | sort -u | awk 'END{ if (NR!=1) { print "✗ 前後端版本號不一致"; exit 1 } else print "版本號一致" }'
